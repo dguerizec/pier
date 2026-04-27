@@ -23,7 +23,7 @@ type initOpts struct {
 	service string
 	port    int
 	file    string
-	shared  bool
+	private bool
 	yes     bool
 }
 
@@ -49,7 +49,7 @@ func newInitCmd() *cobra.Command {
 	f.StringVar(&opts.service, "service", "", "compose service name")
 	f.IntVar(&opts.port, "port", 0, "service port exposed by the workload")
 	f.StringVar(&opts.file, "file", "", "compose file path (default: auto-detect)")
-	f.BoolVar(&opts.shared, "shared", false, "commit .pier.toml to git (default: gitignore it)")
+	f.BoolVar(&opts.private, "private", false, "gitignore .pier.toml (default: commit it so secondary worktrees inherit it)")
 	f.BoolVarP(&opts.yes, "yes", "y", false, "accept all defaults, no prompts")
 	return cmd
 }
@@ -101,9 +101,11 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 		return fmt.Errorf("invalid port %q", portStr)
 	}
 
-	share := opts.shared
-	if !opts.yes && !opts.shared {
-		share = askYesNo(reader, stdout, "Share manifest with team (commit to git)?", false)
+	// Default: manifest is committed so `git worktree add` carries it into
+	// every new worktree. --private flips this off and gitignores the file.
+	share := !opts.private
+	if !opts.yes && !opts.private {
+		share = askYesNo(reader, stdout, "Share manifest with team (commit to git)?", true)
 	}
 
 	m := &manifest.Manifest{

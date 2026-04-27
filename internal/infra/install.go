@@ -198,14 +198,17 @@ func traefikRunArgs(paths *Paths, bindIP string) []string {
 	}
 }
 
+// dnsmasqRunArgs uses --network host so dnsmasq binds the host's
+// <bindIP>:53 directly. This avoids docker-proxy's well-known UDP reply
+// quirks (queries arrive but replies get lost) and removes the need for
+// CAP_NET_BIND_SERVICE since dnsmasq runs as root in the container before
+// dropping privileges.
 func dnsmasqRunArgs(paths *Paths, bindIP string) []string {
 	return []string{
 		"run", "-d",
 		"--name", DnsmasqContainer,
 		"--restart", "unless-stopped",
-		"-p", fmt.Sprintf("%s:53:53/udp", bindIP),
-		"-p", fmt.Sprintf("%s:53:53/tcp", bindIP),
-		"--cap-add", "NET_ADMIN",
+		"--network", "host",
 		"-v", paths.DnsmasqConf + ":/etc/dnsmasq.conf:ro",
 		DnsmasqImage,
 	}

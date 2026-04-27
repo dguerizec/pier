@@ -39,10 +39,12 @@ accessLog: {}
 // renderDnsmasqConfig wires *.<tld> to bindIP via dnsmasq.
 func renderDnsmasqConfig(tld, bindIP string) ([]byte, error) {
 	t := template.Must(template.New("dnsmasq").Parse(`# managed by pier
-listen-address=0.0.0.0
 port=53
+listen-address={{.IP}}
+bind-interfaces
 no-resolv
 no-hosts
+log-queries
 log-facility=-
 address=/{{.TLD}}/{{.IP}}
 `))

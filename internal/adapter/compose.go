@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -33,6 +34,10 @@ func (compose) Up(c Ctx) (*Handle, error) {
 	overridePath, err := writeOverride(c)
 	if err != nil {
 		return nil, err
+	}
+
+	if err := ensureExternalNetworks(c, overridePath); err != nil {
+		fmt.Fprintf(c.Err, "warning: ensure external networks: %v\n", err)
 	}
 
 	if _, err := composeRun(c, []string{"up", "-d", "--build"}, overridePath, true); err != nil {
@@ -161,6 +166,73 @@ func writeOverride(c Ctx) (string, error) {
 		return "", fmt.Errorf("write %s: %w", path, err)
 	}
 	return path, nil
+}
+
+// ensureExternalNetworks renders the merged compose config and creates any
+// `external: true` network the user's compose file references but the
+// docker daemon doesn't have. The pier network itself is provisioned at
+// install time so the existence check below is a no-op for it.
+//
+// Best-effort: a compose config failure here means up will surface the
+// real error a moment later — we don't want to mask it.
+func ensureExternalNetworks(c Ctx, overridePath string) error {
+	cmd := exec.Command("docker",
+		"compose",
+		"-f", stackFilePath(c),
+		"-f", overridePath,
+		"config", "--format=json",
+	)
+	cmd.Dir = c.WorktreePath
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	var cfg struct {
+		Networks map[string]struct {
+			External any    `json:"external"`
+			Name     string `json:"name"`
+		} `json:"networks"`
+	}
+	if err := json.Unmarshal(out, &cfg); err != nil {
+		return nil
+	}
+	for _, n := range cfg.Networks {
+		if !isExternal(n.External) {
+			continue
+		}
+		netName := n.Name
+		if netName == "" {
+			continue
+		}
+		if err := ensureDockerNetwork(netName); err != nil {
+			fmt.Fprintf(c.Err, "warning: create network %s: %v\n", netName, err)
+		}
+	}
+	return nil
+}
+
+// isExternal handles both the modern `external: true` form and the older
+// `external: {name: "..."}` form compose still accepts.
+func isExternal(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case map[string]any:
+		return len(t) > 0
+	}
+	return false
+}
+
+func ensureDockerNetwork(name string) error {
+	out, err := exec.Command("docker", "network", "ls",
+		"--filter", "name=^"+name+"$", "--format", "{{.Name}}").Output()
+	if err == nil && strings.TrimSpace(string(out)) == name {
+		return nil
+	}
+	if _, err := exec.Command("docker", "network", "create", name).CombinedOutput(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func renderOverride(c Ctx) ([]byte, error) {

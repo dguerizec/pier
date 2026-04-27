@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/LeoPartt/pier/internal/adapter"
+	"github.com/LeoPartt/pier/internal/materialize"
 	"github.com/LeoPartt/pier/internal/state"
 )
 
@@ -25,6 +26,10 @@ func newUpCmd() *cobra.Command {
 				return err
 			}
 			defer d.State.Close()
+
+			if err := materialize.Apply(d.Worktree.PrimaryPath, d.Worktree.Toplevel, d.Manifest.Materialize, cmd.OutOrStdout()); err != nil {
+				return err
+			}
 
 			a, err := adapter.For(d.Manifest.Stack.Kind)
 			if err != nil {

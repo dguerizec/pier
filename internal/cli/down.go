@@ -1,9 +1,11 @@
 package cli
 
 import (
-	"errors"
+	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/LeoPartt/pier/internal/adapter"
 )
 
 type downOpts struct {
@@ -17,11 +19,36 @@ func newDownCmd() *cobra.Command {
 		Use:   "down",
 		Short: "Stop workload, free the slot, keep data by default",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return errors.New("down: not implemented yet")
+			d, err := resolveDaily(opts.slug)
+			if err != nil {
+				return err
+			}
+			defer d.State.Close()
+
+			a, err := adapter.For(d.Manifest.Stack.Kind)
+			if err != nil {
+				return err
+			}
+			if err := a.Down(d.Ctx); err != nil {
+				return err
+			}
+
+			if err := d.State.Delete(d.Ctx.Project, d.Ctx.Slug); err != nil {
+				return fmt.Errorf("delete state row: %w", err)
+			}
+
+			if opts.purge {
+				// Snapshot purge is part of materialization (DESIGN §5.6),
+				// scheduled for the next iteration.
+				fmt.Fprintln(cmd.OutOrStdout(), "note: --purge is a no-op until snapshot materialization lands")
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "✓ %s stopped\n", adapter.Name(d.Ctx.Project, d.Ctx.Slug))
+			return nil
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&opts.slug, "slug", "", "override derived slug (use outside a worktree)")
+	f.StringVar(&opts.slug, "slug", "", "override derived slug")
 	f.BoolVar(&opts.purge, "purge", false, "also wipe materialized snapshots")
 	return cmd
 }

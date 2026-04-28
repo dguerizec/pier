@@ -24,5 +24,6 @@ func newURLCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&slug, "slug", "", "override derived slug")
+	registerSlugCompletion(cmd)
 	return cmd
 }

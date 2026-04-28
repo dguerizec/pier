@@ -34,5 +34,6 @@ func newLogsCmd() *cobra.Command {
 	f.BoolVarP(&opts.follow, "follow", "f", false, "follow log output")
 	f.IntVar(&opts.tail, "tail", 200, "number of lines to show from the end")
 	f.StringVar(&opts.slug, "slug", "", "override derived slug")
+	registerSlugCompletion(cmd)
 	return cmd
 }

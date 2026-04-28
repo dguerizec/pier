@@ -7,6 +7,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/LeoPartt/pier/internal/adapter"
+	"github.com/LeoPartt/pier/internal/infra"
+	"github.com/LeoPartt/pier/internal/state"
 )
 
 type psOpts struct {
@@ -44,21 +46,57 @@ Pass extra args through after ` + "`--`" + `, e.g. ` + "`pier ps -- -a --format 
 	f := cmd.Flags()
 	f.StringVar(&opts.slug, "slug", "", "override derived slug")
 	f.StringVarP(&opts.project, "project", "p", "", "full compose project name (skips manifest)")
+	_ = cmd.RegisterFlagCompletionFunc("slug", psSlugCompletion)
+	registerProjectCompletion(cmd)
 	return cmd
 }
 
 // resolveProjectName returns the docker compose project name (-p) for ps.
-// --project shortcuts manifest loading entirely; otherwise we go through
-// resolveDaily so the slug comes from branch / PIER_SLUG / --slug like the
-// other daily commands.
+//
+// Resolution order:
+//  1. --project wins outright.
+//  2. resolveDaily — works whenever a manifest is in scope; --slug is
+//     interpreted as a slug/branch/worktree relative to that manifest.
+//  3. No manifest fallback: --slug treated as a full <project>-<slug>
+//     string and looked up in the state DB. Lets `pier ps --slug X` work
+//     from anywhere as long as X is currently running.
 func resolveProjectName(opts psOpts) (string, error) {
 	if opts.project != "" {
 		return opts.project, nil
 	}
 	d, err := resolveDaily(opts.slug)
-	if err != nil {
-		return "", err
+	if err == nil {
+		defer d.State.Close()
+		return adapter.Name(d.Manifest.Project.Name, d.Slug), nil
 	}
-	defer d.State.Close()
-	return adapter.Name(d.Manifest.Project.Name, d.Slug), nil
+	if opts.slug != "" {
+		if name, ok := lookupProjectSlug(opts.slug); ok {
+			return name, nil
+		}
+	}
+	return "", err
+}
+
+// lookupProjectSlug returns input verbatim when it matches a `<project>-<slug>`
+// pair currently recorded in the state DB.
+func lookupProjectSlug(input string) (string, bool) {
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		return "", false
+	}
+	store, err := state.Open(paths.StateDB)
+	if err != nil {
+		return "", false
+	}
+	defer store.Close()
+	loads, err := store.List()
+	if err != nil {
+		return "", false
+	}
+	for _, w := range loads {
+		if w.Project+"-"+w.Slug == input {
+			return input, true
+		}
+	}
+	return "", false
 }

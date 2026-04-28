@@ -61,5 +61,6 @@ func newDownCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&opts.slug, "slug", "", "override derived slug")
 	f.BoolVar(&opts.purge, "purge", false, "also wipe materialized snapshots")
+	registerSlugCompletion(cmd)
 	return cmd
 }

@@ -74,5 +74,6 @@ func newUpCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&opts.slug, "slug", "", "override derived slug")
 	f.BoolVar(&opts.fresh, "fresh", false, "skip snapshot copy, mkdir empty dirs instead (post-MVP)")
+	registerSlugCompletion(cmd)
 	return cmd
 }

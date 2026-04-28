@@ -145,17 +145,24 @@ func newWorktreeRmCmd() *cobra.Command {
 }
 
 func runWorktreeRm(cmd *cobra.Command, target string, opts wtRmOpts) error {
-	abs, err := filepath.Abs(target)
+	info, err := worktree.Detect()
+	if err != nil {
+		return err
+	}
+
+	// Mirror the resolution logic of `pier worktree add`: a bare name like
+	// `feat-x` resolves to <primary>/<manifest.worktree.dir>/feat-x. Without
+	// this, `pier worktree rm feat-x` would try <cwd>/feat-x and fail.
+	dir := ""
+	if m, err := manifest.Load(info.PrimaryPath); err == nil {
+		dir = m.Worktree.Dir
+	}
+	abs, err := resolveWorktreePath(info.PrimaryPath, target, dir)
 	if err != nil {
 		return err
 	}
 	if _, err := os.Stat(abs); errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("worktree %s does not exist", abs)
-	}
-
-	info, err := worktree.Detect()
-	if err != nil {
-		return err
 	}
 
 	if !opts.skipDown {

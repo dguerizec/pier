@@ -62,6 +62,39 @@ func TestApply_SkipsMissingSource(t *testing.T) {
 	}
 }
 
+func TestApply_ReplacesEmptyDir(t *testing.T) {
+	primary, current := setup(t)
+	mustMkdir(t, filepath.Join(primary, "secrets"))
+	mustWrite(t, filepath.Join(primary, "secrets", "key"), "k")
+	// docker bind-mount aftermath: an empty dir already exists in current
+	mustMkdir(t, filepath.Join(current, "secrets"))
+
+	if err := Apply(primary, current, manifest.Materialize{Symlinks: []string{"secrets"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	mustBeSymlink(t, filepath.Join(current, "secrets"), filepath.Join(primary, "secrets"))
+}
+
+func TestApply_PreservesNonEmptyDir(t *testing.T) {
+	primary, current := setup(t)
+	mustMkdir(t, filepath.Join(primary, "secrets"))
+	mustWrite(t, filepath.Join(primary, "secrets", "key"), "from-primary")
+	mustMkdir(t, filepath.Join(current, "secrets"))
+	mustWrite(t, filepath.Join(current, "secrets", "local"), "worktree-only")
+
+	if err := Apply(primary, current, manifest.Materialize{Symlinks: []string{"secrets"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Should remain a real directory, not a symlink.
+	info, err := os.Lstat(filepath.Join(current, "secrets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error("non-empty dir was replaced by a symlink; user data could have been lost")
+	}
+}
+
 func TestApply_NoOpOnPrimary(t *testing.T) {
 	primary, _ := setup(t)
 	mustWrite(t, filepath.Join(primary, ".env"), "x")

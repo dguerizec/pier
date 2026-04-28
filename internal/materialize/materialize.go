@@ -35,17 +35,35 @@ func Apply(primary, current string, mat manifest.Materialize, out io.Writer) err
 	return nil
 }
 
-// ensureSymlink reports whether it actually created the link (so callers can
-// log only on first materialization, not every up).
+// ensureSymlink reports whether it actually created the link (so callers
+// can log only on first materialization, not every up).
+//
+// Existing entries are handled by kind:
+//   - already a symlink, regular file, or non-empty dir → leave alone
+//     (the user or another tool owns it)
+//   - empty dir → rmdir + symlink. Empty dirs are commonly side-effects of
+//     a previous `docker compose up` that bind-mounted `./secrets:/...`
+//     and the daemon auto-created the source path.
 func ensureSymlink(target, link string) (bool, error) {
-	if _, err := os.Lstat(link); err == nil {
-		return false, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
+	info, err := os.Lstat(link)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		// fall through to create
+	case err != nil:
 		return false, err
+	case info.Mode()&os.ModeSymlink != 0:
+		return false, nil
+	case info.IsDir():
+		// os.Remove on a directory only succeeds when empty — that's the
+		// signal we use here, no extra readdir needed.
+		if rmErr := os.Remove(link); rmErr != nil {
+			return false, nil
+		}
+	default:
+		return false, nil
 	}
+
 	if _, err := os.Stat(target); errors.Is(err, os.ErrNotExist) {
-		// Source missing on primary — skip silently rather than create a
-		// dangling symlink the workload will trip on.
 		return false, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {

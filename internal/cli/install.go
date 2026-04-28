@@ -93,6 +93,13 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 	}
 	fmt.Fprintln(out)
 
+	// In wizard mode the cobra flag default for --tld ("test") shouldn't
+	// drown out detection; treat unchanged --tld as "no opinion" so we can
+	// suggest pier.<base_domain> when headscale is around.
+	if !cmd.Flags().Changed("tld") {
+		base.tld = ""
+	}
+
 	plan := composeInstallPlan(env, base)
 	fmt.Fprintln(out, "Plan:")
 	fmt.Fprintln(out, "  "+planSummary(plan))
@@ -145,7 +152,14 @@ func composeInstallPlan(env detect.Environment, base installOpts) infra.InstallO
 		TraefikNetwork:  base.traefikNetwork,
 	}
 	if plan.TLD == "" {
-		plan.TLD = infra.DefaultTLD
+		// Reuse the user's existing tailnet base_domain when possible, so
+		// pier URLs live under the same DNS namespace headscale already
+		// distributes (e.g. `pier.nebula` instead of inventing `.test`).
+		if env.Headscale.BaseDomain != "" {
+			plan.TLD = "pier." + env.Headscale.BaseDomain
+		} else {
+			plan.TLD = infra.DefaultTLD
+		}
 	}
 	switch {
 	case env.Tailscale.Active:

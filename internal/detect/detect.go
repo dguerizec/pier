@@ -7,8 +7,11 @@ package detect
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Environment captures everything the install wizard cares about.
@@ -37,9 +40,13 @@ type TraefikInfo struct {
 // HeadscaleInfo locates a running headscale instance and where its config
 // lives, so install can offer to patch it.
 type HeadscaleInfo struct {
-	Found        bool
-	Container    string // container name when running in docker
-	ConfigPath   string // path on the host (resolved through bind mounts when applicable)
+	Found      bool
+	Container  string // container name when running in docker
+	ConfigPath string // path on the host (resolved through bind mounts when applicable)
+	// BaseDomain is the value of dns.base_domain (0.26+) or
+	// dns_config.base_domain (legacy) in the headscale config — the
+	// MagicDNS suffix tailnet hostnames already resolve under.
+	BaseDomain string
 }
 
 // Run probes everything. Best-effort: every sub-detector is independent and
@@ -190,7 +197,35 @@ func detectHeadscale() HeadscaleInfo {
 			break
 		}
 	}
-	return HeadscaleInfo{Found: true, Container: name, ConfigPath: configPath}
+	info := HeadscaleInfo{Found: true, Container: name, ConfigPath: configPath}
+	if configPath != "" {
+		info.BaseDomain = readHeadscaleBaseDomain(configPath)
+	}
+	return info
+}
+
+// readHeadscaleBaseDomain extracts dns.base_domain (or dns_config.base_domain
+// on older headscale releases) from cfgPath. Returns "" on any error.
+func readHeadscaleBaseDomain(cfgPath string) string {
+	body, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return ""
+	}
+	var stub struct {
+		DNS struct {
+			BaseDomain string `yaml:"base_domain"`
+		} `yaml:"dns"`
+		DNSConfig struct {
+			BaseDomain string `yaml:"base_domain"`
+		} `yaml:"dns_config"`
+	}
+	if err := yaml.Unmarshal(body, &stub); err != nil {
+		return ""
+	}
+	if stub.DNS.BaseDomain != "" {
+		return stub.DNS.BaseDomain
+	}
+	return stub.DNSConfig.BaseDomain
 }
 
 // Summary returns a human-readable one-line summary per detected component.
@@ -204,8 +239,8 @@ func (e Environment) Summary() []string {
 	}
 	if e.Headscale.Found {
 		extra := ""
-		if e.Headscale.ConfigPath != "" {
-			extra = " config=" + e.Headscale.ConfigPath
+		if e.Headscale.BaseDomain != "" {
+			extra = " base_domain=" + e.Headscale.BaseDomain
 		}
 		lines = append(lines, fmt.Sprintf("✓ headscale: container=%s%s", e.Headscale.Container, extra))
 	}

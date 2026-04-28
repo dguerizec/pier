@@ -13,10 +13,15 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/LeoPartt/pier/internal/infra"
 	"github.com/LeoPartt/pier/internal/manifest"
 	"github.com/LeoPartt/pier/internal/worktree"
 )
+
+// yamlUnmarshal is a thin alias to keep the imports tidy at use sites.
+func yamlUnmarshal(in []byte, out any) error { return yaml.Unmarshal(in, out) }
 
 // installedTLD returns the TLD pier was installed with so init's default
 // base_domain is coherent with the host (e.g. `<name>.nebula` when pier
@@ -84,6 +89,11 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 	}
 	fmt.Fprintf(stdout, "Detected: %s\n", filepath.Base(composeFile))
 
+	autoService, autoPort := guessComposeServiceAndPort(composeFile)
+	if autoService != "" {
+		fmt.Fprintf(stdout, "  service: %s%s\n", autoService, portSuffix(autoPort))
+	}
+
 	reader := bufio.NewReader(stdin)
 	defaultName := slugify(filepath.Base(toplevel))
 
@@ -101,19 +111,21 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 		domain = ask(reader, stdout, "Base domain", domain, opts.yes)
 	}
 
-	service := opts.service
-	if service == "" {
-		service = ask(reader, stdout, "Compose service", "", opts.yes)
+	service := pick(opts.service, autoService)
+	if service == "" || !opts.yes {
+		service = ask(reader, stdout, "Service to expose (compose service name)", service, opts.yes)
 	}
 	if service == "" {
-		return errors.New("compose service is required (use --service or answer the prompt)")
+		return errors.New("service to expose is required (use --service or answer the prompt)")
 	}
 
 	portStr := ""
 	if opts.port != 0 {
 		portStr = strconv.Itoa(opts.port)
+	} else if autoPort != 0 {
+		portStr = strconv.Itoa(autoPort)
 	}
-	portStr = ask(reader, stdout, "Service port", portStr, opts.yes)
+	portStr = ask(reader, stdout, "Container port", portStr, opts.yes)
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port <= 0 {
 		return fmt.Errorf("invalid port %q", portStr)
@@ -156,6 +168,84 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 
 	fmt.Fprintf(stdout, "✓ %s written\n", manifestPath)
 	return nil
+}
+
+// guessComposeServiceAndPort parses path and returns the only service that
+// declares a published port, plus the container-side port. Returns empty
+// strings when there's no unambiguous candidate (zero, two+, no ports).
+//
+// We don't pull compose-go for this — a tiny stub of the relevant fields is
+// enough and keeps the dep graph small.
+func guessComposeServiceAndPort(path string) (service string, port int) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", 0
+	}
+	var doc struct {
+		Services map[string]struct {
+			Ports []any `yaml:"ports"`
+		} `yaml:"services"`
+	}
+	if err := yamlUnmarshal(body, &doc); err != nil {
+		return "", 0
+	}
+	candidates := make([]string, 0, len(doc.Services))
+	ports := make(map[string]int, len(doc.Services))
+	for name, svc := range doc.Services {
+		for _, p := range svc.Ports {
+			if cp := parseContainerPort(p); cp > 0 {
+				candidates = append(candidates, name)
+				ports[name] = cp
+				break
+			}
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0], ports[candidates[0]]
+	}
+	return "", 0
+}
+
+// parseContainerPort extracts the container-side port from a compose ports
+// entry. Handles short syntax ("3000", "8080:3000", "${PORT:-8080}:3000")
+// and the long form ({"target": 3000, "published": 8080}).
+func parseContainerPort(entry any) int {
+	switch v := entry.(type) {
+	case string:
+		// Container port is the right-most colon-separated segment, after
+		// stripping any /protocol suffix.
+		s := v
+		if idx := strings.LastIndex(s, ":"); idx >= 0 {
+			s = s[idx+1:]
+		}
+		if idx := strings.Index(s, "/"); idx >= 0 {
+			s = s[:idx]
+		}
+		if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+			return n
+		}
+	case int:
+		return v
+	case map[string]any:
+		if t, ok := v["target"]; ok {
+			switch tv := t.(type) {
+			case int:
+				return tv
+			case string:
+				if n, err := strconv.Atoi(tv); err == nil {
+					return n
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func portSuffix(p int) string {
+	if p == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (container port %d)", p)
 }
 
 // detectComposeFile resolves the compose file to use. Order matches DESIGN §3.2.

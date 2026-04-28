@@ -118,6 +118,17 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 
 	if env.Headscale.Found && env.Tailscale.Active && env.Headscale.ConfigPath != "" {
 		fmt.Fprintln(out)
+		// Split-DNS push only works for TLDs OUTSIDE the headscale
+		// base_domain — sub-domains of base_domain stay under MagicDNS's
+		// authoritative scope, so the rule never reaches peers as a
+		// routing directive. We refuse to auto-patch in that case rather
+		// than write yaml that silently does nothing.
+		if env.Headscale.BaseDomain != "" && tldIsUnder(plan.TLD, env.Headscale.BaseDomain) {
+			fmt.Fprintf(out, "! pier TLD %q is a sub-domain of headscale base_domain %q — MagicDNS\n", plan.TLD, env.Headscale.BaseDomain)
+			fmt.Fprintln(out, "  takes priority over split-DNS for those names. Pick a TLD outside the")
+			fmt.Fprintln(out, "  base_domain (e.g. `--tld test`) or wait for the v0.3 extra_records adapter.")
+			return nil
+		}
 		if base.yes || confirm(cmd.InOrStdin(), out, fmt.Sprintf("Patch %s with .%s split-DNS?", env.Headscale.ConfigPath, plan.TLD), true) {
 			changed, err := headscale.Patch(env.Headscale.ConfigPath, plan.TLD, plan.AnswerIP)
 			if err != nil {
@@ -133,10 +144,19 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 				fmt.Fprintf(out, "! reload headscale failed (%v) — restart the container manually: docker restart %s\n", err, env.Headscale.Container)
 			} else {
 				fmt.Fprintln(out, "✓ headscale restarted (DNS config reload)")
+				fmt.Fprintln(out, "  note: peers test the rule with `resolvectl query <name>.<tld>`; `dig` doesn't")
+				fmt.Fprintln(out, "        always honour systemd-resolved per-link routing and will look broken.")
 			}
 		}
 	}
 	return nil
+}
+
+// tldIsUnder reports whether tld is the same as base or a sub-domain of it.
+// Used to refuse auto-patching headscale for TLDs that fall under MagicDNS's
+// authoritative scope.
+func tldIsUnder(tld, base string) bool {
+	return tld == base || strings.HasSuffix(tld, "."+base)
 }
 
 // composeInstallPlan turns detected environment + user flags into the
@@ -152,14 +172,13 @@ func composeInstallPlan(env detect.Environment, base installOpts) infra.InstallO
 		TraefikNetwork:  base.traefikNetwork,
 	}
 	if plan.TLD == "" {
-		// Reuse the user's existing tailnet base_domain when possible, so
-		// pier URLs live under the same DNS namespace headscale already
-		// distributes (e.g. `pier.nebula` instead of inventing `.test`).
-		if env.Headscale.BaseDomain != "" {
-			plan.TLD = "pier." + env.Headscale.BaseDomain
-		} else {
-			plan.TLD = infra.DefaultTLD
-		}
+		// .test stays the default. Reusing the headscale base_domain (e.g.
+		// pier.nebula) sounds clever but tailscale's MagicDNS owns the
+		// whole `nebula` zone — split-DNS rules for sub-domains don't
+		// override MagicDNS's NXDOMAIN, so peers can never reach pier
+		// URLs via the tailnet without going through extra_records JSON.
+		// The extra_records adapter (Phase 3) handles that case properly.
+		plan.TLD = infra.DefaultTLD
 	}
 	switch {
 	case env.Tailscale.Active:

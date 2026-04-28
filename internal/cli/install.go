@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/LeoPartt/pier/internal/detect"
+	"github.com/LeoPartt/pier/internal/headscale"
 	"github.com/LeoPartt/pier/internal/infra"
 )
 
@@ -111,7 +112,21 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 	if env.Headscale.Found && env.Tailscale.Active && env.Headscale.ConfigPath != "" {
 		fmt.Fprintln(out)
 		if base.yes || confirm(cmd.InOrStdin(), out, fmt.Sprintf("Patch %s with .%s split-DNS?", env.Headscale.ConfigPath, plan.TLD), true) {
-			fmt.Fprintf(out, "(headscale auto-patch lands in the next commit; for now run `pier client tailscale` and copy the snippet manually)\n")
+			changed, err := headscale.Patch(env.Headscale.ConfigPath, plan.TLD, plan.AnswerIP)
+			if err != nil {
+				fmt.Fprintf(out, "! headscale patch failed (%v) — fall back to `pier client tailscale` for the manual snippet\n", err)
+				return nil
+			}
+			if !changed {
+				fmt.Fprintln(out, "✓ headscale already configured for this TLD (no-op)")
+				return nil
+			}
+			fmt.Fprintf(out, "✓ patched %s (backup at %s.bak)\n", env.Headscale.ConfigPath, env.Headscale.ConfigPath)
+			if err := headscale.Reload(env.Headscale.Container); err != nil {
+				fmt.Fprintf(out, "! reload headscale failed (%v) — restart the container manually: docker restart %s\n", err, env.Headscale.Container)
+			} else {
+				fmt.Fprintln(out, "✓ headscale reloaded (SIGHUP)")
+			}
 		}
 	}
 	return nil

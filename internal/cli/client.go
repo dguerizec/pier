@@ -166,9 +166,17 @@ Tailscale (SaaS) — admin panel:
     domain     = %s
     nameserver = %s
 
-Headscale (self-hosted) — config.yaml:
+Headscale 0.26+ (self-hosted) — config.yaml:
+  dns:
+    nameservers:
+      split:
+        %s:
+          - %s
+    search_domains:
+      - %s
+
+Headscale ≤ 0.25 (legacy schema):
   dns_config:
-    extra_records: []
     restricted_nameservers:
       %s:
         - %s
@@ -177,7 +185,9 @@ Headscale (self-hosted) — config.yaml:
 
 Per-machine override (if you control resolv.conf yourself):
   pier client add --tld %s --resolver %s --apply
-`, cfg.TLD, cfg.TLD, resolverIP, cfg.TLD, resolverIP, cfg.TLD, cfg.TLD, resolverIP)
+
+Or just rerun "pier install" — the wizard will offer to auto-patch headscale config.yaml on hosts where headscale runs locally.
+`, cfg.TLD, cfg.TLD, resolverIP, cfg.TLD, resolverIP, cfg.TLD, cfg.TLD, resolverIP, cfg.TLD, cfg.TLD, resolverIP)
 	return nil
 }
 

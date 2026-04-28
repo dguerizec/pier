@@ -27,6 +27,7 @@ func newWorktreeCmd() *cobra.Command {
 
 type wtAddOpts struct {
 	branch string
+	from   string
 	up     bool
 }
 
@@ -42,6 +43,7 @@ func newWorktreeAddCmd() *cobra.Command {
 	}
 	f := cmd.Flags()
 	f.StringVarP(&opts.branch, "branch", "b", "", "create a new branch with this name (mirrors `git worktree add -b`)")
+	f.StringVar(&opts.from, "from", "", "fork the new branch from this ref (default: manifest [worktree].base_ref, then main/master)")
 	f.BoolVar(&opts.up, "up", false, "run `pier up` in the new worktree after materialization")
 	return cmd
 }
@@ -68,6 +70,10 @@ func runWorktreeAdd(cmd *cobra.Command, target string, opts wtAddOpts) error {
 		gitArgs = append(gitArgs, "-b", opts.branch, abs)
 	} else {
 		gitArgs = append(gitArgs, abs)
+	}
+	if ref := pickBaseRef(opts.from, m.Worktree.BaseRef, primary); ref != "" {
+		gitArgs = append(gitArgs, ref)
+		fmt.Fprintf(cmd.OutOrStdout(), "  forking from %s\n", ref)
 	}
 	git := exec.Command("git", gitArgs...)
 	git.Dir = primary
@@ -233,6 +239,28 @@ func runWorktreeClean(cmd *cobra.Command, opts wtRmOpts) error {
 		}
 	}
 	return nil
+}
+
+// pickBaseRef resolves the ref to fork the new worktree's branch from. The
+// flag wins, then the manifest setting, then a probe for the conventional
+// default branches in the primary repo. Returns "" to let git pick HEAD —
+// the current behaviour was that, kept as the last-resort fallback so this
+// change can't break a repo that uses neither main nor master.
+func pickBaseRef(flag, manifest, primary string) string {
+	if flag != "" {
+		return flag
+	}
+	if manifest != "" {
+		return manifest
+	}
+	for _, candidate := range []string{"main", "master"} {
+		c := exec.Command("git", "rev-parse", "--verify", "--quiet", candidate)
+		c.Dir = primary
+		if c.Run() == nil {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // resolveWorktreePath turns a `pier worktree add <name>` argument into an

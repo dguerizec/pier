@@ -73,11 +73,14 @@ type Watch struct {
 	OnChange string   `toml:"on_change,omitempty"` // rebuild | restart
 }
 
-// Worktree configures where `pier worktree add <name>` places new trees
-// when <name> has no path separator. Relative paths resolve against the
-// primary worktree.
+// Worktree configures the `pier worktree add` UX.
 type Worktree struct {
+	// Dir places new trees here when <name> has no path separator;
+	// relative paths resolve against the primary worktree.
 	Dir string `toml:"dir,omitempty"` // e.g. ".claude/worktrees"
+	// BaseRef is the git ref new branches fork from. Defaults to "main"
+	// (then "master") when unset; --from on the command line wins.
+	BaseRef string `toml:"base_ref,omitempty"` // e.g. "main"
 }
 
 // Load reads <root>/.pier.toml, then layers <root>/.pier.local.toml on top

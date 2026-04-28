@@ -43,11 +43,17 @@ type Project struct {
 type Stack struct {
 	Kind       string `toml:"kind"`
 	Port       int    `toml:"port"`
-	File       string `toml:"file,omitempty"`        // compose
-	Service    string `toml:"service,omitempty"`     // compose
-	Cmd        string `toml:"cmd,omitempty"`         // process
-	PortEnv    string `toml:"port_env,omitempty"`    // process
-	Dockerfile string `toml:"dockerfile,omitempty"`  // dockerfile
+	File       string `toml:"file,omitempty"`       // compose
+	Service    string `toml:"service,omitempty"`    // compose
+	Cmd        string `toml:"cmd,omitempty"`        // process
+	PortEnv    string `toml:"port_env,omitempty"`   // process
+	Dockerfile string `toml:"dockerfile,omitempty"` // dockerfile
+
+	// MatchHostUID, when true, makes pier inject `user: "<uid>:<gid>"`
+	// into the compose override so the container runs as the host user.
+	// Resolves the EACCES class on bind-mounted host paths when the image
+	// uses a non-matching default user (typical for distroless/nonroot).
+	MatchHostUID bool `toml:"match_host_uid,omitempty"`
 }
 
 type Materialize struct {

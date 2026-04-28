@@ -1,6 +1,8 @@
 package adapter
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -42,6 +44,42 @@ func TestRenderOverride_Compose(t *testing.T) {
 		if !strings.Contains(s, w) {
 			t.Errorf("override missing %q\n--- rendered ---\n%s", w, s)
 		}
+	}
+}
+
+func TestRenderOverride_MatchHostUID(t *testing.T) {
+	c := Ctx{
+		Project:        "myapp",
+		Slug:           "x",
+		BaseDomain:     "myapp.test",
+		TraefikNetwork: "pier",
+		Stack: manifest.Stack{
+			Kind:         manifest.KindCompose,
+			File:         "docker-compose.yml",
+			Service:      "web",
+			Port:         3000,
+			MatchHostUID: true,
+		},
+	}
+	got, err := renderOverride(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+
+	expected := fmt.Sprintf(`user: "%d:%d"`, os.Getuid(), os.Getgid())
+	if !strings.Contains(s, expected) {
+		t.Errorf("expected %q in override, got:\n%s", expected, s)
+	}
+
+	// Without the flag, no user line should appear.
+	c.Stack.MatchHostUID = false
+	got, err = renderOverride(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "user:") {
+		t.Errorf("user: line should be absent when MatchHostUID is false, got:\n%s", got)
 	}
 }
 

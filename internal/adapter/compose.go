@@ -243,6 +243,9 @@ func renderOverride(c Ctx) ([]byte, error) {
 services:
   {{.Service}}:
     container_name: {{.Name}}
+{{- if .User}}
+    user: "{{.User}}"
+{{- end}}
     labels:
       - traefik.enable=true
       - traefik.http.routers.{{.Name}}.rule=Host(` + "`{{.Slug}}.{{.BaseDomain}}`" + `)
@@ -256,9 +259,13 @@ networks:
   {{.Network}}:
     external: true
 `))
+	user := ""
+	if c.Stack.MatchHostUID {
+		user = fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	}
 	data := struct {
-		Service, Name, Slug, BaseDomain, Network string
-		Port                                     int
+		Service, Name, Slug, BaseDomain, Network, User string
+		Port                                           int
 	}{
 		Service:    c.Stack.Service,
 		Name:       Name(c.Project, c.Slug),
@@ -266,6 +273,7 @@ networks:
 		BaseDomain: c.BaseDomain,
 		Network:    c.TraefikNetwork,
 		Port:       c.Stack.Port,
+		User:       user,
 	}
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, data); err != nil {

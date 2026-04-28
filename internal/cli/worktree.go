@@ -21,7 +21,7 @@ func newWorktreeCmd() *cobra.Command {
 		Use:   "worktree",
 		Short: "Manage git worktrees with pier-aware materialization",
 	}
-	cmd.AddCommand(newWorktreeAddCmd(), newWorktreeRmCmd())
+	cmd.AddCommand(newWorktreeAddCmd(), newWorktreeRmCmd(), newWorktreeCleanCmd())
 	return cmd
 }
 
@@ -175,6 +175,63 @@ func runWorktreeRm(cmd *cobra.Command, target string, opts wtRmOpts) error {
 		return fmt.Errorf("git worktree remove: %w", err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "✓ removed worktree %s\n", abs)
+	return nil
+}
+
+func newWorktreeCleanCmd() *cobra.Command {
+	var opts wtRmOpts
+	cmd := &cobra.Command{
+		Use:   "clean",
+		Short: "Stop and remove every secondary worktree of the current project",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runWorktreeClean(cmd, opts)
+		},
+	}
+	f := cmd.Flags()
+	f.BoolVar(&opts.skipDown, "skip-down", false, "do not run pier down on each worktree first")
+	f.BoolVar(&opts.force, "force", false, "pass --force to git worktree remove")
+	f.BoolVar(&opts.purge, "purge", false, "run pier down --purge to wipe snapshot copies")
+	return cmd
+}
+
+func runWorktreeClean(cmd *cobra.Command, opts wtRmOpts) error {
+	info, err := worktree.Detect()
+	if err != nil {
+		return err
+	}
+
+	listCmd := exec.Command("git", "worktree", "list", "--porcelain")
+	listCmd.Dir = info.PrimaryPath
+	listOut, err := listCmd.Output()
+	if err != nil {
+		return fmt.Errorf("git worktree list: %w", err)
+	}
+
+	var paths []string
+	for _, line := range strings.Split(string(listOut), "\n") {
+		if !strings.HasPrefix(line, "worktree ") {
+			continue
+		}
+		p := strings.TrimPrefix(line, "worktree ")
+		if p == info.PrimaryPath {
+			continue
+		}
+		paths = append(paths, p)
+	}
+
+	if len(paths) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "no secondary worktrees to clean")
+		return nil
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Cleaning %d worktree(s):\n", len(paths))
+	for _, p := range paths {
+		fmt.Fprintf(out, "→ %s\n", p)
+		if err := runWorktreeRm(cmd, p, opts); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "  ! %v\n", err)
+		}
+	}
 	return nil
 }
 

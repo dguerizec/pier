@@ -31,6 +31,7 @@ func TestRenderOverride_Compose(t *testing.T) {
 		"traefik.enable=true",
 		"traefik.http.routers.myapp-feat-x.rule=Host(`feat-x.myapp.test`)",
 		"traefik.http.routers.myapp-feat-x.entrypoints=web",
+		"traefik.http.routers.myapp-feat-x.service=myapp-feat-x",
 		"traefik.docker.network=pier",
 		"traefik.http.services.myapp-feat-x.loadbalancer.server.port=3000",
 		"networks: [default, pier]",

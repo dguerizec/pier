@@ -247,6 +247,7 @@ services:
       - traefik.enable=true
       - traefik.http.routers.{{.Name}}.rule=Host(` + "`{{.Slug}}.{{.BaseDomain}}`" + `)
       - traefik.http.routers.{{.Name}}.entrypoints=web
+      - traefik.http.routers.{{.Name}}.service={{.Name}}
       - traefik.docker.network={{.Network}}
       - traefik.http.services.{{.Name}}.loadbalancer.server.port={{.Port}}
     networks: [default, {{.Network}}]

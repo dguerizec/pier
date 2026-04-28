@@ -60,12 +60,11 @@ func Patch(cfgPath, tld, ip string) (changed bool, err error) {
 	return true, nil
 }
 
-// Reload sends SIGHUP to the headscale container so it re-reads its config.
-// Falls back to `docker restart` if HUP isn't honoured.
+// Reload restarts the headscale container so it picks up the new DNS
+// config. Headscale's SIGHUP handler only reloads ACL policy as of 0.28,
+// not dns.* keys, so a full restart is required for split-DNS changes to
+// reach peers.
 func Reload(container string) error {
-	if err := exec.Command("docker", "kill", "--signal=HUP", container).Run(); err == nil {
-		return nil
-	}
 	return exec.Command("docker", "restart", container).Run()
 }
 

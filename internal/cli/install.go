@@ -132,7 +132,7 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 			if err := headscale.Reload(env.Headscale.Container); err != nil {
 				fmt.Fprintf(out, "! reload headscale failed (%v) — restart the container manually: docker restart %s\n", err, env.Headscale.Container)
 			} else {
-				fmt.Fprintln(out, "✓ headscale reloaded (SIGHUP)")
+				fmt.Fprintln(out, "✓ headscale restarted (DNS config reload)")
 			}
 		}
 	}

@@ -7,11 +7,13 @@ import (
 )
 
 type installOpts struct {
-	mode      string
-	tld       string
-	manualDNS bool
-	noSudo    bool
-	bindIP    string
+	mode             string
+	tld              string
+	manualDNS        bool
+	noSudo           bool
+	bindIP           string
+	externalTraefik  string
+	traefikNetwork   string
 }
 
 func newInstallCmd() *cobra.Command {
@@ -28,11 +30,13 @@ func newInstallCmd() *cobra.Command {
 				mode = infra.ModeLocal
 			}
 			return infra.Install(infra.InstallOptions{
-				Mode:      mode,
-				TLD:       opts.tld,
-				BindIP:    opts.bindIP,
-				ManualDNS: opts.manualDNS,
-				Out:       cmd.OutOrStdout(),
+				Mode:            mode,
+				TLD:             opts.tld,
+				BindIP:          opts.bindIP,
+				ManualDNS:       opts.manualDNS,
+				Out:             cmd.OutOrStdout(),
+				ExternalTraefik: opts.externalTraefik,
+				TraefikNetwork:  opts.traefikNetwork,
 			})
 		},
 	}
@@ -42,6 +46,8 @@ func newInstallCmd() *cobra.Command {
 	f.BoolVar(&opts.manualDNS, "manual-dns", false, "skip system DNS modification, print instructions instead")
 	f.BoolVar(&opts.noSudo, "no-sudo", false, "alias of --manual-dns")
 	f.StringVar(&opts.bindIP, "bind-ip", "", "traefik/dnsmasq bind IP (server mode, default 0.0.0.0)")
+	f.StringVar(&opts.externalTraefik, "use-existing-traefik", "", "BYO mode: name of an existing traefik container to register workloads on")
+	f.StringVar(&opts.traefikNetwork, "traefik-network", "", "BYO mode: docker network for label discovery (auto-detected from the existing traefik when omitted)")
 	return cmd
 }
 

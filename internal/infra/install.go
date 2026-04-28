@@ -32,6 +32,14 @@ type InstallOptions struct {
 	BindIP    string // optional override
 	ManualDNS bool   // skip /etc/systemd/resolved.conf.d/pier.conf, print instructions instead
 	Out       io.Writer
+
+	// ExternalTraefik names a user-managed traefik container to register
+	// workloads on instead of spawning pier-traefik. Triggers BYO mode.
+	ExternalTraefik string
+	// TraefikNetwork is the docker network the external traefik watches.
+	// When ExternalTraefik is set and this is empty, pier auto-picks the
+	// first non-default network attached to the external traefik.
+	TraefikNetwork string
 }
 
 // Install brings up the traefik + dnsmasq pair and (optionally) configures
@@ -64,13 +72,27 @@ func Install(opts InstallOptions) error {
 	}
 	fmt.Fprintf(out, "✓ config dir: %s\n", paths.Root)
 
-	traefikYAML, err := renderTraefikStatic()
-	if err != nil {
-		return err
+	d := newDocker()
+	traefikNet := NetworkName
+	byo := opts.ExternalTraefik != ""
+
+	if byo {
+		net, err := resolveBYOTraefikNetwork(d, opts.ExternalTraefik, opts.TraefikNetwork)
+		if err != nil {
+			return err
+		}
+		traefikNet = net
+		fmt.Fprintf(out, "✓ BYO-traefik: registering workloads on container %s via network %s\n", opts.ExternalTraefik, traefikNet)
+	} else {
+		traefikYAML, err := renderTraefikStatic()
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(paths.TraefikStatic, traefikYAML, 0o644); err != nil {
+			return fmt.Errorf("write traefik.yml: %w", err)
+		}
 	}
-	if err := os.WriteFile(paths.TraefikStatic, traefikYAML, 0o644); err != nil {
-		return fmt.Errorf("write traefik.yml: %w", err)
-	}
+
 	dnsmasqYAML, err := renderDnsmasqConfig(opts.TLD, opts.BindIP)
 	if err != nil {
 		return err
@@ -79,33 +101,43 @@ func Install(opts InstallOptions) error {
 		return fmt.Errorf("write dnsmasq.conf: %w", err)
 	}
 
-	d := newDocker()
+	if !byo {
+		if err := d.ensureNetwork(NetworkName); err != nil {
+			return fmt.Errorf("docker network: %w", err)
+		}
+		fmt.Fprintf(out, "✓ docker network: %s\n", NetworkName)
 
-	if err := d.ensureNetwork(NetworkName); err != nil {
-		return fmt.Errorf("docker network: %w", err)
-	}
-	fmt.Fprintf(out, "✓ docker network: %s\n", NetworkName)
-
-	fmt.Fprintf(out, "  pulling %s...\n", TraefikImage)
-	if err := d.pull(TraefikImage); err != nil {
-		return err
+		fmt.Fprintf(out, "  pulling %s...\n", TraefikImage)
+		if err := d.pull(TraefikImage); err != nil {
+			return err
+		}
 	}
 	fmt.Fprintf(out, "  pulling %s...\n", DnsmasqImage)
 	if err := d.pull(DnsmasqImage); err != nil {
 		return err
 	}
 
-	if err := d.removeContainer(TraefikContainer); err != nil {
-		return fmt.Errorf("clean previous traefik: %w", err)
+	if !byo {
+		if err := d.removeContainer(TraefikContainer); err != nil {
+			return fmt.Errorf("clean previous traefik: %w", err)
+		}
+	} else {
+		// Switching from pier-managed to BYO: stop the old pier-traefik so
+		// it doesn't shadow the user's. Same for the pier network if
+		// nothing else is using it.
+		_ = d.removeContainer(TraefikContainer)
+		_ = d.removeNetwork(NetworkName)
 	}
 	if err := d.removeContainer(DnsmasqContainer); err != nil {
 		return fmt.Errorf("clean previous dnsmasq: %w", err)
 	}
 
-	if _, err := d.run(traefikRunArgs(paths, opts.BindIP)...); err != nil {
-		return fmt.Errorf("start traefik: %w", err)
+	if !byo {
+		if _, err := d.run(traefikRunArgs(paths, opts.BindIP)...); err != nil {
+			return fmt.Errorf("start traefik: %w", err)
+		}
+		fmt.Fprintf(out, "✓ traefik up on %s:80\n", opts.BindIP)
 	}
-	fmt.Fprintf(out, "✓ traefik up on %s:80\n", opts.BindIP)
 
 	if _, err := d.run(dnsmasqRunArgs(paths, opts.BindIP)...); err != nil {
 		return fmt.Errorf("start dnsmasq: %w", err)
@@ -126,10 +158,11 @@ func Install(opts InstallOptions) error {
 	}
 
 	cfg := &Config{
-		Mode:           opts.Mode,
-		TLD:            opts.TLD,
-		BindIP:         opts.BindIP,
-		TraefikNetwork: NetworkName,
+		Mode:            opts.Mode,
+		TLD:             opts.TLD,
+		BindIP:          opts.BindIP,
+		TraefikNetwork:  traefikNet,
+		ExternalTraefik: opts.ExternalTraefik,
 	}
 	if err := cfg.Save(paths); err != nil {
 		return fmt.Errorf("save config: %w", err)
@@ -146,7 +179,8 @@ func Install(opts InstallOptions) error {
 }
 
 // Uninstall reverses Install. Best-effort: keeps going on individual errors
-// so the user is left with a clean state even if one step fails.
+// so the user is left with a clean state even if one step fails. In BYO
+// mode, leaves the user's traefik + network alone.
 func Uninstall(out io.Writer, manualDNS bool) error {
 	if out == nil {
 		out = os.Stdout
@@ -155,22 +189,30 @@ func Uninstall(out io.Writer, manualDNS bool) error {
 	if err != nil {
 		return err
 	}
+	cfg, _ := LoadConfig(paths) // tolerate missing config: act conservatively
+
 	d := newDocker()
 
-	if err := d.removeContainer(TraefikContainer); err != nil {
-		fmt.Fprintf(out, "! remove %s: %v\n", TraefikContainer, err)
-	} else {
-		fmt.Fprintf(out, "✓ removed container %s\n", TraefikContainer)
+	// pier-traefik / pier network only ours to remove when we managed them.
+	pierManaged := cfg == nil || cfg.ExternalTraefik == ""
+	if pierManaged {
+		if err := d.removeContainer(TraefikContainer); err != nil {
+			fmt.Fprintf(out, "! remove %s: %v\n", TraefikContainer, err)
+		} else {
+			fmt.Fprintf(out, "✓ removed container %s\n", TraefikContainer)
+		}
 	}
 	if err := d.removeContainer(DnsmasqContainer); err != nil {
 		fmt.Fprintf(out, "! remove %s: %v\n", DnsmasqContainer, err)
 	} else {
 		fmt.Fprintf(out, "✓ removed container %s\n", DnsmasqContainer)
 	}
-	if err := d.removeNetwork(NetworkName); err != nil {
-		fmt.Fprintf(out, "! remove network %s: %v\n", NetworkName, err)
-	} else {
-		fmt.Fprintf(out, "✓ removed network %s\n", NetworkName)
+	if pierManaged {
+		if err := d.removeNetwork(NetworkName); err != nil {
+			fmt.Fprintf(out, "! remove network %s: %v\n", NetworkName, err)
+		} else {
+			fmt.Fprintf(out, "✓ removed network %s\n", NetworkName)
+		}
 	}
 
 	if !manualDNS {
@@ -187,6 +229,59 @@ func Uninstall(out io.Writer, manualDNS bool) error {
 		fmt.Fprintf(out, "✓ removed %s\n", paths.Root)
 	}
 	return nil
+}
+
+// resolveBYOTraefikNetwork validates the user-supplied container exists and
+// is running, then returns the network name to register workloads on. If
+// the user didn't pass --traefik-network, auto-pick the first non-default
+// network the container is attached to.
+func resolveBYOTraefikNetwork(d *docker, container, requestedNetwork string) (string, error) {
+	out, err := d.run("inspect", "--format", "{{.State.Running}}", container)
+	if err != nil {
+		return "", fmt.Errorf("BYO-traefik: container %q not found: %w", container, err)
+	}
+	if strings.TrimSpace(out) != "true" {
+		return "", fmt.Errorf("BYO-traefik: container %q is not running", container)
+	}
+
+	if requestedNetwork != "" {
+		// Validate the network exists and the container is on it.
+		if _, err := d.run("network", "inspect", requestedNetwork); err != nil {
+			return "", fmt.Errorf("BYO-traefik: network %q not found: %w", requestedNetwork, err)
+		}
+		attached, err := d.run("inspect", "--format",
+			"{{range $k, $_ := .NetworkSettings.Networks}}{{$k}} {{end}}", container)
+		if err != nil {
+			return "", err
+		}
+		if !containsToken(attached, requestedNetwork) {
+			return "", fmt.Errorf("BYO-traefik: %s is not attached to network %q (attached: %s)",
+				container, requestedNetwork, strings.TrimSpace(attached))
+		}
+		return requestedNetwork, nil
+	}
+
+	attached, err := d.run("inspect", "--format",
+		"{{range $k, $_ := .NetworkSettings.Networks}}{{$k}} {{end}}", container)
+	if err != nil {
+		return "", err
+	}
+	for _, name := range strings.Fields(attached) {
+		if name == "bridge" || name == "host" || name == "none" {
+			continue
+		}
+		return name, nil
+	}
+	return "", fmt.Errorf("BYO-traefik: %s has no usable docker network — pass --traefik-network <name>", container)
+}
+
+func containsToken(haystack, needle string) bool {
+	for _, t := range strings.Fields(haystack) {
+		if t == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func traefikRunArgs(paths *Paths, bindIP string) []string {

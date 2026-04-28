@@ -3,6 +3,7 @@ package adapter
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -80,6 +81,73 @@ func TestRenderOverride_MatchHostUID(t *testing.T) {
 	}
 	if strings.Contains(string(got), "user:") {
 		t.Errorf("user: line should be absent when MatchHostUID is false, got:\n%s", got)
+	}
+}
+
+func TestRenderOverride_StripsHostBindings(t *testing.T) {
+	dir := t.TempDir()
+	stack := filepath.Join(dir, "docker-compose.yml")
+	if err := os.WriteFile(stack, []byte(`services:
+  front:
+    image: node:20-alpine
+    container_name: web3tiers-front
+    ports:
+      - "60180:8080"
+  api:
+    image: python:3.12-slim
+    container_name: web3tiers-api
+    ports:
+      - "60181:8000"
+  redis:
+    image: redis:7-alpine
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := Ctx{
+		Project:        "w3t",
+		Slug:           "x",
+		BaseDomain:     "w3t.test",
+		TraefikNetwork: "pier",
+		WorktreePath:   dir,
+		Stack: manifest.Stack{
+			Kind:    manifest.KindCompose,
+			File:    "docker-compose.yml",
+			Service: "front",
+			Port:    8080,
+		},
+	}
+	got, err := renderOverride(c)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	s := string(got)
+
+	wantSubstrings := []string{
+		// exposed service: pier-managed name, traefik labels, host ports stripped
+		"container_name: w3t-x",
+		"traefik.http.routers.w3t-x.rule=Host(`x.w3t.test`)",
+		// other service that had ports + explicit container_name → both reset
+		"api:\n    container_name: !reset null\n    ports: !reset []",
+	}
+	for _, w := range wantSubstrings {
+		if !strings.Contains(s, w) {
+			t.Errorf("override missing %q\n--- rendered ---\n%s", w, s)
+		}
+	}
+
+	// front block must reset its host ports too (traefik routes via the pier
+	// network, host ports would collide between worktrees).
+	if !strings.Contains(s, "front:\n    container_name: w3t-x") {
+		t.Errorf("expected front block to start with pier container_name\n%s", s)
+	}
+	if strings.Count(s, "ports: !reset []") != 2 {
+		t.Errorf("expected ports reset on both front and api, got:\n%s", s)
+	}
+
+	// redis has no ports and no explicit container_name → no entry needed.
+	if strings.Contains(s, "  redis:\n") {
+		t.Errorf("redis should not appear in override, got:\n%s", s)
 	}
 }
 

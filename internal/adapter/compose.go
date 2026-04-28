@@ -8,9 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -235,28 +238,72 @@ func ensureDockerNetwork(name string) error {
 	return nil
 }
 
+// serviceBlock describes one services.<name> entry rendered into the override.
+// The exposed service gets traefik labels + a pier-managed container_name +
+// host ports stripped (traefik routes via the pier network instead). Other
+// services that declared ports or an explicit container_name in the user's
+// compose file get those reset so multiple worktrees of the same project
+// can run in parallel without colliding on host ports or container names.
+type serviceBlock struct {
+	Name               string
+	IsExposed          bool
+	ResetPorts         bool
+	ResetContainerName bool
+}
+
 func renderOverride(c Ctx) ([]byte, error) {
 	if c.TraefikNetwork == "" {
 		return nil, errors.New("compose: TraefikNetwork is empty (Ctx not fully populated)")
 	}
+
+	blocks := []serviceBlock{{
+		Name:       c.Stack.Service,
+		IsExposed:  true,
+		ResetPorts: true,
+	}}
+	for name, info := range scanComposeServices(c) {
+		if name == c.Stack.Service {
+			continue
+		}
+		if !info.hasPorts && !info.hasContainerName {
+			continue
+		}
+		blocks = append(blocks, serviceBlock{
+			Name:               name,
+			ResetPorts:         info.hasPorts,
+			ResetContainerName: info.hasContainerName,
+		})
+	}
+	sort.Slice(blocks, func(i, j int) bool { return blocks[i].Name < blocks[j].Name })
+
 	t := template.Must(template.New("override").Parse(`# managed by pier — do not edit
 services:
-  {{.Service}}:
-    container_name: {{.Name}}
-{{- if .User}}
-    user: "{{.User}}"
+{{- range .Blocks}}
+  {{.Name}}:
+{{- if .IsExposed}}
+    container_name: {{$.Name}}
+{{- if $.User}}
+    user: "{{$.User}}"
 {{- end}}
     labels:
       - traefik.enable=true
-      - traefik.http.routers.{{.Name}}.rule=Host(` + "`{{.Slug}}.{{.BaseDomain}}`" + `)
-      - traefik.http.routers.{{.Name}}.entrypoints=web
-      - traefik.http.routers.{{.Name}}.service={{.Name}}
-      - traefik.docker.network={{.Network}}
-      - traefik.http.services.{{.Name}}.loadbalancer.server.port={{.Port}}
-    networks: [default, {{.Network}}]
+      - traefik.http.routers.{{$.Name}}.rule=Host(` + "`{{$.Slug}}.{{$.BaseDomain}}`" + `)
+      - traefik.http.routers.{{$.Name}}.entrypoints=web
+      - traefik.http.routers.{{$.Name}}.service={{$.Name}}
+      - traefik.docker.network={{$.Network}}
+      - traefik.http.services.{{$.Name}}.loadbalancer.server.port={{$.Port}}
+    networks: [default, {{$.Network}}]
+{{- end}}
+{{- if and (not .IsExposed) .ResetContainerName}}
+    container_name: !reset null
+{{- end}}
+{{- if .ResetPorts}}
+    ports: !reset []
+{{- end}}
+{{- end}}
 
 networks:
-  {{.Network}}:
+  {{$.Network}}:
     external: true
 `))
 	user := ""
@@ -264,20 +311,60 @@ networks:
 		user = fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 	}
 	data := struct {
-		Service, Name, Slug, BaseDomain, Network, User string
-		Port                                           int
+		Name, Slug, BaseDomain, Network, User string
+		Port                                  int
+		Blocks                                []serviceBlock
 	}{
-		Service:    c.Stack.Service,
 		Name:       Name(c.Project, c.Slug),
 		Slug:       c.Slug,
 		BaseDomain: c.BaseDomain,
 		Network:    c.TraefikNetwork,
 		Port:       c.Stack.Port,
 		User:       user,
+		Blocks:     blocks,
 	}
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, data); err != nil {
 		return nil, fmt.Errorf("render override: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// composeServiceInfo records what we need from a compose service to decide
+// whether the override must reset ports / container_name on it.
+type composeServiceInfo struct {
+	hasPorts         bool
+	hasContainerName bool
+}
+
+// scanComposeServices reads the user's compose file and reports per-service
+// whether it declares host port bindings or an explicit container_name. We
+// need both: ports collide between worktrees on the host network, and an
+// explicit container_name in the user's file overrides docker compose's
+// project-prefixed default and would also collide.
+//
+// Returns nil when the file is missing or unreadable — pier still renders
+// the exposed block and lets compose surface the real error a moment later.
+func scanComposeServices(c Ctx) map[string]composeServiceInfo {
+	body, err := os.ReadFile(stackFilePath(c))
+	if err != nil {
+		return nil
+	}
+	var doc struct {
+		Services map[string]struct {
+			Ports         []any  `yaml:"ports"`
+			ContainerName string `yaml:"container_name"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		return nil
+	}
+	out := make(map[string]composeServiceInfo, len(doc.Services))
+	for name, svc := range doc.Services {
+		out[name] = composeServiceInfo{
+			hasPorts:         len(svc.Ports) > 0,
+			hasContainerName: svc.ContainerName != "",
+		}
+	}
+	return out
 }

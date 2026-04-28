@@ -25,12 +25,13 @@ var ErrNotFound = errors.New("manifest: .pier.toml not found (run `pier init`)")
 
 // Manifest is the in-memory representation of .pier.toml.
 type Manifest struct {
-	Project     Project     `toml:"project"`
-	Stack       Stack       `toml:"stack"`
-	Materialize Materialize `toml:"materialize,omitempty"`
-	Hooks       Hooks       `toml:"hooks,omitempty"`
-	Watch       Watch       `toml:"watch,omitempty"`
-	Worktree    Worktree    `toml:"worktree,omitempty"`
+	Project     Project       `toml:"project"`
+	Stack       Stack         `toml:"stack"`
+	Expose      []ExposeRule  `toml:"expose"`
+	Materialize Materialize   `toml:"materialize,omitempty"`
+	Hooks       Hooks         `toml:"hooks,omitempty"`
+	Watch       Watch         `toml:"watch,omitempty"`
+	Worktree    Worktree      `toml:"worktree,omitempty"`
 }
 
 type Project struct {
@@ -44,16 +45,40 @@ type Project struct {
 // example for projects that don't otherwise containerize.
 type Stack struct {
 	Kind       string `toml:"kind"`
-	Port       int    `toml:"port"`
 	File       string `toml:"file,omitempty"`       // compose
-	Service    string `toml:"service,omitempty"`    // compose
 	Dockerfile string `toml:"dockerfile,omitempty"` // dockerfile (Phase 3 — synthesized compose)
+
+	// Service names the [[expose]] entry that should also be reachable at
+	// the bare `<slug>.<base_domain>` (no sub-domain). When empty or when
+	// no [[expose]] matches, no alias is emitted — every exposed service
+	// is reachable only via its own `<host>.<slug>.<base_domain>`.
+	Service string `toml:"service,omitempty"`
 
 	// MatchHostUID, when true, makes pier inject `user: "<uid>:<gid>"`
 	// into the compose override so the container runs as the host user.
 	// Resolves the EACCES class on bind-mounted host paths when the image
 	// uses a non-matching default user (typical for distroless/nonroot).
 	MatchHostUID bool `toml:"match_host_uid,omitempty"`
+}
+
+// ExposeRule is one service that pier should publish behind traefik.
+// Each rule is a service + container port + DNS sub-domain label. The
+// resulting URL is `http://<host>.<slug>.<base_domain>`. The service
+// pointed at by Stack.Service additionally gets `http://<slug>.<base_domain>`
+// as an alias.
+type ExposeRule struct {
+	Service string `toml:"service"`
+	Port    int    `toml:"port"`
+	// Host is the sub-domain label. Defaults to Service when empty.
+	Host string `toml:"host,omitempty"`
+}
+
+// Hostname returns the sub-domain label this rule advertises.
+func (e ExposeRule) Hostname() string {
+	if e.Host != "" {
+		return e.Host
+	}
+	return e.Service
 }
 
 type Materialize struct {
@@ -124,6 +149,11 @@ func (m *Manifest) Write(path string) error {
 var dnsLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
 // Validate checks that required fields are set and consistent with Stack.Kind.
+//
+// Stack.Service is intentionally not cross-checked against [[expose]]: if
+// it points at a missing service, the runtime simply skips the bare-slug
+// alias rather than fail. That matches the user's mental model — Service
+// is a hint, not a hard reference.
 func (m *Manifest) Validate() error {
 	if m.Project.Name == "" {
 		return errors.New("manifest: project.name is required")
@@ -140,15 +170,9 @@ func (m *Manifest) Validate() error {
 		if m.Stack.File == "" {
 			return errors.New("manifest: stack.file is required for kind=compose")
 		}
-		if m.Stack.Port == 0 {
-			return errors.New("manifest: stack.port is required for kind=compose")
-		}
 	case KindDockerfile:
 		if m.Stack.Dockerfile == "" {
 			return errors.New("manifest: stack.dockerfile is required for kind=dockerfile")
-		}
-		if m.Stack.Port == 0 {
-			return errors.New("manifest: stack.port is required for kind=dockerfile")
 		}
 	case "":
 		return errors.New("manifest: stack.kind is required")
@@ -156,8 +180,49 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("manifest: stack.kind %q must be compose (or dockerfile, Phase 3)", m.Stack.Kind)
 	}
 
+	if len(m.Expose) == 0 {
+		return errors.New("manifest: at least one [[expose]] entry is required")
+	}
+	seenService := map[string]bool{}
+	seenHost := map[string]bool{}
+	for i, e := range m.Expose {
+		if e.Service == "" {
+			return fmt.Errorf("manifest: expose[%d].service is required", i)
+		}
+		if seenService[e.Service] {
+			return fmt.Errorf("manifest: expose: service %q listed twice", e.Service)
+		}
+		seenService[e.Service] = true
+		if e.Port <= 0 {
+			return fmt.Errorf("manifest: expose[%d].port must be > 0", i)
+		}
+		host := e.Hostname()
+		if !dnsLabel.MatchString(host) {
+			return fmt.Errorf("manifest: expose[%d].host %q is not a valid DNS label", i, host)
+		}
+		if seenHost[host] {
+			return fmt.Errorf("manifest: expose: host %q listed twice", host)
+		}
+		seenHost[host] = true
+	}
+
 	if oc := m.Watch.OnChange; oc != "" && oc != "rebuild" && oc != "restart" {
 		return fmt.Errorf("manifest: watch.on_change %q must be rebuild or restart", oc)
+	}
+	return nil
+}
+
+// DefaultExpose returns the [[expose]] entry that should also be reachable
+// at the bare `<slug>.<base_domain>` alias, or nil when no alias should
+// be emitted (Stack.Service empty or pointing at a missing service).
+func (m *Manifest) DefaultExpose() *ExposeRule {
+	if m.Stack.Service == "" {
+		return nil
+	}
+	for i := range m.Expose {
+		if m.Expose[i].Service == m.Stack.Service {
+			return &m.Expose[i]
+		}
 	}
 	return nil
 }

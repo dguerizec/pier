@@ -94,20 +94,30 @@ func detectTailscale() TailscaleInfo {
 // detectTraefik finds an existing traefik container, distinct from the one
 // pier may have spun up itself (`pier-traefik`). When more than one
 // candidate exists we return Found=false so the wizard asks the user.
+//
+// `docker ps --filter ancestor=traefik` doesn't match versioned tags, so
+// we list all containers and match the image string ourselves.
 func detectTraefik() TraefikInfo {
-	out, err := exec.Command("docker", "ps",
-		"--filter", "ancestor=traefik",
-		"--format", "{{.Names}}").Output()
+	out, err := exec.Command("docker", "ps", "--format", "{{.Names}}\t{{.Image}}").Output()
 	if err != nil {
 		return TraefikInfo{}
 	}
 	var names []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		n := strings.TrimSpace(line)
-		if n == "" || n == "pier-traefik" {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
 			continue
 		}
-		names = append(names, n)
+		name, image := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		if name == "" || name == "pier-traefik" {
+			continue
+		}
+		// Match `traefik:<tag>` or bare `traefik`.
+		base := strings.SplitN(image, ":", 2)[0]
+		if base != "traefik" {
+			continue
+		}
+		names = append(names, name)
 	}
 	if len(names) != 1 {
 		return TraefikInfo{}
@@ -137,13 +147,23 @@ func detectTraefik() TraefikInfo {
 // detectHeadscale locates a headscale container and resolves its config file
 // on the host filesystem (via the container's bind mounts).
 func detectHeadscale() HeadscaleInfo {
-	out, err := exec.Command("docker", "ps",
-		"--filter", "ancestor=headscale/headscale",
-		"--format", "{{.Names}}").Output()
+	out, err := exec.Command("docker", "ps", "--format", "{{.Names}}\t{{.Image}}").Output()
 	if err != nil {
 		return HeadscaleInfo{}
 	}
-	name := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+	name := ""
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		image := strings.TrimSpace(parts[1])
+		base := strings.SplitN(image, ":", 2)[0]
+		if base == "headscale/headscale" || base == "headscale" {
+			name = strings.TrimSpace(parts[0])
+			break
+		}
+	}
 	if name == "" {
 		return HeadscaleInfo{}
 	}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -57,7 +58,7 @@ func runWorktreeAdd(cmd *cobra.Command, target string, opts wtAddOpts) error {
 		return fmt.Errorf("primary manifest: %w (hint: run `pier init` in the primary worktree first)", err)
 	}
 
-	abs, err := filepath.Abs(target)
+	abs, err := resolveWorktreePath(primary, target, m.Worktree.Dir)
 	if err != nil {
 		return err
 	}
@@ -175,6 +176,20 @@ func runWorktreeRm(cmd *cobra.Command, target string, opts wtRmOpts) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "✓ removed worktree %s\n", abs)
 	return nil
+}
+
+// resolveWorktreePath turns a `pier worktree add <name>` argument into an
+// absolute path. When <name> contains no path separator and the manifest
+// declares a [worktree].dir, we place the new worktree there — letting
+// users use a short name (`pier worktree add feat-x`) and keep all
+// branches under one folder (`.claude/worktrees/feat-x`). Anything else
+// is treated as an explicit path.
+func resolveWorktreePath(primary, target, manifestDir string) (string, error) {
+	hasSep := strings.ContainsRune(target, filepath.Separator)
+	if !hasSep && manifestDir != "" {
+		return filepath.Abs(filepath.Join(primary, manifestDir, target))
+	}
+	return filepath.Abs(target)
 }
 
 // runPierIn invokes the currently running pier binary in dir with subargs.

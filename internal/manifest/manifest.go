@@ -30,6 +30,7 @@ type Manifest struct {
 	Materialize Materialize `toml:"materialize,omitempty"`
 	Hooks       Hooks       `toml:"hooks,omitempty"`
 	Watch       Watch       `toml:"watch,omitempty"`
+	Worktree    Worktree    `toml:"worktree,omitempty"`
 }
 
 type Project struct {
@@ -70,6 +71,13 @@ type Hooks struct {
 type Watch struct {
 	Paths    []string `toml:"paths,omitempty"`
 	OnChange string   `toml:"on_change,omitempty"` // rebuild | restart
+}
+
+// Worktree configures where `pier worktree add <name>` places new trees
+// when <name> has no path separator. Relative paths resolve against the
+// primary worktree.
+type Worktree struct {
+	Dir string `toml:"dir,omitempty"` // e.g. ".claude/worktrees"
 }
 
 // Load reads <root>/.pier.toml, then layers <root>/.pier.local.toml on top

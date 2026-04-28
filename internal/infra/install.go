@@ -41,6 +41,11 @@ type InstallOptions struct {
 	// When ExternalTraefik is set and this is empty, pier auto-picks the
 	// first non-default network attached to the external traefik.
 	TraefikNetwork string
+
+	// HeadscaleContainer + HeadscaleRecordsPath activate the records
+	// adapter — see Config docs.
+	HeadscaleContainer   string
+	HeadscaleRecordsPath string
 }
 
 // Install brings up the traefik + dnsmasq pair and (optionally) configures
@@ -176,12 +181,14 @@ func Install(opts InstallOptions) error {
 	}
 
 	cfg := &Config{
-		Mode:            opts.Mode,
-		TLD:             opts.TLD,
-		BindIP:          opts.BindIP,
-		AnswerIP:        opts.AnswerIP,
-		TraefikNetwork:  traefikNet,
-		ExternalTraefik: opts.ExternalTraefik,
+		Mode:                 opts.Mode,
+		TLD:                  opts.TLD,
+		BindIP:               opts.BindIP,
+		AnswerIP:             opts.AnswerIP,
+		TraefikNetwork:       traefikNet,
+		ExternalTraefik:      opts.ExternalTraefik,
+		HeadscaleContainer:   opts.HeadscaleContainer,
+		HeadscaleRecordsPath: opts.HeadscaleRecordsPath,
 	}
 	if err := cfg.Save(paths); err != nil {
 		return fmt.Errorf("save config: %w", err)

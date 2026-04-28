@@ -26,6 +26,16 @@ type Config struct {
 	// ExternalTraefik names the user-managed traefik container in BYO mode.
 	// Empty means pier owns its own pier-traefik container.
 	ExternalTraefik string `toml:"external_traefik,omitempty"`
+
+	// HeadscaleContainer + HeadscaleRecordsPath enable the records adapter:
+	// when set, every pier up/down appends/removes an A record in the
+	// headscale extra_records JSON file so peers can resolve pier slugs
+	// via MagicDNS even when the TLD lives under headscale's base_domain
+	// (where split-DNS rules are pre-empted by MagicDNS authoritative
+	// scope). Both fields are populated by the install wizard when
+	// extra_records_path is detected.
+	HeadscaleContainer   string `toml:"headscale_container,omitempty"`
+	HeadscaleRecordsPath string `toml:"headscale_records_path,omitempty"`
 }
 
 // EffectiveAnswerIP returns AnswerIP or BindIP (older configs written before

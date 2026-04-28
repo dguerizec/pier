@@ -47,6 +47,11 @@ type HeadscaleInfo struct {
 	// dns_config.base_domain (legacy) in the headscale config — the
 	// MagicDNS suffix tailnet hostnames already resolve under.
 	BaseDomain string
+	// RecordsPath is the host path of the file referenced by
+	// extra_records_path in the headscale config (resolved through bind
+	// mounts), where pier's records adapter writes per-slug A records.
+	// Empty when extra_records_path is not configured.
+	RecordsPath string
 }
 
 // Run probes everything. Best-effort: every sub-detector is independent and
@@ -200,8 +205,62 @@ func detectHeadscale() HeadscaleInfo {
 	info := HeadscaleInfo{Found: true, Container: name, ConfigPath: configPath}
 	if configPath != "" {
 		info.BaseDomain = readHeadscaleBaseDomain(configPath)
+		if rp := readHeadscaleRecordsPath(configPath); rp != "" {
+			info.RecordsPath = resolveContainerPath(name, rp)
+		}
 	}
 	return info
+}
+
+// readHeadscaleRecordsPath extracts dns.extra_records_path (or the legacy
+// dns_config.extra_records_path) from cfgPath. Returns "" when unset.
+func readHeadscaleRecordsPath(cfgPath string) string {
+	body, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return ""
+	}
+	var stub struct {
+		DNS struct {
+			ExtraRecordsPath string `yaml:"extra_records_path"`
+		} `yaml:"dns"`
+		DNSConfig struct {
+			ExtraRecordsPath string `yaml:"extra_records_path"`
+		} `yaml:"dns_config"`
+	}
+	if err := yaml.Unmarshal(body, &stub); err != nil {
+		return ""
+	}
+	if stub.DNS.ExtraRecordsPath != "" {
+		return stub.DNS.ExtraRecordsPath
+	}
+	return stub.DNSConfig.ExtraRecordsPath
+}
+
+// resolveContainerPath maps a path inside the container to its source on
+// the host by walking the container's bind mounts. Returns the input path
+// unchanged when no matching mount is found (caller may still try it as a
+// host path if it happens to be absolute and accessible).
+func resolveContainerPath(container, containerPath string) string {
+	out, err := exec.Command("docker", "inspect", "--format",
+		`{{range .Mounts}}{{.Source}} -> {{.Destination}}{{"\n"}}{{end}}`, container).Output()
+	if err != nil {
+		return containerPath
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		parts := strings.SplitN(line, " -> ", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		host, dest := parts[0], parts[1]
+		if dest == containerPath {
+			return host
+		}
+		// Mount on a parent dir: rewrite the path to the host equivalent.
+		if strings.HasPrefix(containerPath, dest+"/") {
+			return host + strings.TrimPrefix(containerPath, dest)
+		}
+	}
+	return containerPath
 }
 
 // readHeadscaleBaseDomain extracts dns.base_domain (or dns_config.base_domain
@@ -240,7 +299,10 @@ func (e Environment) Summary() []string {
 	if e.Headscale.Found {
 		extra := ""
 		if e.Headscale.BaseDomain != "" {
-			extra = " base_domain=" + e.Headscale.BaseDomain
+			extra += " base_domain=" + e.Headscale.BaseDomain
+		}
+		if e.Headscale.RecordsPath != "" {
+			extra += " records=" + e.Headscale.RecordsPath
 		}
 		lines = append(lines, fmt.Sprintf("✓ headscale: container=%s%s", e.Headscale.Container, extra))
 	}

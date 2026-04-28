@@ -10,9 +10,10 @@ func TestFromBranch(t *testing.T) {
 		branch string
 		want   string
 	}{
-		// DESIGN §5.1 reference table
-		{"main", "dev"},
-		{"master", "dev"},
+		// DESIGN §5.1 reference table (with the main/master → branch name
+		// rule, not the historical "dev" special case)
+		{"main", "main"},
+		{"master", "master"},
 		{"feat/foo-bar", "foo-bar"},
 		{"fix/CROPS-42", "crops-42"},
 		{"chore/update-deps", "update-deps"},

@@ -27,16 +27,13 @@ var (
 
 // FromBranch returns the slug derived from branch.
 //
-// "main" and "master" always map to "dev". For other branches the algorithm
-// strips a leading conventional prefix and an optional "worktree-" prefix,
-// lowercases, replaces non-alphanumeric runs with a single dash, trims edge
-// dashes, and validates against the DNS label regex.
+// The algorithm strips a leading conventional prefix (feat/, fix/, ...) and
+// an optional "worktree-" prefix, lowercases, replaces non-alphanumeric
+// runs with a single dash, trims edge dashes, and validates against the
+// DNS label regex. main and master are not special-cased — they pass
+// through as-is. Use --slug or PIER_SLUG to override.
 func FromBranch(branch string) (string, error) {
 	branch = strings.TrimSpace(branch)
-	if branch == "main" || branch == "master" {
-		return "dev", nil
-	}
-
 	s := branch
 	for _, p := range conventionalPrefixes {
 		if strings.HasPrefix(s, p) {

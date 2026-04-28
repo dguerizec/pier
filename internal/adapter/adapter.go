@@ -17,19 +17,21 @@ import (
 
 // Ctx carries everything an adapter needs to run a command.
 type Ctx struct {
-	Project        string         // manifest.project.name
-	Slug           string         // derived or overridden DNS slug
-	BaseDomain     string         // manifest.project.base_domain
-	WorktreePath   string         // git toplevel
-	Stack          manifest.Stack // adapter-specific fields under manifest.stack
-	TraefikNetwork string         // docker network the workload joins for label discovery
-	Out            io.Writer      // command output sink
-	Err            io.Writer      // command error sink
+	Project        string                // manifest.project.name
+	Slug           string                // derived or overridden DNS slug
+	BaseDomain     string                // manifest.project.base_domain
+	WorktreePath   string                // git toplevel
+	Stack          manifest.Stack        // adapter-specific fields under manifest.stack
+	Expose         []manifest.ExposeRule // services pier should publish behind traefik
+	DefaultService string                // service name that gets the bare-slug alias; "" when no alias
+	TraefikNetwork string                // docker network the workload joins for label discovery
+	Out            io.Writer             // command output sink
+	Err            io.Writer             // command error sink
 }
 
 // Handle is the state to persist after a successful Up.
 type Handle struct {
-	ContainerID string // compose / dockerfile
+	ContainerID string // compose / dockerfile (first exposed service)
 }
 
 // Adapter is implemented per stack kind.
@@ -54,12 +56,66 @@ func For(kind string) (Adapter, error) {
 	}
 }
 
-// Name is the canonical container/router/project identifier.
+// Name is the workload's compose project name (-p value).
 func Name(project, slug string) string { return project + "-" + slug }
 
-// URL is the user-visible URL for the workload.
-func URL(slug, baseDomain string) string { return "http://" + slug + "." + baseDomain }
+// ServiceName is the per-service identifier used for container_name and
+// traefik router/service IDs. Adding the service suffix keeps everything
+// unique per (project, slug, service) so multi-expose workloads don't
+// collide on names.
+func ServiceName(project, slug, service string) string {
+	return Name(project, slug) + "-" + service
+}
 
-// RecordName is the DNS name written to headscale's extra_records JSON
-// — same shape as URL, minus the scheme.
-func RecordName(slug, baseDomain string) string { return slug + "." + baseDomain }
+// HostFor returns the fully qualified host an exposed service is reachable
+// at: `<host>.<slug>.<base_domain>` where <host> is rule.Hostname().
+func HostFor(rule manifest.ExposeRule, slug, baseDomain string) string {
+	return rule.Hostname() + "." + slug + "." + baseDomain
+}
+
+// AliasHost returns the bare `<slug>.<base_domain>` reserved for the
+// service marked default by Stack.Service.
+func AliasHost(slug, baseDomain string) string {
+	return slug + "." + baseDomain
+}
+
+// URLs returns every public URL the workload answers on, default-first
+// when present. Used by `pier up`, `pier url --all`, and `pier ls`.
+func URLs(c Ctx) []string {
+	var out []string
+	if c.DefaultService != "" {
+		out = append(out, "http://"+AliasHost(c.Slug, c.BaseDomain))
+	}
+	for _, e := range c.Expose {
+		out = append(out, "http://"+HostFor(e, c.Slug, c.BaseDomain))
+	}
+	return out
+}
+
+// DefaultURL returns the URL pier prints by default in `pier url`. When
+// Stack.Service designates an exposed service, that's the bare-slug
+// alias; otherwise we fall back to the first expose's host so the
+// command always returns something useful.
+func DefaultURL(c Ctx) string {
+	if c.DefaultService != "" {
+		return "http://" + AliasHost(c.Slug, c.BaseDomain)
+	}
+	if len(c.Expose) > 0 {
+		return "http://" + HostFor(c.Expose[0], c.Slug, c.BaseDomain)
+	}
+	return ""
+}
+
+// RecordNames returns the DNS labels pier registers in headscale's
+// extra_records (no scheme): one per exposed service, plus the bare
+// `<slug>.<base>` alias when a default is set.
+func RecordNames(c Ctx) []string {
+	var out []string
+	if c.DefaultService != "" {
+		out = append(out, AliasHost(c.Slug, c.BaseDomain))
+	}
+	for _, e := range c.Expose {
+		out = append(out, HostFor(e, c.Slug, c.BaseDomain))
+	}
+	return out
+}

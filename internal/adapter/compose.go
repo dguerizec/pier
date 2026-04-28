@@ -27,11 +27,8 @@ func (compose) Up(c Ctx) (*Handle, error) {
 	if c.Stack.File == "" {
 		return nil, errors.New("compose: stack.file is required")
 	}
-	if c.Stack.Service == "" {
-		return nil, errors.New("compose: stack.service is required")
-	}
-	if c.Stack.Port == 0 {
-		return nil, errors.New("compose: stack.port is required")
+	if len(c.Expose) == 0 {
+		return nil, errors.New("compose: at least one [[expose]] entry is required")
 	}
 
 	overridePath, err := writeOverride(c)
@@ -47,11 +44,15 @@ func (compose) Up(c Ctx) (*Handle, error) {
 		return nil, fmt.Errorf("compose up: %w", err)
 	}
 
-	cid, err := composeContainerID(c, overridePath)
+	// We track the default exposed service's container id (or the first
+	// expose when no default is set) as the workload's "primary" container.
+	// state stays single-row per workload, sufficient for ls/down today.
+	primary := c.DefaultService
+	if primary == "" {
+		primary = c.Expose[0].Service
+	}
+	cid, err := composeContainerID(c, overridePath, primary)
 	if err != nil {
-		// Up succeeded, but we couldn't fetch the container id — surface a
-		// warning rather than failing, so the user still has a running
-		// workload they can inspect.
 		fmt.Fprintf(c.Err, "warning: could not resolve container id (%v)\n", err)
 	}
 	return &Handle{ContainerID: cid}, nil
@@ -90,7 +91,9 @@ func (compose) Logs(c Ctx, follow bool, tail int) error {
 	if tail > 0 {
 		args = append(args, "--tail", strconv.Itoa(tail))
 	}
-	args = append(args, c.Stack.Service)
+	// No service argument → compose streams logs from every service in the
+	// project. Multi-expose makes this the right default; users who want a
+	// single service can `docker compose -p <name> logs <svc>` directly.
 	_, err := composeRun(c, args, overridePath, true)
 	return err
 }
@@ -123,13 +126,13 @@ func composeRun(c Ctx, args []string, overridePath string, stream bool) (string,
 	return strings.TrimSpace(out.String()), err
 }
 
-func composeContainerID(c Ctx, overridePath string) (string, error) {
+func composeContainerID(c Ctx, overridePath, service string) (string, error) {
 	cmd := exec.Command("docker",
 		"compose",
 		"-f", stackFilePath(c),
 		"-f", overridePath,
 		"-p", Name(c.Project, c.Slug),
-		"ps", "-q", c.Stack.Service,
+		"ps", "-q", service,
 	)
 	cmd.Dir = c.WorktreePath
 	out, err := cmd.Output()
@@ -238,15 +241,23 @@ func ensureDockerNetwork(name string) error {
 	return nil
 }
 
-// serviceBlock describes one services.<name> entry rendered into the override.
-// The exposed service gets traefik labels + a pier-managed container_name +
-// host ports stripped (traefik routes via the pier network instead). Other
-// services that declared ports or an explicit container_name in the user's
-// compose file get those reset so multiple worktrees of the same project
-// can run in parallel without colliding on host ports or container names.
-type serviceBlock struct {
-	Name               string
-	IsExposed          bool
+// exposedBlock describes one [[expose]]'d service rendered into the
+// override: pier-managed container_name, traefik labels (one or two
+// routers), host ports stripped, networks attached. Two routers when this
+// is the default service — the second matches the bare `<slug>.<base>`.
+type exposedBlock struct {
+	Service       string // compose service name (YAML key)
+	ContainerName string // pier-managed name
+	RouterID      string // traefik router/service id
+	HostRule      string // primary Host(`...`) target
+	AliasRule     string // bare-slug Host(`...`); empty when not the default
+	Port          int
+}
+
+// resetBlock describes a non-exposed service that needs its host bindings
+// or explicit container_name removed so multi-worktree runs don't collide.
+type resetBlock struct {
+	Service            string
 	ResetPorts         bool
 	ResetContainerName bool
 }
@@ -255,46 +266,72 @@ func renderOverride(c Ctx) ([]byte, error) {
 	if c.TraefikNetwork == "" {
 		return nil, errors.New("compose: TraefikNetwork is empty (Ctx not fully populated)")
 	}
+	if len(c.Expose) == 0 {
+		return nil, errors.New("compose: at least one [[expose]] entry is required")
+	}
 
-	blocks := []serviceBlock{{
-		Name:       c.Stack.Service,
-		IsExposed:  true,
-		ResetPorts: true,
-	}}
+	exposed := make([]exposedBlock, 0, len(c.Expose))
+	exposedSet := make(map[string]bool, len(c.Expose))
+	for _, e := range c.Expose {
+		exposedSet[e.Service] = true
+		host := HostFor(e, c.Slug, c.BaseDomain)
+		alias := ""
+		if e.Service == c.DefaultService {
+			alias = AliasHost(c.Slug, c.BaseDomain)
+		}
+		exposed = append(exposed, exposedBlock{
+			Service:       e.Service,
+			ContainerName: ServiceName(c.Project, c.Slug, e.Service),
+			RouterID:      ServiceName(c.Project, c.Slug, e.Service),
+			HostRule:      host,
+			AliasRule:     alias,
+			Port:          e.Port,
+		})
+	}
+	sort.Slice(exposed, func(i, j int) bool { return exposed[i].Service < exposed[j].Service })
+
+	var resets []resetBlock
 	for name, info := range scanComposeServices(c) {
-		if name == c.Stack.Service {
+		if exposedSet[name] {
 			continue
 		}
 		if !info.hasPorts && !info.hasContainerName {
 			continue
 		}
-		blocks = append(blocks, serviceBlock{
-			Name:               name,
+		resets = append(resets, resetBlock{
+			Service:            name,
 			ResetPorts:         info.hasPorts,
 			ResetContainerName: info.hasContainerName,
 		})
 	}
-	sort.Slice(blocks, func(i, j int) bool { return blocks[i].Name < blocks[j].Name })
+	sort.Slice(resets, func(i, j int) bool { return resets[i].Service < resets[j].Service })
 
 	t := template.Must(template.New("override").Parse(`# managed by pier — do not edit
 services:
-{{- range .Blocks}}
-  {{.Name}}:
-{{- if .IsExposed}}
-    container_name: {{$.Name}}
+{{- range .Exposed}}
+  {{.Service}}:
+    container_name: {{.ContainerName}}
 {{- if $.User}}
     user: "{{$.User}}"
 {{- end}}
     labels:
       - traefik.enable=true
-      - traefik.http.routers.{{$.Name}}.rule=Host(` + "`{{$.Slug}}.{{$.BaseDomain}}`" + `)
-      - traefik.http.routers.{{$.Name}}.entrypoints=web
-      - traefik.http.routers.{{$.Name}}.service={{$.Name}}
-      - traefik.docker.network={{$.Network}}
-      - traefik.http.services.{{$.Name}}.loadbalancer.server.port={{$.Port}}
-    networks: [default, {{$.Network}}]
+      - traefik.http.routers.{{.RouterID}}.rule=Host(` + "`{{.HostRule}}`" + `)
+      - traefik.http.routers.{{.RouterID}}.entrypoints=web
+      - traefik.http.routers.{{.RouterID}}.service={{.RouterID}}
+{{- if .AliasRule}}
+      - traefik.http.routers.{{.RouterID}}-default.rule=Host(` + "`{{.AliasRule}}`" + `)
+      - traefik.http.routers.{{.RouterID}}-default.entrypoints=web
+      - traefik.http.routers.{{.RouterID}}-default.service={{.RouterID}}
 {{- end}}
-{{- if and (not .IsExposed) .ResetContainerName}}
+      - traefik.docker.network={{$.Network}}
+      - traefik.http.services.{{.RouterID}}.loadbalancer.server.port={{.Port}}
+    networks: [default, {{$.Network}}]
+    ports: !reset []
+{{- end}}
+{{- range .Resets}}
+  {{.Service}}:
+{{- if .ResetContainerName}}
     container_name: !reset null
 {{- end}}
 {{- if .ResetPorts}}
@@ -311,17 +348,14 @@ networks:
 		user = fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 	}
 	data := struct {
-		Name, Slug, BaseDomain, Network, User string
-		Port                                  int
-		Blocks                                []serviceBlock
+		Network, User string
+		Exposed       []exposedBlock
+		Resets        []resetBlock
 	}{
-		Name:       Name(c.Project, c.Slug),
-		Slug:       c.Slug,
-		BaseDomain: c.BaseDomain,
-		Network:    c.TraefikNetwork,
-		Port:       c.Stack.Port,
-		User:       user,
-		Blocks:     blocks,
+		Network: c.TraefikNetwork,
+		User:    user,
+		Exposed: exposed,
+		Resets:  resets,
 	}
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, data); err != nil {

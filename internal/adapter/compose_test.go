@@ -10,7 +10,7 @@ import (
 	"github.com/LeoPartt/pier/internal/manifest"
 )
 
-func TestRenderOverride_Compose(t *testing.T) {
+func TestRenderOverride_SingleExpose(t *testing.T) {
 	c := Ctx{
 		Project:        "myapp",
 		Slug:           "feat-x",
@@ -20,8 +20,9 @@ func TestRenderOverride_Compose(t *testing.T) {
 			Kind:    manifest.KindCompose,
 			File:    "docker-compose.yml",
 			Service: "web",
-			Port:    3000,
 		},
+		Expose:         []manifest.ExposeRule{{Service: "web", Port: 3000}},
+		DefaultService: "web",
 	}
 	got, err := renderOverride(c)
 	if err != nil {
@@ -30,13 +31,15 @@ func TestRenderOverride_Compose(t *testing.T) {
 	s := string(got)
 
 	want := []string{
-		"container_name: myapp-feat-x",
+		"container_name: myapp-feat-x-web",
 		"traefik.enable=true",
-		"traefik.http.routers.myapp-feat-x.rule=Host(`feat-x.myapp.test`)",
-		"traefik.http.routers.myapp-feat-x.entrypoints=web",
-		"traefik.http.routers.myapp-feat-x.service=myapp-feat-x",
+		// primary router uses the per-service host
+		"traefik.http.routers.myapp-feat-x-web.rule=Host(`web.feat-x.myapp.test`)",
+		// alias router for the default service uses the bare slug
+		"traefik.http.routers.myapp-feat-x-web-default.rule=Host(`feat-x.myapp.test`)",
+		"traefik.http.routers.myapp-feat-x-web-default.service=myapp-feat-x-web",
 		"traefik.docker.network=pier",
-		"traefik.http.services.myapp-feat-x.loadbalancer.server.port=3000",
+		"traefik.http.services.myapp-feat-x-web.loadbalancer.server.port=3000",
 		"networks: [default, pier]",
 		"  pier:",
 		"    external: true",
@@ -45,6 +48,41 @@ func TestRenderOverride_Compose(t *testing.T) {
 		if !strings.Contains(s, w) {
 			t.Errorf("override missing %q\n--- rendered ---\n%s", w, s)
 		}
+	}
+}
+
+func TestRenderOverride_MultiExposeNoAlias(t *testing.T) {
+	c := Ctx{
+		Project:        "w3t",
+		Slug:           "x",
+		BaseDomain:     "w3t.test",
+		TraefikNetwork: "pier",
+		Stack: manifest.Stack{
+			Kind: manifest.KindCompose,
+			File: "docker-compose.yml",
+			// No Stack.Service → no alias
+		},
+		Expose: []manifest.ExposeRule{
+			{Service: "front", Port: 8080},
+			{Service: "api", Port: 8000, Host: "backend"},
+		},
+	}
+	got, err := renderOverride(c)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	s := string(got)
+
+	for _, w := range []string{
+		"traefik.http.routers.w3t-x-front.rule=Host(`front.x.w3t.test`)",
+		"traefik.http.routers.w3t-x-api.rule=Host(`backend.x.w3t.test`)",
+	} {
+		if !strings.Contains(s, w) {
+			t.Errorf("override missing %q\n--- rendered ---\n%s", w, s)
+		}
+	}
+	if strings.Contains(s, "-default.rule=Host(") {
+		t.Errorf("no service is default, alias router should not be rendered:\n%s", s)
 	}
 }
 
@@ -58,9 +96,10 @@ func TestRenderOverride_MatchHostUID(t *testing.T) {
 			Kind:         manifest.KindCompose,
 			File:         "docker-compose.yml",
 			Service:      "web",
-			Port:         3000,
 			MatchHostUID: true,
 		},
+		Expose:         []manifest.ExposeRule{{Service: "web", Port: 3000}},
+		DefaultService: "web",
 	}
 	got, err := renderOverride(c)
 	if err != nil {
@@ -73,7 +112,6 @@ func TestRenderOverride_MatchHostUID(t *testing.T) {
 		t.Errorf("expected %q in override, got:\n%s", expected, s)
 	}
 
-	// Without the flag, no user line should appear.
 	c.Stack.MatchHostUID = false
 	got, err = renderOverride(c)
 	if err != nil {
@@ -114,8 +152,12 @@ func TestRenderOverride_StripsHostBindings(t *testing.T) {
 			Kind:    manifest.KindCompose,
 			File:    "docker-compose.yml",
 			Service: "front",
-			Port:    8080,
 		},
+		Expose: []manifest.ExposeRule{
+			{Service: "front", Port: 8080},
+			{Service: "api", Port: 8000},
+		},
+		DefaultService: "front",
 	}
 	got, err := renderOverride(c)
 	if err != nil {
@@ -123,31 +165,74 @@ func TestRenderOverride_StripsHostBindings(t *testing.T) {
 	}
 	s := string(got)
 
-	wantSubstrings := []string{
-		// exposed service: pier-managed name, traefik labels, host ports stripped
-		"container_name: w3t-x",
-		"traefik.http.routers.w3t-x.rule=Host(`x.w3t.test`)",
-		// other service that had ports + explicit container_name → both reset
-		"api:\n    container_name: !reset null\n    ports: !reset []",
-	}
-	for _, w := range wantSubstrings {
+	// Both exposed services get pier-managed container_name + ports reset
+	for _, w := range []string{
+		"container_name: w3t-x-api",
+		"container_name: w3t-x-front",
+		"traefik.http.routers.w3t-x-front-default.rule=Host(`x.w3t.test`)",
+		"traefik.http.routers.w3t-x-api.rule=Host(`api.x.w3t.test`)",
+	} {
 		if !strings.Contains(s, w) {
 			t.Errorf("override missing %q\n--- rendered ---\n%s", w, s)
 		}
 	}
-
-	// front block must reset its host ports too (traefik routes via the pier
-	// network, host ports would collide between worktrees).
-	if !strings.Contains(s, "front:\n    container_name: w3t-x") {
-		t.Errorf("expected front block to start with pier container_name\n%s", s)
-	}
+	// Both exposed services have their host ports reset; redis isn't exposed
+	// and has no ports/container_name in the user file → no entry needed.
 	if strings.Count(s, "ports: !reset []") != 2 {
 		t.Errorf("expected ports reset on both front and api, got:\n%s", s)
 	}
-
-	// redis has no ports and no explicit container_name → no entry needed.
 	if strings.Contains(s, "  redis:\n") {
 		t.Errorf("redis should not appear in override, got:\n%s", s)
+	}
+}
+
+func TestURLs_AndDefault(t *testing.T) {
+	c := Ctx{
+		Slug:           "x",
+		BaseDomain:     "w3t.test",
+		Expose:         []manifest.ExposeRule{{Service: "front", Port: 8080}, {Service: "api", Port: 8000, Host: "backend"}},
+		DefaultService: "front",
+	}
+	urls := URLs(c)
+	want := []string{"http://x.w3t.test", "http://front.x.w3t.test", "http://backend.x.w3t.test"}
+	if len(urls) != len(want) {
+		t.Fatalf("URLs = %v, want %v", urls, want)
+	}
+	for i := range want {
+		if urls[i] != want[i] {
+			t.Errorf("URLs[%d] = %q, want %q", i, urls[i], want[i])
+		}
+	}
+	if got := DefaultURL(c); got != "http://x.w3t.test" {
+		t.Errorf("DefaultURL = %q", got)
+	}
+
+	// No default → DefaultURL falls back to first expose.
+	c.DefaultService = ""
+	if got := DefaultURL(c); got != "http://front.x.w3t.test" {
+		t.Errorf("DefaultURL fallback = %q", got)
+	}
+	if got := URLs(c); len(got) != 2 {
+		t.Errorf("URLs without default = %v, want 2 entries (no alias)", got)
+	}
+}
+
+func TestRecordNames(t *testing.T) {
+	c := Ctx{
+		Slug:           "x",
+		BaseDomain:     "w3t.test",
+		Expose:         []manifest.ExposeRule{{Service: "front", Port: 8080}, {Service: "api", Port: 8000}},
+		DefaultService: "front",
+	}
+	got := RecordNames(c)
+	want := []string{"x.w3t.test", "front.x.w3t.test", "api.x.w3t.test"}
+	if len(got) != len(want) {
+		t.Fatalf("RecordNames = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("RecordNames[%d] = %q, want %q", i, got[i], want[i])
+		}
 	}
 }
 
@@ -160,11 +245,11 @@ func TestFor(t *testing.T) {
 	}
 }
 
-func TestNameAndURL(t *testing.T) {
+func TestNameAndService(t *testing.T) {
 	if Name("myapp", "x") != "myapp-x" {
 		t.Errorf("Name = %q", Name("myapp", "x"))
 	}
-	if URL("x", "myapp.test") != "http://x.myapp.test" {
-		t.Errorf("URL = %q", URL("x", "myapp.test"))
+	if ServiceName("myapp", "x", "api") != "myapp-x-api" {
+		t.Errorf("ServiceName = %q", ServiceName("myapp", "x", "api"))
 	}
 }

@@ -37,9 +37,9 @@ type Workload struct {
 	WorktreePath string
 	Branch       string
 	Kind         string // compose | process | dockerfile
-	ContainerID  string // empty for process kind
-	PID          int64  // 0 for compose/dockerfile
-	Port         int    // 0 for compose/dockerfile (port lives in the container)
+	ContainerID  string
+	PID          int64 // reserved; legacy field for the dropped process adapter
+	Port         int   // reserved; same.
 	StartedAt    time.Time
 }
 

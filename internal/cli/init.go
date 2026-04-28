@@ -168,7 +168,26 @@ func detectComposeFile(toplevel, override string) (string, error) {
 			return p, nil
 		}
 	}
-	return "", errors.New("no compose file found (process and dockerfile kinds land in v0.2)")
+	return "", errors.New(`no docker-compose file found in this directory.
+
+pier is intentionally coupled to docker compose: every workload — even raw
+processes (uv/npm/cargo) — runs inside a container so worktrees stay
+isolated and reproducible across hosts.
+
+If your project doesn't otherwise containerize, drop a minimal
+docker-compose.dev.yml at its root, e.g.:
+
+  services:
+    app:
+      image: python:3.13-slim          # or node:20, rust:1, ...
+      working_dir: /app
+      volumes:
+        - ./:/app
+      command: sh -c "pip install uv && uv sync && uv run python run.py"
+      ports:
+        - "${PORT:-3000}:3000"
+
+Then re-run pier init.`)
 }
 
 func ask(reader *bufio.Reader, out io.Writer, label, def string, yes bool) string {

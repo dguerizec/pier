@@ -87,9 +87,6 @@ func TestFor(t *testing.T) {
 	if a, err := For(manifest.KindCompose); err != nil || a == nil {
 		t.Errorf("For(compose) = (%v, %v), want non-nil adapter", a, err)
 	}
-	if _, err := For(manifest.KindProcess); err == nil {
-		t.Error("For(process) should be unsupported in MVP")
-	}
 	if _, err := For("nonsense"); err == nil {
 		t.Error("For(nonsense) should error")
 	}

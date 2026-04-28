@@ -17,8 +17,7 @@ const (
 	FileName       = ".pier.toml"
 	LocalFileName  = ".pier.local.toml"
 	KindCompose    = "compose"
-	KindProcess    = "process"
-	KindDockerfile = "dockerfile"
+	KindDockerfile = "dockerfile" // synthesized compose; adapter lands in Phase 3
 )
 
 // ErrNotFound signals that no .pier.toml exists at the given root.
@@ -38,16 +37,16 @@ type Project struct {
 	BaseDomain string `toml:"base_domain"`
 }
 
-// Stack covers all three adapter kinds. Only fields relevant to Kind are
-// expected to be set; Validate enforces this.
+// Stack covers the supported adapter kinds. Pier is intentionally
+// docker-coupled: even one-off raw processes (uv/npm/cargo) are expected
+// to declare a docker-compose.dev.yml. The README has a 10-line minimal
+// example for projects that don't otherwise containerize.
 type Stack struct {
 	Kind       string `toml:"kind"`
 	Port       int    `toml:"port"`
 	File       string `toml:"file,omitempty"`       // compose
 	Service    string `toml:"service,omitempty"`    // compose
-	Cmd        string `toml:"cmd,omitempty"`        // process
-	PortEnv    string `toml:"port_env,omitempty"`   // process
-	Dockerfile string `toml:"dockerfile,omitempty"` // dockerfile
+	Dockerfile string `toml:"dockerfile,omitempty"` // dockerfile (Phase 3 — synthesized compose)
 
 	// MatchHostUID, when true, makes pier inject `user: "<uid>:<gid>"`
 	// into the compose override so the container runs as the host user.
@@ -133,10 +132,6 @@ func (m *Manifest) Validate() error {
 		if m.Stack.Port == 0 {
 			return errors.New("manifest: stack.port is required for kind=compose")
 		}
-	case KindProcess:
-		if m.Stack.Cmd == "" {
-			return errors.New("manifest: stack.cmd is required for kind=process")
-		}
 	case KindDockerfile:
 		if m.Stack.Dockerfile == "" {
 			return errors.New("manifest: stack.dockerfile is required for kind=dockerfile")
@@ -147,7 +142,7 @@ func (m *Manifest) Validate() error {
 	case "":
 		return errors.New("manifest: stack.kind is required")
 	default:
-		return fmt.Errorf("manifest: stack.kind %q must be one of compose|process|dockerfile", m.Stack.Kind)
+		return fmt.Errorf("manifest: stack.kind %q must be compose (or dockerfile, Phase 3)", m.Stack.Kind)
 	}
 
 	if oc := m.Watch.OnChange; oc != "" && oc != "rebuild" && oc != "restart" {

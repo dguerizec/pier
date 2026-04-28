@@ -77,7 +77,7 @@ func appendStateChecks(r *infra.Report) {
 	for _, w := range workloads {
 		name := fmt.Sprintf("workload %s/%s", w.Project, w.Slug)
 		if w.ContainerID == "" {
-			r.Checks = append(r.Checks, infra.Check{Name: name, Status: infra.StatusWarn, Detail: "process kind not yet supported by doctor"})
+			r.Checks = append(r.Checks, infra.Check{Name: name, Status: infra.StatusWarn, Detail: "no container_id recorded — state row may be stale"})
 			continue
 		}
 		if !containerAlive(w.ContainerID) {

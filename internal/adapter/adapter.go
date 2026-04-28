@@ -1,6 +1,10 @@
 // Package adapter abstracts how a workload is brought up, taken down, and
-// inspected. compose, process, and dockerfile each implement the same
-// interface so daily commands stay agnostic.
+// inspected. compose is the only kind in v0.2; dockerfile (synthesized
+// compose) lands in Phase 3. The process kind from DESIGN §5.5 was
+// dropped — pier is intentionally docker-coupled, even for raw-process
+// stacks (uv/npm/cargo), because it keeps a single execution path,
+// avoids host port/PID/log management, and works on any platform docker
+// supports. See README's "minimal compose" example.
 package adapter
 
 import (
@@ -26,8 +30,6 @@ type Ctx struct {
 // Handle is the state to persist after a successful Up.
 type Handle struct {
 	ContainerID string // compose / dockerfile
-	PID         int64  // process kind
-	Port        int    // process kind
 }
 
 // Adapter is implemented per stack kind.
@@ -45,10 +47,10 @@ func For(kind string) (Adapter, error) {
 	switch kind {
 	case manifest.KindCompose:
 		return &compose{}, nil
-	case manifest.KindProcess, manifest.KindDockerfile:
-		return nil, fmt.Errorf("%w: %q (compose-only in MVP)", ErrUnsupportedKind, kind)
+	case manifest.KindDockerfile:
+		return nil, fmt.Errorf("%w: %q — dockerfile adapter (synthesized compose) lands in Phase 3. Add a docker-compose.dev.yml that uses your Dockerfile (`build: .`) for now.", ErrUnsupportedKind, kind)
 	default:
-		return nil, fmt.Errorf("%w: %q", ErrUnsupportedKind, kind)
+		return nil, fmt.Errorf("%w: %q (only `compose` is supported)", ErrUnsupportedKind, kind)
 	}
 }
 

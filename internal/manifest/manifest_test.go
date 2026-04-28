@@ -111,7 +111,7 @@ func TestValidate_Errors(t *testing.T) {
 		{
 			"unknown kind",
 			Manifest{Project: Project{Name: "x", BaseDomain: "x.test"}, Stack: Stack{Kind: "bogus"}},
-			"compose|process|dockerfile",
+			"must be compose",
 		},
 		{
 			"compose without file",
@@ -122,11 +122,6 @@ func TestValidate_Errors(t *testing.T) {
 			"compose without port",
 			Manifest{Project: Project{Name: "x", BaseDomain: "x.test"}, Stack: Stack{Kind: KindCompose, File: "a"}},
 			"stack.port",
-		},
-		{
-			"process without cmd",
-			Manifest{Project: Project{Name: "x", BaseDomain: "x.test"}, Stack: Stack{Kind: KindProcess}},
-			"stack.cmd",
 		},
 		{
 			"dockerfile without dockerfile",

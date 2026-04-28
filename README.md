@@ -15,7 +15,9 @@ Architecture and roadmap live in [DESIGN.md](DESIGN.md). This README is the prac
 
 ## Status
 
-Phase 1 MVP and most of Phase 2 are shipped. Compose adapter, install wizard, BYO-traefik, server mode, headscale records mode, doctor, materialize, worktree wrapper — all in. Backlog: process adapter (uv/npm/cargo), MCP shim, gc, watch, macOS DNS support. See [DESIGN.md §8](DESIGN.md#8-roadmap).
+Phase 1 MVP and most of Phase 2 are shipped. Compose adapter, install wizard, BYO-traefik, server mode, headscale records mode, doctor, materialize, worktree wrapper — all in. Backlog: MCP shim, dockerfile adapter (synthesized compose), gc, watch, macOS DNS support. See [DESIGN.md §8](DESIGN.md#8-roadmap).
+
+Pier is intentionally **docker-coupled** — even projects that aren't otherwise containerized declare a minimal `docker-compose.dev.yml`. See the snippet in [Per-repo setup](#per-repo-setup-once-per-project) below.
 
 ## Install
 
@@ -92,7 +94,7 @@ name        = "myapp"
 base_domain = "myapp.test"
 
 [stack]
-kind            = "compose"             # compose only in MVP
+kind            = "compose"             # compose only today
 file            = "docker-compose.dev.yml"
 service         = "web"
 port            = 3000
@@ -106,6 +108,25 @@ snapshots = ["data-dev/"]               # copied per worktree (own mutable copy)
 ```
 
 `.pier.local.toml` next to it is always gitignored — per-developer overrides (alternate ports, custom slug, etc.).
+
+### Minimal compose for raw-process stacks
+
+Pier requires a `docker-compose.dev.yml` even when your project isn't otherwise containerized — same execution path on every host, no host port/PID/log juggling. For Python / Node / Rust projects the file is ~10 lines:
+
+```yaml
+# docker-compose.dev.yml
+services:
+  app:
+    image: python:3.13-slim                 # or node:20, rust:1, etc.
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: sh -c "pip install uv && uv sync && uv run python run.py"
+    ports:
+      - "${PORT:-3000}:3000"
+```
+
+Adjust the image, command, and port for your stack. `pier init` then detects it like any other compose file.
 
 ## Daily workflow
 
@@ -173,7 +194,7 @@ Test peer resolution with `resolvectl query <slug>.<base_domain>` rather than `d
 - **Linux only** for host DNS auto-config in MVP. macOS support is on the v0.2 list.
 - **No TLS** — HTTP only on the reserved `.test` TLD (or under your tailnet base_domain in records mode). mkcert + Let's Encrypt is post-v1.
 - **Trust boundary = VPN peers**. Anyone in your tailnet can reach any pier URL. A `[security].basic_auth` middleware is a post-MVP nice-to-have.
-- **Compose only** in v0.1 — process and dockerfile adapters land in v0.2.
+- **Compose only.** Even raw-process stacks (uv/npm/cargo) declare a `docker-compose.dev.yml` — see the minimal snippet below. The dockerfile adapter (which synthesizes a compose file from a Dockerfile) lands in Phase 3.
 
 ## Contributing
 

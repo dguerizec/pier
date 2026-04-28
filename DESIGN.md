@@ -5,6 +5,15 @@
 > agentic workflow: each agent works on its own worktree, deploys to its own
 > ephemeral environment, returns a clickable URL.
 
+## Status & decisions made post-DESIGN
+
+This document captures the original design. Some decisions were revised during implementation; the README and AGENTS.md reflect the current behaviour, and these notes reconcile the two:
+
+- **Process adapter (§5.5) was dropped.** Pier is intentionally docker-coupled — even raw-process stacks (uv/npm/cargo) declare a `docker-compose.dev.yml`. Single execution path, no host port/PID/log management, works on any platform docker supports. `kind = "process"` is no longer accepted; `auto-detect` for non-compose projects errors with instructions for a 10-line minimal compose.
+- **`main`/`master` slug.** §5.1's "force `dev`" rule was a convention that collides with real-world setups where `dev.<project>.<tld>` is already taken (e.g. a hand-managed prod-dev container). The branch name now passes through as-is; users who want `dev` pass `--slug dev`.
+- **Headscale records adapter** — added beyond the original DESIGN. When a host runs headscale with `extra_records_path` configured, pier writes per-slug A records to that file (file-locked, atomic-rename) and skips pier-dnsmasq + host DNS entirely. MagicDNS does the routing.
+- **Wizard install (`pier install` no flags)** — added beyond the original DESIGN. Auto-detects tailscale + existing traefik + headscale and proposes one concrete plan.
+
 ## 1. Goals
 
 - **One install, all projects.** Bootstrap reverse proxy + wildcard DNS once

@@ -11,7 +11,7 @@ A Go CLI that gives every git worktree a stable URL on a local dev TLD by orches
 ```
 cmd/pier/main.go        entry point — just calls cli.Execute()
 internal/cli/           cobra commands. Each command is a thin shim over internal/<package>.
-internal/adapter/       compose adapter (today). Add new kinds (process, dockerfile) here.
+internal/adapter/       compose adapter (today); dockerfile (synthesized compose) lands in Phase 3. Pier is intentionally docker-coupled — no process adapter.
 internal/infra/         install/uninstall/doctor: traefik + dnsmasq + host DNS bootstrap.
 internal/detect/        host introspection (tailscale, traefik, headscale) for the wizard.
 internal/headscale/     split-DNS yaml patch + extra_records JSON adapter (file-locked).
@@ -56,7 +56,7 @@ Branches in flight should not have revert-revert thrashing once a hypothesis is 
 - Don't add comments that restate the code. Write a comment when the **why** is non-obvious: a hidden constraint, a workaround for a specific bug, behaviour that would surprise a reader. Removing the comment shouldn't confuse the reader.
 - Don't add error handling, fallbacks, or validation for scenarios that can't happen. Trust internal callers; only validate at boundaries (user input, external APIs).
 - Don't backwards-compat for code paths that haven't shipped. Renames are free until the binary is in users' hands.
-- `internal/` packages should not import each other unnecessarily. Keep adapter, materialize, infra, headscale, etc. independent so future MCP / process / dockerfile work can compose them differently.
+- `internal/` packages should not import each other unnecessarily. Keep adapter, materialize, infra, headscale, etc. independent so future MCP / dockerfile work can compose them differently.
 
 ## Pitfalls (learned the hard way)
 
@@ -81,7 +81,9 @@ The pattern that works:
 4. Smoke test on a real host — the user does this and reports back. Pier touches docker/sudo, so the agent must not try to run them via Bash.
 5. One commit per step.
 
-When the feature touches a new infra component (e.g. process adapter, MCP shim), add a new sub-package under `internal/`. Don't pollute existing packages. The doctor + install + uninstall paths likely need a new branch — keep them obvious with a `cfg.<NewMode> != ""` guard.
+When the feature touches a new infra component (e.g. dockerfile adapter, MCP shim), add a new sub-package under `internal/`. Don't pollute existing packages. The doctor + install + uninstall paths likely need a new branch — keep them obvious with a `cfg.<NewMode> != ""` guard.
+
+Pier is **intentionally docker-coupled**. Even raw-process workloads (uv/npm/cargo) declare a `docker-compose.dev.yml`; this keeps the codebase to a single execution path, avoids host port/PID/log management, and works on any platform docker supports. The process adapter from DESIGN §5.5 was explicitly dropped — don't reintroduce it without revisiting the decision.
 
 ## What NOT to do
 

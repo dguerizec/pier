@@ -50,8 +50,6 @@ func newUpCmd() *cobra.Command {
 				Branch:       d.Worktree.Branch,
 				Kind:         d.Manifest.Stack.Kind,
 				ContainerID:  h.ContainerID,
-				PID:          h.PID,
-				Port:         h.Port,
 			})
 			if err != nil {
 				return fmt.Errorf("persist workload: %w", err)

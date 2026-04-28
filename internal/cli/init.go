@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -94,9 +95,17 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 	}
 	fmt.Fprintf(stdout, "Detected: %s\n", filepath.Base(composeFile))
 
-	autoService, autoPort := guessComposeServiceAndPort(composeFile)
-	if autoService != "" {
-		fmt.Fprintf(stdout, "  service: %s%s\n", autoService, portSuffix(autoPort))
+	candidates := listComposeServicesWithPorts(composeFile)
+	switch len(candidates) {
+	case 0:
+		fmt.Fprintln(stdout, "  no service with published ports detected — pick one manually.")
+	case 1:
+		fmt.Fprintf(stdout, "  service: %s (container port %d)\n", candidates[0].Service, candidates[0].Port)
+	default:
+		fmt.Fprintln(stdout, "  services with published ports:")
+		for _, c := range candidates {
+			fmt.Fprintf(stdout, "    - %s (port %d)\n", c.Service, c.Port)
+		}
 	}
 
 	reader := bufio.NewReader(stdin)
@@ -116,24 +125,31 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 		domain = ask(reader, stdout, "Base domain", domain, opts.yes)
 	}
 
-	service := pick(opts.service, autoService)
-	if service == "" || !opts.yes {
-		service = ask(reader, stdout, "Service to expose (compose service name)", service, opts.yes)
+	defaultService := opts.service
+	if defaultService == "" && len(candidates) > 0 {
+		defaultService = candidates[0].Service
 	}
+	service := ask(reader, stdout, "Service to expose", defaultService, opts.yes)
 	if service == "" {
 		return errors.New("service to expose is required (use --service or answer the prompt)")
 	}
 
-	portStr := ""
-	if opts.port != 0 {
-		portStr = strconv.Itoa(opts.port)
-	} else if autoPort != 0 {
-		portStr = strconv.Itoa(autoPort)
+	port := opts.port
+	if port == 0 {
+		for _, c := range candidates {
+			if c.Service == service {
+				port = c.Port
+				break
+			}
+		}
 	}
-	portStr = ask(reader, stdout, "Container port", portStr, opts.yes)
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port <= 0 {
-		return fmt.Errorf("invalid port %q", portStr)
+	if port == 0 {
+		portStr := ask(reader, stdout, "Container port", "", opts.yes)
+		n, err := strconv.Atoi(portStr)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("invalid port %q", portStr)
+		}
+		port = n
 	}
 
 	// Default: manifest is committed so `git worktree add` carries it into
@@ -190,16 +206,23 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 	return nil
 }
 
-// guessComposeServiceAndPort parses path and returns the only service that
-// declares a published port, plus the container-side port. Returns empty
-// strings when there's no unambiguous candidate (zero, two+, no ports).
+// composeCandidate is one (service, container_port) pair extracted from the
+// compose file's `services.<name>.ports` entries.
+type composeCandidate struct {
+	Service string
+	Port    int
+}
+
+// listComposeServicesWithPorts returns every service that declares at least
+// one published port, paired with its first container-side port. The list
+// is sorted by service name so the wizard renders it deterministically.
 //
 // We don't pull compose-go for this — a tiny stub of the relevant fields is
 // enough and keeps the dep graph small.
-func guessComposeServiceAndPort(path string) (service string, port int) {
+func listComposeServicesWithPorts(path string) []composeCandidate {
 	body, err := os.ReadFile(path)
 	if err != nil {
-		return "", 0
+		return nil
 	}
 	var doc struct {
 		Services map[string]struct {
@@ -207,23 +230,19 @@ func guessComposeServiceAndPort(path string) (service string, port int) {
 		} `yaml:"services"`
 	}
 	if err := yamlUnmarshal(body, &doc); err != nil {
-		return "", 0
+		return nil
 	}
-	candidates := make([]string, 0, len(doc.Services))
-	ports := make(map[string]int, len(doc.Services))
+	out := make([]composeCandidate, 0, len(doc.Services))
 	for name, svc := range doc.Services {
 		for _, p := range svc.Ports {
 			if cp := parseContainerPort(p); cp > 0 {
-				candidates = append(candidates, name)
-				ports[name] = cp
+				out = append(out, composeCandidate{Service: name, Port: cp})
 				break
 			}
 		}
 	}
-	if len(candidates) == 1 {
-		return candidates[0], ports[candidates[0]]
-	}
-	return "", 0
+	sort.Slice(out, func(i, j int) bool { return out[i].Service < out[j].Service })
+	return out
 }
 
 // parseContainerPort extracts the container-side port from a compose ports
@@ -259,13 +278,6 @@ func parseContainerPort(entry any) int {
 		}
 	}
 	return 0
-}
-
-func portSuffix(p int) string {
-	if p == 0 {
-		return ""
-	}
-	return fmt.Sprintf(" (container port %d)", p)
 }
 
 // detectDefaultBranch returns the conventional default branch (main or

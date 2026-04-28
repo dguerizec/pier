@@ -117,16 +117,21 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 	}
 
 	if env.Headscale.Found && env.Tailscale.Active && env.Headscale.ConfigPath != "" {
+		// Records mode is already wired through Config — no headscale
+		// auto-patch needed. The MagicDNS layer resolves slugs as soon as
+		// pier up writes them.
+		if plan.HeadscaleRecordsPath != "" {
+			fmt.Fprintln(out)
+			fmt.Fprintf(out, "✓ records mode: pier up/down will manage %s\n", plan.HeadscaleRecordsPath)
+			return nil
+		}
 		fmt.Fprintln(out)
 		// Split-DNS push only works for TLDs OUTSIDE the headscale
-		// base_domain — sub-domains of base_domain stay under MagicDNS's
-		// authoritative scope, so the rule never reaches peers as a
-		// routing directive. We refuse to auto-patch in that case rather
-		// than write yaml that silently does nothing.
+		// base_domain. tldIsUnder false ⇒ safe to auto-patch.
 		if env.Headscale.BaseDomain != "" && tldIsUnder(plan.TLD, env.Headscale.BaseDomain) {
-			fmt.Fprintf(out, "! pier TLD %q is a sub-domain of headscale base_domain %q — MagicDNS\n", plan.TLD, env.Headscale.BaseDomain)
-			fmt.Fprintln(out, "  takes priority over split-DNS for those names. Pick a TLD outside the")
-			fmt.Fprintln(out, "  base_domain (e.g. `--tld test`) or wait for the v0.3 extra_records adapter.")
+			fmt.Fprintf(out, "! pier TLD %q is under headscale base_domain %q but extra_records is not configured.\n", plan.TLD, env.Headscale.BaseDomain)
+			fmt.Fprintln(out, "  Pick a TLD outside the base_domain (e.g. `--tld test`) for split-DNS,")
+			fmt.Fprintln(out, "  or set dns.extra_records_path in headscale.yaml so pier can publish records.")
 			return nil
 		}
 		if base.yes || confirm(cmd.InOrStdin(), out, fmt.Sprintf("Patch %s with .%s split-DNS?", env.Headscale.ConfigPath, plan.TLD), true) {
@@ -172,13 +177,15 @@ func composeInstallPlan(env detect.Environment, base installOpts) infra.InstallO
 		TraefikNetwork:  base.traefikNetwork,
 	}
 	if plan.TLD == "" {
-		// .test stays the default. Reusing the headscale base_domain (e.g.
-		// pier.nebula) sounds clever but tailscale's MagicDNS owns the
-		// whole `nebula` zone — split-DNS rules for sub-domains don't
-		// override MagicDNS's NXDOMAIN, so peers can never reach pier
-		// URLs via the tailnet without going through extra_records JSON.
-		// The extra_records adapter (Phase 3) handles that case properly.
-		plan.TLD = infra.DefaultTLD
+		// When extra_records is available, pier can publish per-slug records
+		// directly under the headscale base_domain (MagicDNS resolves them
+		// for free) — that's strictly better than inventing a `.test` TLD
+		// alongside. Otherwise default to .test (split-DNS path).
+		if env.Headscale.RecordsPath != "" && env.Headscale.BaseDomain != "" {
+			plan.TLD = env.Headscale.BaseDomain
+		} else {
+			plan.TLD = infra.DefaultTLD
+		}
 	}
 	switch {
 	case env.Tailscale.Active:
@@ -204,6 +211,14 @@ func composeInstallPlan(env detect.Environment, base installOpts) infra.InstallO
 			plan.TraefikNetwork = env.Traefik.Network
 		}
 	}
+	// Records mode kicks in only when the chosen TLD is a sub-domain of (or
+	// identical to) the headscale base_domain — that's the case where
+	// MagicDNS owns the lookups and split-DNS is preempted. In other
+	// cases the records publication wouldn't survive a peer query.
+	if env.Headscale.RecordsPath != "" && env.Headscale.BaseDomain != "" && tldIsUnder(plan.TLD, env.Headscale.BaseDomain) {
+		plan.HeadscaleContainer = env.Headscale.Container
+		plan.HeadscaleRecordsPath = env.Headscale.RecordsPath
+	}
 	return plan
 }
 
@@ -220,6 +235,9 @@ func planSummary(p infra.InstallOptions) string {
 	}
 	if p.TraefikNetwork != "" {
 		parts = append(parts, "--traefik-network "+p.TraefikNetwork)
+	}
+	if p.HeadscaleRecordsPath != "" {
+		parts = append(parts, "(records mode: "+p.HeadscaleRecordsPath+")")
 	}
 	return strings.Join(parts, " ")
 }

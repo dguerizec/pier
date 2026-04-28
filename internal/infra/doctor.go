@@ -101,10 +101,28 @@ func Diagnose() Report {
 	} else {
 		r.Checks = append(r.Checks, checkContainerRunning(TraefikContainer))
 	}
-	r.Checks = append(r.Checks, checkContainerRunning(DnsmasqContainer))
-	r.Checks = append(r.Checks, checkDNSResolution(cfg.TLD, cfg.BindIP, cfg.EffectiveAnswerIP()))
-	r.Checks = append(r.Checks, checkResolvedDropin(cfg.TLD))
+	if cfg.HeadscaleRecordsPath == "" {
+		// Records mode skips dnsmasq + host DNS entirely — MagicDNS does
+		// the routing.
+		r.Checks = append(r.Checks, checkContainerRunning(DnsmasqContainer))
+		r.Checks = append(r.Checks, checkDNSResolution(cfg.TLD, cfg.BindIP, cfg.EffectiveAnswerIP()))
+		r.Checks = append(r.Checks, checkResolvedDropin(cfg.TLD))
+	} else {
+		r.Checks = append(r.Checks, checkRecordsFile(cfg.HeadscaleRecordsPath))
+	}
 	return r
+}
+
+func checkRecordsFile(path string) Check {
+	if _, err := os.Stat(path); err != nil {
+		return Check{
+			Name:    "headscale records file " + path,
+			Status:  StatusFail,
+			Detail:  err.Error(),
+			FixHint: "ensure headscale's extra_records_path file exists and is writable",
+		}
+	}
+	return Check{Name: "headscale records file " + path, Status: StatusPass}
 }
 
 // Fix attempts to recover from the failures Diagnose reports. Returns a new
@@ -131,7 +149,8 @@ func Fix() Report {
 		}
 	}
 
-	// Containers: pier-traefik only when pier-managed; dnsmasq always.
+	// Containers: pier-traefik only when pier-managed; dnsmasq only when
+	// not in records mode (where MagicDNS replaces the resolver).
 	type containerSpec struct {
 		name string
 		args func(*Paths, string) []string
@@ -140,7 +159,9 @@ func Fix() Report {
 	if cfg.ExternalTraefik == "" {
 		containers = append(containers, containerSpec{TraefikContainer, traefikRunArgs})
 	}
-	containers = append(containers, containerSpec{DnsmasqContainer, dnsmasqRunArgs})
+	if cfg.HeadscaleRecordsPath == "" {
+		containers = append(containers, containerSpec{DnsmasqContainer, dnsmasqRunArgs})
+	}
 
 	for _, c := range containers {
 		if !containerIsRunning(c.name) {

@@ -64,6 +64,44 @@ func DetectFrom(dir string) (*Info, error) {
 	}, nil
 }
 
+// Entry is one row of `git worktree list --porcelain`.
+type Entry struct {
+	Path   string // absolute worktree path
+	Branch string // short branch name, "" when detached
+}
+
+// List returns every worktree registered against the repo containing dir.
+// Pass "" to use the process working directory.
+func List(dir string) ([]Entry, error) {
+	out, err := gitRaw(dir, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	var entries []Entry
+	var cur Entry
+	flush := func() {
+		if cur.Path != "" {
+			entries = append(entries, cur)
+		}
+		cur = Entry{}
+	}
+	scanner := bufio.NewScanner(strings.NewReader(out))
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			flush()
+			cur.Path = strings.TrimPrefix(line, "worktree ")
+		case strings.HasPrefix(line, "branch "):
+			cur.Branch = strings.TrimPrefix(strings.TrimPrefix(line, "branch "), "refs/heads/")
+		case line == "":
+			flush()
+		}
+	}
+	flush()
+	return entries, nil
+}
+
 func primaryPath(dir string) (string, error) {
 	out, err := gitRaw(dir, "worktree", "list", "--porcelain")
 	if err != nil {

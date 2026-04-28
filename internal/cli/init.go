@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -41,13 +42,15 @@ func installedTLD() string {
 }
 
 type initOpts struct {
-	name    string
-	domain  string
-	service string
-	port    int
-	file    string
-	private bool
-	yes     bool
+	name        string
+	domain      string
+	service     string
+	port        int
+	file        string
+	private     bool
+	yes         bool
+	worktreeDir string
+	baseRef     string
 }
 
 func newInitCmd() *cobra.Command {
@@ -74,6 +77,8 @@ func newInitCmd() *cobra.Command {
 	f.StringVar(&opts.file, "file", "", "compose file path (default: auto-detect)")
 	f.BoolVar(&opts.private, "private", false, "gitignore .pier.toml (default: commit it so secondary worktrees inherit it)")
 	f.BoolVarP(&opts.yes, "yes", "y", false, "accept all defaults, no prompts")
+	f.StringVar(&opts.worktreeDir, "worktree-dir", "", "where `pier worktree add <name>` places trees (default: .claude/worktrees)")
+	f.StringVar(&opts.baseRef, "base-ref", "", "ref new worktree branches fork from (default: detected main/master)")
 	return cmd
 }
 
@@ -133,6 +138,12 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 
 	// Default: manifest is committed so `git worktree add` carries it into
 	// every new worktree. --private flips this off and gitignores the file.
+	worktreeDir := pick(opts.worktreeDir, ".claude/worktrees")
+	worktreeDir = ask(reader, stdout, "Worktree dir for `pier worktree add <name>` (blank to disable)", worktreeDir, opts.yes)
+
+	baseRef := pick(opts.baseRef, detectDefaultBranch(toplevel))
+	baseRef = ask(reader, stdout, "Base ref new branches fork from (blank to use git default)", baseRef, opts.yes)
+
 	share := !opts.private
 	if !opts.yes && !opts.private {
 		share = askYesNo(reader, stdout, "Share manifest with team (commit to git)?", true)
@@ -145,6 +156,10 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 			File:    relTo(toplevel, composeFile),
 			Service: service,
 			Port:    port,
+		},
+		Worktree: manifest.Worktree{
+			Dir:     worktreeDir,
+			BaseRef: baseRef,
 		},
 	}
 	if err := m.Validate(); err != nil {
@@ -246,6 +261,19 @@ func portSuffix(p int) string {
 		return ""
 	}
 	return fmt.Sprintf(" (container port %d)", p)
+}
+
+// detectDefaultBranch returns the conventional default branch (main or
+// master) of the repo at toplevel, or "" when neither exists.
+func detectDefaultBranch(toplevel string) string {
+	for _, candidate := range []string{"main", "master"} {
+		c := exec.Command("git", "rev-parse", "--verify", "--quiet", candidate)
+		c.Dir = toplevel
+		if c.Run() == nil {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // detectComposeFile resolves the compose file to use. Order matches DESIGN §3.2.

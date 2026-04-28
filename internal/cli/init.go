@@ -13,9 +13,27 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/LeoPartt/pier/internal/infra"
 	"github.com/LeoPartt/pier/internal/manifest"
 	"github.com/LeoPartt/pier/internal/worktree"
 )
+
+// installedTLD returns the TLD pier was installed with so init's default
+// base_domain is coherent with the host (e.g. `<name>.nebula` when pier
+// runs in records mode under base_domain=nebula). Falls back to the
+// hard-coded `.test` when pier isn't installed yet — pier init shouldn't
+// require pier install.
+func installedTLD() string {
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		return infra.DefaultTLD
+	}
+	cfg, err := infra.LoadConfig(paths)
+	if err != nil || cfg.TLD == "" {
+		return infra.DefaultTLD
+	}
+	return cfg.TLD
+}
 
 type initOpts struct {
 	name    string
@@ -77,7 +95,7 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 		return err
 	}
 
-	defaultDomain := name + ".test"
+	defaultDomain := name + "." + installedTLD()
 	domain := pick(opts.domain, defaultDomain)
 	if domain == "" || !opts.yes {
 		domain = ask(reader, stdout, "Base domain", domain, opts.yes)

@@ -95,8 +95,12 @@ func Diagnose() Report {
 
 	r.Checks = append(r.Checks, checkConfigDir(paths))
 	r.Checks = append(r.Checks, checkDocker())
-	r.Checks = append(r.Checks, checkNetwork(NetworkName))
-	r.Checks = append(r.Checks, checkContainerRunning(TraefikContainer))
+	r.Checks = append(r.Checks, checkNetwork(cfg.EffectiveTraefikNetwork()))
+	if cfg.ExternalTraefik != "" {
+		r.Checks = append(r.Checks, checkContainerRunning(cfg.ExternalTraefik))
+	} else {
+		r.Checks = append(r.Checks, checkContainerRunning(TraefikContainer))
+	}
 	r.Checks = append(r.Checks, checkContainerRunning(DnsmasqContainer))
 	r.Checks = append(r.Checks, checkDNSResolution(cfg.TLD, cfg.BindIP))
 	r.Checks = append(r.Checks, checkResolvedDropin(cfg.TLD))
@@ -117,21 +121,29 @@ func Fix() Report {
 
 	report := Report{}
 
-	// Step 1 — fix infra. Network, containers, drop-in, in that order
-	// because each step can depend on the previous.
 	d := newDocker()
-	if err := d.ensureNetwork(NetworkName); err == nil {
-		report.Actions = append(report.Actions, "ensured docker network "+NetworkName)
+
+	// Network: only manage the pier network when we own it. In BYO mode the
+	// network belongs to the user and pier doesn't recreate it.
+	if cfg.ExternalTraefik == "" {
+		if err := d.ensureNetwork(NetworkName); err == nil {
+			report.Actions = append(report.Actions, "ensured docker network "+NetworkName)
+		}
 	}
 
-	for _, c := range []struct {
+	// Containers: pier-traefik only when pier-managed; dnsmasq always.
+	type containerSpec struct {
 		name string
 		args func(*Paths, string) []string
-	}{
-		{TraefikContainer, traefikRunArgs},
-		{DnsmasqContainer, dnsmasqRunArgs},
-	} {
-		if running := containerIsRunning(c.name); !running {
+	}
+	var containers []containerSpec
+	if cfg.ExternalTraefik == "" {
+		containers = append(containers, containerSpec{TraefikContainer, traefikRunArgs})
+	}
+	containers = append(containers, containerSpec{DnsmasqContainer, dnsmasqRunArgs})
+
+	for _, c := range containers {
+		if !containerIsRunning(c.name) {
 			_ = d.removeContainer(c.name)
 			if _, err := d.run(c.args(paths, cfg.BindIP)...); err == nil {
 				report.Actions = append(report.Actions, "restarted container "+c.name)

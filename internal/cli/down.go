@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/LeoPartt/pier/internal/adapter"
+	"github.com/LeoPartt/pier/internal/headscale"
 	"github.com/LeoPartt/pier/internal/materialize"
 )
 
@@ -36,6 +37,15 @@ func newDownCmd() *cobra.Command {
 
 			if err := d.State.Delete(d.Ctx.Project, d.Ctx.Slug); err != nil {
 				return fmt.Errorf("delete state row: %w", err)
+			}
+
+			if d.Config.HeadscaleRecordsPath != "" {
+				name := adapter.RecordName(d.Ctx.Slug, d.Ctx.BaseDomain)
+				if removed, err := headscale.Remove(d.Config.HeadscaleRecordsPath, name); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "! headscale records remove %s: %v\n", name, err)
+				} else if removed {
+					fmt.Fprintf(cmd.OutOrStdout(), "✓ headscale record removed: %s\n", name)
+				}
 			}
 
 			if opts.purge {

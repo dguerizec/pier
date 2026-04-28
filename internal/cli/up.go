@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
 	"github.com/LeoPartt/pier/internal/adapter"
+	"github.com/LeoPartt/pier/internal/headscale"
 	"github.com/LeoPartt/pier/internal/materialize"
 	"github.com/LeoPartt/pier/internal/state"
 )
@@ -53,6 +55,18 @@ func newUpCmd() *cobra.Command {
 			})
 			if err != nil {
 				return fmt.Errorf("persist workload: %w", err)
+			}
+
+			if d.Config.HeadscaleRecordsPath != "" {
+				name := adapter.RecordName(d.Ctx.Slug, d.Ctx.BaseDomain)
+				added, err := headscale.Add(d.Config.HeadscaleRecordsPath, name, d.Config.EffectiveAnswerIP())
+				if errors.Is(err, headscale.ErrConflict) {
+					fmt.Fprintf(cmd.ErrOrStderr(), "! headscale: %s already mapped elsewhere; not overwriting\n", name)
+				} else if err != nil {
+					return fmt.Errorf("headscale records: %w", err)
+				} else if added {
+					fmt.Fprintf(cmd.OutOrStdout(), "✓ headscale record: %s → %s\n", name, d.Config.EffectiveAnswerIP())
+				}
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "→ %s\n", adapter.URL(d.Ctx.Slug, d.Ctx.BaseDomain))

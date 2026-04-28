@@ -57,3 +57,7 @@ func Name(project, slug string) string { return project + "-" + slug }
 
 // URL is the user-visible URL for the workload.
 func URL(slug, baseDomain string) string { return "http://" + slug + "." + baseDomain }
+
+// RecordName is the DNS name written to headscale's extra_records JSON
+// — same shape as URL, minus the scheme.
+func RecordName(slug, baseDomain string) string { return slug + "." + baseDomain }

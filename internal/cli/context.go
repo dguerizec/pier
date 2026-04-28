@@ -22,6 +22,7 @@ type daily struct {
 	Ctx      adapter.Ctx
 	State    *state.Store
 	Paths    *infra.Paths
+	Config   *infra.Config
 }
 
 // resolveDaily detects the worktree, loads the manifest, computes the slug
@@ -74,6 +75,7 @@ func resolveDaily(slugOverride string) (*daily, error) {
 		Manifest: m,
 		Slug:     slug,
 		Paths:    paths,
+		Config:   cfg,
 		State:    store,
 		Ctx: adapter.Ctx{
 			Project:        m.Project.Name,

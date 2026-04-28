@@ -77,7 +77,7 @@ func newInitCmd() *cobra.Command {
 	f.StringVar(&opts.file, "file", "", "compose file path (default: auto-detect)")
 	f.BoolVar(&opts.private, "private", false, "gitignore .pier.toml (default: commit it so secondary worktrees inherit it)")
 	f.BoolVarP(&opts.yes, "yes", "y", false, "accept all defaults, no prompts")
-	f.StringVar(&opts.worktreeDir, "worktree-dir", "", "where `pier worktree add <name>` places trees (default: .claude/worktrees)")
+	f.StringVar(&opts.worktreeDir, "worktree-dir", "", "where `pier worktree add <name>` places trees (default: .pier/worktrees)")
 	f.StringVar(&opts.baseRef, "base-ref", "", "ref new worktree branches fork from (default: detected main/master)")
 	return cmd
 }
@@ -138,7 +138,7 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 
 	// Default: manifest is committed so `git worktree add` carries it into
 	// every new worktree. --private flips this off and gitignores the file.
-	worktreeDir := pick(opts.worktreeDir, ".claude/worktrees")
+	worktreeDir := pick(opts.worktreeDir, ".pier/worktrees")
 	worktreeDir = ask(reader, stdout, "Worktree dir for `pier worktree add <name>` (blank to disable)", worktreeDir, opts.yes)
 
 	baseRef := pick(opts.baseRef, detectDefaultBranch(toplevel))
@@ -179,6 +179,11 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 	}
 	if err := ensureGitignore(toplevel, ".pier/"); err != nil {
 		fmt.Fprintf(stdout, "warning: could not update .gitignore: %v\n", err)
+	}
+	if entry := worktreeDirGitignoreEntry(toplevel, worktreeDir); entry != "" {
+		if err := ensureGitignore(toplevel, entry); err != nil {
+			fmt.Fprintf(stdout, "warning: could not update .gitignore: %v\n", err)
+		}
 	}
 
 	fmt.Fprintf(stdout, "✓ %s written\n", manifestPath)
@@ -390,6 +395,38 @@ func validateName(name string) error {
 		return fmt.Errorf("project name %q is not a valid DNS label", name)
 	}
 	return nil
+}
+
+// worktreeDirGitignoreEntry returns the .gitignore line to add for the
+// configured worktree dir, or "" when no entry is needed:
+//   - empty dir → user disabled the shorthand, nothing to ignore
+//   - absolute path or path that resolves outside the repo → out of scope
+//   - already covered by an ancestor we ignore (`.pier/`) → no-op
+//
+// Otherwise we return the dir relative to toplevel with a trailing slash so
+// gitignore matches it as a directory rather than a file.
+func worktreeDirGitignoreEntry(toplevel, dir string) string {
+	if dir == "" {
+		return ""
+	}
+	abs := dir
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(toplevel, abs)
+	}
+	rel, err := filepath.Rel(toplevel, abs)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	clean := filepath.ToSlash(rel)
+	if clean == "" || clean == "." {
+		return ""
+	}
+	if clean == ".pier" || strings.HasPrefix(clean, ".pier/") {
+		// .pier/ already lives in the gitignore; adding `.pier/worktrees/`
+		// would be noise.
+		return ""
+	}
+	return clean + "/"
 }
 
 // ensureGitignore appends entry to <toplevel>/.gitignore if not already there.

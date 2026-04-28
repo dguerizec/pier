@@ -115,6 +115,12 @@ func Purge(current string, mat manifest.Materialize, out io.Writer) error {
 //     (e.g. root-owned dir from a pre-`user:` compose run), we surface a
 //     blocked result so Apply can tell the user how to recover.
 func ensureSymlink(target, link string) (result, error) {
+	if _, err := os.Stat(target); errors.Is(err, os.ErrNotExist) {
+		return result{action: actionNoop}, nil
+	} else if err != nil {
+		return result{}, err
+	}
+
 	info, err := os.Lstat(link)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -131,9 +137,6 @@ func ensureSymlink(target, link string) (result, error) {
 		return result{action: actionNoop}, nil
 	}
 
-	if _, err := os.Stat(target); errors.Is(err, os.ErrNotExist) {
-		return result{action: actionNoop}, nil
-	}
 	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
 		return result{}, err
 	}
@@ -146,7 +149,20 @@ func ensureSymlink(target, link string) (result, error) {
 // ensureSnapshot copies src into dst on first up. Same docker-bind-mount
 // safety net as ensureSymlink: an empty dir is treated as "absent" since
 // the daemon often pre-creates it.
+//
+// We check src BEFORE touching dst — otherwise a primary that's missing
+// the snapshot source would have us remove the worktree's pre-existing
+// empty dir, only to bail at the copy step and leave docker free to
+// re-create dst as a root-owned dir.
 func ensureSnapshot(src, dst string) (result, error) {
+	srcInfo, err := os.Stat(src)
+	if errors.Is(err, os.ErrNotExist) {
+		return result{action: actionNoop}, nil
+	}
+	if err != nil {
+		return result{}, err
+	}
+
 	info, err := os.Lstat(dst)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -166,13 +182,6 @@ func ensureSnapshot(src, dst string) (result, error) {
 		return result{action: actionNoop}, nil
 	}
 
-	srcInfo, err := os.Stat(src)
-	if errors.Is(err, os.ErrNotExist) {
-		return result{action: actionNoop}, nil
-	}
-	if err != nil {
-		return result{}, err
-	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return result{}, err
 	}

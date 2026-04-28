@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/LeoPartt/pier/internal/adapter"
+	"github.com/LeoPartt/pier/internal/materialize"
 )
 
 type downOpts struct {
@@ -38,9 +39,9 @@ func newDownCmd() *cobra.Command {
 			}
 
 			if opts.purge {
-				// Snapshot purge is part of materialization (DESIGN §5.6),
-				// scheduled for the next iteration.
-				fmt.Fprintln(cmd.OutOrStdout(), "note: --purge is a no-op until snapshot materialization lands")
+				if err := materialize.Purge(d.Worktree.Toplevel, d.Manifest.Materialize, cmd.OutOrStdout()); err != nil {
+					return err
+				}
 			}
 
 			fmt.Fprintf(cmd.OutOrStdout(), "✓ %s stopped\n", adapter.Name(d.Ctx.Project, d.Ctx.Slug))

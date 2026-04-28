@@ -1,6 +1,7 @@
 package materialize
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -100,6 +101,87 @@ func TestApply_NoOpOnPrimary(t *testing.T) {
 	mustWrite(t, filepath.Join(primary, ".env"), "x")
 	if err := Apply(primary, primary, manifest.Materialize{Symlinks: []string{".env"}}, nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestApply_Snapshot_CopiesTree(t *testing.T) {
+	primary, current := setup(t)
+	mustMkdir(t, filepath.Join(primary, "data-dev"))
+	mustWrite(t, filepath.Join(primary, "data-dev", "app.db"), "primary-db")
+	mustWrite(t, filepath.Join(primary, "data-dev", "fixtures", "user.json"), `{"id":1}`)
+
+	if err := Apply(primary, current, manifest.Materialize{Snapshots: []string{"data-dev"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(current, "data-dev", "app.db"))
+	if err != nil || string(body) != "primary-db" {
+		t.Errorf("data-dev/app.db = %q, %v", body, err)
+	}
+	body, _ = os.ReadFile(filepath.Join(current, "data-dev", "fixtures", "user.json"))
+	if string(body) != `{"id":1}` {
+		t.Errorf("nested file not copied: %q", body)
+	}
+
+	// Mutating the copy must not leak back to primary.
+	if err := os.WriteFile(filepath.Join(current, "data-dev", "app.db"), []byte("worktree-only"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body, _ = os.ReadFile(filepath.Join(primary, "data-dev", "app.db"))
+	if string(body) != "primary-db" {
+		t.Errorf("primary mutated through snapshot: %q", body)
+	}
+}
+
+func TestApply_Snapshot_ReplacesEmptyDir(t *testing.T) {
+	primary, current := setup(t)
+	mustMkdir(t, filepath.Join(primary, "data-dev"))
+	mustWrite(t, filepath.Join(primary, "data-dev", "app.db"), "x")
+	mustMkdir(t, filepath.Join(current, "data-dev"))
+
+	if err := Apply(primary, current, manifest.Materialize{Snapshots: []string{"data-dev"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(filepath.Join(current, "data-dev", "app.db"))
+	if string(body) != "x" {
+		t.Errorf("snapshot did not populate empty dir: %q", body)
+	}
+}
+
+func TestApply_Snapshot_PreservesExisting(t *testing.T) {
+	primary, current := setup(t)
+	mustMkdir(t, filepath.Join(primary, "data-dev"))
+	mustWrite(t, filepath.Join(primary, "data-dev", "app.db"), "primary")
+	mustMkdir(t, filepath.Join(current, "data-dev"))
+	mustWrite(t, filepath.Join(current, "data-dev", "app.db"), "worktree-existing")
+
+	if err := Apply(primary, current, manifest.Materialize{Snapshots: []string{"data-dev"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(filepath.Join(current, "data-dev", "app.db"))
+	if string(body) != "worktree-existing" {
+		t.Errorf("snapshot overwrote a populated worktree dir: %q", body)
+	}
+}
+
+func TestPurge(t *testing.T) {
+	_, current := setup(t)
+	mustMkdir(t, filepath.Join(current, "data-dev"))
+	mustWrite(t, filepath.Join(current, "data-dev", "app.db"), "x")
+	mustWrite(t, filepath.Join(current, ".env"), "kept")
+
+	err := Purge(current, manifest.Materialize{
+		Snapshots: []string{"data-dev"},
+		Symlinks:  []string{".env"}, // must NOT be touched
+	}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(current, "data-dev")); !os.IsNotExist(err) {
+		t.Error("snapshot not purged")
+	}
+	if _, err := os.Stat(filepath.Join(current, ".env")); err != nil {
+		t.Errorf(".env should be untouched, got %v", err)
 	}
 }
 

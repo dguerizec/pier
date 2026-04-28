@@ -40,11 +40,12 @@ func newDownCmd() *cobra.Command {
 			}
 
 			if d.Config.HeadscaleRecordsPath != "" {
-				name := adapter.RecordName(d.Ctx.Slug, d.Ctx.BaseDomain)
-				if removed, err := headscale.Remove(d.Config.HeadscaleRecordsPath, name); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "! headscale records remove %s: %v\n", name, err)
-				} else if removed {
-					fmt.Fprintf(cmd.OutOrStdout(), "✓ headscale record removed: %s\n", name)
+				for _, name := range adapter.RecordNames(d.Ctx) {
+					if removed, err := headscale.Remove(d.Config.HeadscaleRecordsPath, name); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "! headscale records remove %s: %v\n", name, err)
+					} else if removed {
+						fmt.Fprintf(cmd.OutOrStdout(), "✓ headscale record removed: %s\n", name)
+					}
 				}
 			}
 

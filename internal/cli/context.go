@@ -125,6 +125,11 @@ func resolveDaily(slugOverride string) (*daily, error) {
 		return nil, err
 	}
 
+	defaultService := ""
+	if d := m.DefaultExpose(); d != nil {
+		defaultService = d.Service
+	}
+
 	return &daily{
 		Worktree: info,
 		Manifest: m,
@@ -138,6 +143,8 @@ func resolveDaily(slugOverride string) (*daily, error) {
 			BaseDomain:     m.Project.BaseDomain,
 			WorktreePath:   info.Toplevel,
 			Stack:          m.Stack,
+			Expose:         m.Expose,
+			DefaultService: defaultService,
 			TraefikNetwork: cfg.EffectiveTraefikNetwork(),
 			Out:            os.Stdout,
 			Err:            os.Stderr,

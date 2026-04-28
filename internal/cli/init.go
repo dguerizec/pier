@@ -45,8 +45,7 @@ func installedTLD() string {
 type initOpts struct {
 	name        string
 	domain      string
-	service     string
-	port        int
+	service     string // designates the default exposed service for the bare-slug alias
 	file        string
 	private     bool
 	yes         bool
@@ -73,8 +72,7 @@ func newInitCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&opts.name, "name", "", "project name (default: directory name)")
 	f.StringVar(&opts.domain, "domain", "", "base domain (default: <name>.test)")
-	f.StringVar(&opts.service, "service", "", "compose service name")
-	f.IntVar(&opts.port, "port", 0, "service port exposed by the workload")
+	f.StringVar(&opts.service, "service", "", "service that gets the bare <slug>.<base_domain> alias (default: first exposed)")
 	f.StringVar(&opts.file, "file", "", "compose file path (default: auto-detect)")
 	f.BoolVar(&opts.private, "private", false, "gitignore .pier.toml (default: commit it so secondary worktrees inherit it)")
 	f.BoolVarP(&opts.yes, "yes", "y", false, "accept all defaults, no prompts")
@@ -125,31 +123,23 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 		domain = ask(reader, stdout, "Base domain", domain, opts.yes)
 	}
 
-	defaultService := opts.service
-	if defaultService == "" && len(candidates) > 0 {
-		defaultService = candidates[0].Service
-	}
-	service := ask(reader, stdout, "Service to expose", defaultService, opts.yes)
-	if service == "" {
-		return errors.New("service to expose is required (use --service or answer the prompt)")
+	if len(candidates) == 0 {
+		return errors.New("no service with a published port detected; add `ports:` to at least one service in the compose file before running pier init")
 	}
 
-	port := opts.port
-	if port == 0 {
-		for _, c := range candidates {
-			if c.Service == service {
-				port = c.Port
-				break
-			}
-		}
+	exposes, err := pickExposes(reader, stdout, candidates, opts.yes)
+	if err != nil {
+		return err
 	}
-	if port == 0 {
-		portStr := ask(reader, stdout, "Container port", "", opts.yes)
-		n, err := strconv.Atoi(portStr)
-		if err != nil || n <= 0 {
-			return fmt.Errorf("invalid port %q", portStr)
-		}
-		port = n
+
+	defaultService := pick(opts.service, exposes[0].Service)
+	if !opts.yes {
+		defaultService = ask(reader, stdout,
+			"Default service (gets bare <slug>.<base_domain> alias; blank to disable)",
+			defaultService, false)
+	}
+	if defaultService != "" && !exposesContain(exposes, defaultService) {
+		fmt.Fprintf(stdout, "warning: default service %q is not exposed; no alias will be emitted\n", defaultService)
 	}
 
 	// Default: manifest is committed so `git worktree add` carries it into
@@ -170,9 +160,9 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 		Stack: manifest.Stack{
 			Kind:    manifest.KindCompose,
 			File:    relTo(toplevel, composeFile),
-			Service: service,
-			Port:    port,
+			Service: defaultService,
 		},
+		Expose: exposes,
 		Worktree: manifest.Worktree{
 			Dir:     worktreeDir,
 			BaseRef: baseRef,
@@ -204,6 +194,44 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 
 	fmt.Fprintf(stdout, "✓ %s written\n", manifestPath)
 	return nil
+}
+
+// pickExposes walks the detected services and asks the user which ones to
+// expose, with what host (sub-domain). With --yes (or no candidates that
+// would conflict), it accepts every detected service with its name as host.
+func pickExposes(reader *bufio.Reader, stdout io.Writer, candidates []composeCandidate, yes bool) ([]manifest.ExposeRule, error) {
+	var out []manifest.ExposeRule
+	for _, c := range candidates {
+		expose := true
+		if !yes {
+			expose = askYesNo(reader, stdout, fmt.Sprintf("Expose service %q on port %d?", c.Service, c.Port), true)
+		}
+		if !expose {
+			continue
+		}
+		host := c.Service
+		if !yes {
+			host = ask(reader, stdout, fmt.Sprintf("  Host (sub-domain label) for %q", c.Service), host, false)
+		}
+		rule := manifest.ExposeRule{Service: c.Service, Port: c.Port}
+		if host != c.Service {
+			rule.Host = host
+		}
+		out = append(out, rule)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("at least one service must be exposed")
+	}
+	return out, nil
+}
+
+func exposesContain(rules []manifest.ExposeRule, service string) bool {
+	for _, r := range rules {
+		if r.Service == service {
+			return true
+		}
+	}
+	return false
 }
 
 // composeCandidate is one (service, container_port) pair extracted from the

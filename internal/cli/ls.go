@@ -4,12 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
 
-	"github.com/BurntSushi/toml"
 	"github.com/spf13/cobra"
 
 	"github.com/LeoPartt/pier/internal/adapter"
@@ -52,16 +50,10 @@ func newLsCmd() *cobra.Command {
 
 			rows := make([]lsRow, 0, len(workloads))
 			for _, w := range workloads {
-				baseDomain, _ := baseDomainFor(w.WorktreePath)
-				if baseDomain == "" {
-					// Manifest gone — fall back to project.tld so the user
-					// still gets something usable.
-					baseDomain = w.Project + ".test"
-				}
 				rows = append(rows, lsRow{
 					Project: w.Project,
 					Slug:    w.Slug,
-					URL:     adapter.URL(w.Slug, baseDomain),
+					URL:     workloadURL(w),
 					Status:  containerStatus(w),
 					Uptime:  humanUptime(time.Since(w.StartedAt)),
 				})
@@ -86,19 +78,24 @@ func renderTable(cmd *cobra.Command, rows []lsRow) error {
 	return w.Flush()
 }
 
-// baseDomainFor reads <worktree>/.pier.toml and returns project.base_domain.
-// Skips validation so stale or partially-broken manifests still render
-// something usable in `pier ls`.
-func baseDomainFor(worktreePath string) (string, error) {
-	var stub struct {
-		Project struct {
-			BaseDomain string `toml:"base_domain"`
-		} `toml:"project"`
+// workloadURL derives the workload's default URL from its manifest. Falls
+// back to a `<slug>.<project>.test` shape when the manifest is gone or
+// unparseable so `pier ls` always prints something the user can react to.
+func workloadURL(w *state.Workload) string {
+	m, err := manifest.Load(w.WorktreePath)
+	if err != nil {
+		return "http://" + w.Slug + "." + w.Project + ".test"
 	}
-	if _, err := toml.DecodeFile(filepath.Join(worktreePath, manifest.FileName), &stub); err != nil {
-		return "", err
+	defaultService := ""
+	if d := m.DefaultExpose(); d != nil {
+		defaultService = d.Service
 	}
-	return stub.Project.BaseDomain, nil
+	return adapter.DefaultURL(adapter.Ctx{
+		Slug:           w.Slug,
+		BaseDomain:     m.Project.BaseDomain,
+		Expose:         m.Expose,
+		DefaultService: defaultService,
+	})
 }
 
 // containerStatus reports the runtime state of a workload by inspecting docker.

@@ -35,6 +35,7 @@ func init() {
 		newWatchCmd(),
 		newGCCmd(),
 		newClientCmd(),
+		newDoctorCmd(),
 	)
 }
 

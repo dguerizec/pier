@@ -102,7 +102,7 @@ func Diagnose() Report {
 		r.Checks = append(r.Checks, checkContainerRunning(TraefikContainer))
 	}
 	r.Checks = append(r.Checks, checkContainerRunning(DnsmasqContainer))
-	r.Checks = append(r.Checks, checkDNSResolution(cfg.TLD, cfg.BindIP))
+	r.Checks = append(r.Checks, checkDNSResolution(cfg.TLD, cfg.BindIP, cfg.EffectiveAnswerIP()))
 	r.Checks = append(r.Checks, checkResolvedDropin(cfg.TLD))
 	return r
 }
@@ -154,7 +154,7 @@ func Fix() Report {
 	// Wait briefly for containers to settle before re-checking DNS.
 	time.Sleep(500 * time.Millisecond)
 
-	if err := verifyDNS(cfg.TLD, cfg.BindIP); err != nil {
+	if err := verifyDNS(cfg.TLD, dnsProbeIP(cfg.BindIP), cfg.EffectiveAnswerIP()); err != nil {
 		// Try restarting dnsmasq once more then re-verify.
 		_, _ = d.run("restart", DnsmasqContainer)
 		time.Sleep(500 * time.Millisecond)
@@ -233,8 +233,8 @@ func containerIsRunning(name string) bool {
 	return err == nil && strings.TrimSpace(string(out)) == "true"
 }
 
-func checkDNSResolution(tld, bindIP string) Check {
-	if err := verifyDNS(tld, bindIP); err != nil {
+func checkDNSResolution(tld, bindIP, answerIP string) Check {
+	if err := verifyDNS(tld, dnsProbeIP(bindIP), answerIP); err != nil {
 		return Check{
 			Name:    fmt.Sprintf("dnsmasq answers anything.%s", tld),
 			Status:  StatusFail,
@@ -243,6 +243,16 @@ func checkDNSResolution(tld, bindIP string) Check {
 		}
 	}
 	return Check{Name: fmt.Sprintf("dnsmasq answers anything.%s", tld), Status: StatusPass}
+}
+
+// dnsProbeIP picks an IP we can dig against for verification. 0.0.0.0 is a
+// valid bind but not a valid resolver target; fall back to 127.0.0.1, which
+// dnsmasq listens on too in that case.
+func dnsProbeIP(bindIP string) string {
+	if bindIP == DefaultServerBind {
+		return "127.0.0.1"
+	}
+	return bindIP
 }
 
 func checkResolvedDropin(tld string) Check {

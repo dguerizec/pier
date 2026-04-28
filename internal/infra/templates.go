@@ -36,20 +36,25 @@ accessLog: {}
 	return []byte(tmpl), nil
 }
 
-// renderDnsmasqConfig wires *.<tld> to bindIP via dnsmasq.
-func renderDnsmasqConfig(tld, bindIP string) ([]byte, error) {
+// renderDnsmasqConfig wires *.<tld> to answerIP via dnsmasq, listening on
+// listenIP. listenIP and answerIP coincide in local mode; server mode
+// listens on 0.0.0.0 (or a specific tailnet IP) and answers with the IP
+// peers can reach.
+func renderDnsmasqConfig(tld, listenIP, answerIP string) ([]byte, error) {
 	t := template.Must(template.New("dnsmasq").Parse(`# managed by pier
 port=53
-listen-address={{.IP}}
+listen-address={{.Listen}}
+{{- if ne .Listen "0.0.0.0"}}
 bind-interfaces
+{{- end}}
 no-resolv
 no-hosts
 log-queries
 log-facility=-
-address=/{{.TLD}}/{{.IP}}
+address=/{{.TLD}}/{{.Answer}}
 `))
 	var buf bytes.Buffer
-	if err := t.Execute(&buf, struct{ TLD, IP string }{tld, bindIP}); err != nil {
+	if err := t.Execute(&buf, struct{ TLD, Listen, Answer string }{tld, listenIP, answerIP}); err != nil {
 		return nil, fmt.Errorf("render dnsmasq.conf: %w", err)
 	}
 	return buf.Bytes(), nil

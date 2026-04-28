@@ -11,9 +11,13 @@ import (
 // Config is the persisted install state. Written by Install, read by other
 // commands that need to know the active TLD or mode.
 type Config struct {
-	Mode   string `toml:"mode"`    // local | server
-	TLD    string `toml:"tld"`     // base TLD (e.g. test)
-	BindIP string `toml:"bind_ip"` // 127.0.0.1 in local mode, 0.0.0.0 in server
+	Mode   string `toml:"mode"`              // local | server
+	TLD    string `toml:"tld"`               // base TLD (e.g. test)
+	BindIP string `toml:"bind_ip"`           // listen IP — 127.0.0.1 (local) | 0.0.0.0 or specific (server)
+	// AnswerIP is what dnsmasq returns as the A record for *.tld. Equal to
+	// BindIP in local mode; set to the reachable IP (typically tailnet) in
+	// server mode so peers know where to send HTTP traffic.
+	AnswerIP string `toml:"answer_ip,omitempty"`
 
 	// TraefikNetwork is the docker network workloads register on for traefik
 	// label discovery. Defaults to NetworkName ("pier") in standard mode;
@@ -22,6 +26,15 @@ type Config struct {
 	// ExternalTraefik names the user-managed traefik container in BYO mode.
 	// Empty means pier owns its own pier-traefik container.
 	ExternalTraefik string `toml:"external_traefik,omitempty"`
+}
+
+// EffectiveAnswerIP returns AnswerIP or BindIP (older configs written before
+// AnswerIP existed used BindIP for both purposes).
+func (c *Config) EffectiveAnswerIP() string {
+	if c.AnswerIP != "" {
+		return c.AnswerIP
+	}
+	return c.BindIP
 }
 
 // EffectiveTraefikNetwork returns TraefikNetwork or NetworkName when unset

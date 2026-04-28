@@ -29,7 +29,8 @@ var ErrManualDNSNeeded = errors.New("infra: host DNS must be configured manually
 type InstallOptions struct {
 	Mode      string // ModeLocal | ModeServer
 	TLD       string
-	BindIP    string // optional override
+	BindIP    string // listen address override
+	AnswerIP  string // A record returned by dnsmasq (server mode); auto-detected from tailscale when empty
 	ManualDNS bool   // skip /etc/systemd/resolved.conf.d/pier.conf, print instructions instead
 	Out       io.Writer
 
@@ -53,14 +54,31 @@ func Install(opts InstallOptions) error {
 	if opts.Mode == "" {
 		opts.Mode = ModeLocal
 	}
-	if opts.Mode != ModeLocal {
-		return fmt.Errorf("infra: only --mode local is supported in MVP (got %q)", opts.Mode)
+	if opts.Mode != ModeLocal && opts.Mode != ModeServer {
+		return fmt.Errorf("infra: --mode must be %q or %q (got %q)", ModeLocal, ModeServer, opts.Mode)
 	}
 	if opts.TLD == "" {
 		opts.TLD = DefaultTLD
 	}
 	if opts.BindIP == "" {
-		opts.BindIP = DefaultLocalBind
+		if opts.Mode == ModeServer {
+			opts.BindIP = DefaultServerBind
+		} else {
+			opts.BindIP = DefaultLocalBind
+		}
+	}
+	if opts.AnswerIP == "" {
+		switch opts.Mode {
+		case ModeLocal:
+			opts.AnswerIP = opts.BindIP
+		case ModeServer:
+			ip, err := autoDetectTailnetIP()
+			if err != nil {
+				return fmt.Errorf("--mode server requires --answer-ip (auto-detect via tailscale failed: %w)", err)
+			}
+			fmt.Fprintf(out, "✓ auto-detected tailnet IP for --answer-ip: %s\n", ip)
+			opts.AnswerIP = ip
+		}
 	}
 
 	paths, err := DefaultPaths()
@@ -93,7 +111,7 @@ func Install(opts InstallOptions) error {
 		}
 	}
 
-	dnsmasqYAML, err := renderDnsmasqConfig(opts.TLD, opts.BindIP)
+	dnsmasqYAML, err := renderDnsmasqConfig(opts.TLD, opts.BindIP, opts.AnswerIP)
 	if err != nil {
 		return err
 	}
@@ -161,6 +179,7 @@ func Install(opts InstallOptions) error {
 		Mode:            opts.Mode,
 		TLD:             opts.TLD,
 		BindIP:          opts.BindIP,
+		AnswerIP:        opts.AnswerIP,
 		TraefikNetwork:  traefikNet,
 		ExternalTraefik: opts.ExternalTraefik,
 	}
@@ -169,13 +188,35 @@ func Install(opts InstallOptions) error {
 	}
 
 	if !opts.ManualDNS {
-		if err := verifyDNS(opts.TLD, opts.BindIP); err != nil {
+		// Verify against the listen IP (where dnsmasq is reachable from this
+		// host); the A record value is opts.AnswerIP.
+		probeIP := opts.BindIP
+		if probeIP == DefaultServerBind {
+			// 0.0.0.0 isn't a usable resolver target; try 127.0.0.1 since
+			// dnsmasq is also listening there (host network namespace).
+			probeIP = "127.0.0.1"
+		}
+		if err := verifyDNS(opts.TLD, probeIP, opts.AnswerIP); err != nil {
 			fmt.Fprintf(out, "! DNS verification failed (%v) — try `pier doctor` or run the manual steps above\n", err)
 		} else {
-			fmt.Fprintf(out, "✓ verified: anything.%s resolves to %s\n", opts.TLD, opts.BindIP)
+			fmt.Fprintf(out, "✓ verified: anything.%s resolves to %s\n", opts.TLD, opts.AnswerIP)
 		}
 	}
 	return nil
+}
+
+// autoDetectTailnetIP returns the host's tailscale IPv4. Used as a default
+// AnswerIP when --mode server is set without --answer-ip.
+func autoDetectTailnetIP() (string, error) {
+	out, err := exec.Command("tailscale", "ip", "-4").Output()
+	if err != nil {
+		return "", fmt.Errorf("tailscale ip: %w", err)
+	}
+	ip := strings.TrimSpace(string(out))
+	if ip == "" {
+		return "", errors.New("tailscale returned no IPv4 address")
+	}
+	return ip, nil
 }
 
 // Uninstall reverses Install. Best-effort: keeps going on individual errors
@@ -314,22 +355,22 @@ func dnsmasqRunArgs(paths *Paths, bindIP string) []string {
 	}
 }
 
-// verifyDNS issues a lookup against the dnsmasq container directly. We hit
-// 127.0.0.1:53 (or whatever bindIP is) rather than the host resolver so the
-// check is decoupled from systemd-resolved propagation timing.
-func verifyDNS(tld, bindIP string) error {
+// verifyDNS issues a lookup against the dnsmasq container directly. probeIP
+// is where dnsmasq is reachable from the running process; expectedIP is the
+// A record value dnsmasq should return.
+func verifyDNS(tld, probeIP, expectedIP string) error {
 	deadline := time.Now().Add(5 * time.Second)
 	host := fmt.Sprintf("anything.%s", tld)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		cmd := exec.Command("dig", "+short", "+time=1", "+tries=1", "@"+bindIP, host)
+		cmd := exec.Command("dig", "+short", "+time=1", "+tries=1", "@"+probeIP, host)
 		out, err := cmd.Output()
 		if err == nil {
 			answer := strings.TrimSpace(string(out))
-			if answer == bindIP {
+			if answer == expectedIP {
 				return nil
 			}
-			lastErr = fmt.Errorf("expected %s, got %q", bindIP, answer)
+			lastErr = fmt.Errorf("expected %s, got %q", expectedIP, answer)
 		} else {
 			lastErr = err
 		}

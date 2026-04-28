@@ -14,6 +14,23 @@ type Config struct {
 	Mode   string `toml:"mode"`    // local | server
 	TLD    string `toml:"tld"`     // base TLD (e.g. test)
 	BindIP string `toml:"bind_ip"` // 127.0.0.1 in local mode, 0.0.0.0 in server
+
+	// TraefikNetwork is the docker network workloads register on for traefik
+	// label discovery. Defaults to NetworkName ("pier") in standard mode;
+	// overridden to the user's existing network in BYO-traefik mode.
+	TraefikNetwork string `toml:"traefik_network,omitempty"`
+	// ExternalTraefik names the user-managed traefik container in BYO mode.
+	// Empty means pier owns its own pier-traefik container.
+	ExternalTraefik string `toml:"external_traefik,omitempty"`
+}
+
+// EffectiveTraefikNetwork returns TraefikNetwork or NetworkName when unset
+// (older configs written before the field existed).
+func (c *Config) EffectiveTraefikNetwork() string {
+	if c.TraefikNetwork != "" {
+		return c.TraefikNetwork
+	}
+	return NetworkName
 }
 
 const (

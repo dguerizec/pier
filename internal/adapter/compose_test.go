@@ -9,9 +9,10 @@ import (
 
 func TestRenderOverride_Compose(t *testing.T) {
 	c := Ctx{
-		Project:    "myapp",
-		Slug:       "feat-x",
-		BaseDomain: "myapp.test",
+		Project:        "myapp",
+		Slug:           "feat-x",
+		BaseDomain:     "myapp.test",
+		TraefikNetwork: "pier",
 		Stack: manifest.Stack{
 			Kind:    manifest.KindCompose,
 			File:    "docker-compose.yml",

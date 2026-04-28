@@ -236,6 +236,9 @@ func ensureDockerNetwork(name string) error {
 }
 
 func renderOverride(c Ctx) ([]byte, error) {
+	if c.TraefikNetwork == "" {
+		return nil, errors.New("compose: TraefikNetwork is empty (Ctx not fully populated)")
+	}
 	t := template.Must(template.New("override").Parse(`# managed by pier — do not edit
 services:
   {{.Service}}:
@@ -244,22 +247,23 @@ services:
       - traefik.enable=true
       - traefik.http.routers.{{.Name}}.rule=Host(` + "`{{.Slug}}.{{.BaseDomain}}`" + `)
       - traefik.http.routers.{{.Name}}.entrypoints=web
-      - traefik.docker.network=pier
+      - traefik.docker.network={{.Network}}
       - traefik.http.services.{{.Name}}.loadbalancer.server.port={{.Port}}
-    networks: [default, pier]
+    networks: [default, {{.Network}}]
 
 networks:
-  pier:
+  {{.Network}}:
     external: true
 `))
 	data := struct {
-		Service, Name, Slug, BaseDomain string
-		Port                            int
+		Service, Name, Slug, BaseDomain, Network string
+		Port                                     int
 	}{
 		Service:    c.Stack.Service,
 		Name:       Name(c.Project, c.Slug),
 		Slug:       c.Slug,
 		BaseDomain: c.BaseDomain,
+		Network:    c.TraefikNetwork,
 		Port:       c.Stack.Port,
 	}
 	var buf bytes.Buffer

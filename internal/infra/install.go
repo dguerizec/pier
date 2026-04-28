@@ -125,7 +125,12 @@ func Install(opts InstallOptions) error {
 		fmt.Fprintf(out, "! --manual-dns set; configure host DNS yourself:\n\n%s\n", manualDNSInstructions(opts.TLD, opts.BindIP))
 	}
 
-	cfg := &Config{Mode: opts.Mode, TLD: opts.TLD, BindIP: opts.BindIP}
+	cfg := &Config{
+		Mode:           opts.Mode,
+		TLD:            opts.TLD,
+		BindIP:         opts.BindIP,
+		TraefikNetwork: NetworkName,
+	}
 	if err := cfg.Save(paths); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}

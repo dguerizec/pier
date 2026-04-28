@@ -54,7 +54,8 @@ func resolveDaily(slugOverride string) (*daily, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := infra.LoadConfig(paths); errors.Is(err, infra.ErrNotInstalled) {
+	cfg, err := infra.LoadConfig(paths)
+	if errors.Is(err, infra.ErrNotInstalled) {
 		return nil, fmt.Errorf("%w (hint: pier install)", err)
 	} else if err != nil {
 		return nil, err
@@ -75,13 +76,14 @@ func resolveDaily(slugOverride string) (*daily, error) {
 		Paths:    paths,
 		State:    store,
 		Ctx: adapter.Ctx{
-			Project:      m.Project.Name,
-			Slug:         slug,
-			BaseDomain:   m.Project.BaseDomain,
-			WorktreePath: info.Toplevel,
-			Stack:        m.Stack,
-			Out:          os.Stdout,
-			Err:          os.Stderr,
+			Project:        m.Project.Name,
+			Slug:           slug,
+			BaseDomain:     m.Project.BaseDomain,
+			WorktreePath:   info.Toplevel,
+			Stack:          m.Stack,
+			TraefikNetwork: cfg.EffectiveTraefikNetwork(),
+			Out:            os.Stdout,
+			Err:            os.Stderr,
 		},
 	}, nil
 }

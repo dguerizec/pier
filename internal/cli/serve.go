@@ -25,15 +25,16 @@ var webPageHTML string
 
 var webPageTemplate = template.Must(template.New("page").Parse(webPageHTML))
 
-func newWebCmd() *cobra.Command {
+func newServeCmd() *cobra.Command {
 	var (
 		bind    string
 		port    int
 		refresh int
 	)
 	cmd := &cobra.Command{
-		Use:   "web",
-		Short: "Serve a small web dashboard listing running workloads and their URLs",
+		Use:     "serve",
+		Aliases: []string{"web"},
+		Short:   "Serve a small web dashboard listing running workloads and their URLs",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			paths, err := infra.DefaultPaths()
 			if err != nil {
@@ -234,9 +235,9 @@ func listProjectContainers(projectName string) ([]webContainer, error) {
 			continue
 		}
 		var entry struct {
-			Names  string `json:"Names"`
-			Image  string `json:"Image"`
-			State  string `json:"State"`
+			Names string `json:"Names"`
+			Image string `json:"Image"`
+			State string `json:"State"`
 		}
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue

@@ -10,6 +10,7 @@
     { "url": "/", "description": "current server" }
   ],
   "tags": [
+    { "name": "projects", "description": "Project (repo) registry — what pier knows about" },
     { "name": "workloads", "description": "Per-(project, slug) workload lifecycle" },
     { "name": "worktrees", "description": "Git worktree CRUD" },
     { "name": "infra", "description": "Pier install state and health" },
@@ -98,10 +99,85 @@
         }
       }
     },
+    "/api/v1/projects": {
+      "get": {
+        "tags": ["projects"],
+        "summary": "List registered projects",
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/ProjectListItem" } } } } }
+        }
+      },
+      "post": {
+        "tags": ["projects"],
+        "summary": "Write a manifest and register the project",
+        "description": "Writes the supplied manifest verbatim to <repo>/.pier.toml (creating or overwriting) and adds (project_name, repo_path) to the state DB. Typical flow: call POST /scan first to get a `suggested_manifest`, edit, then POST here.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectCreateRequest" } } }
+        },
+        "responses": {
+          "200": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectCreateResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/projects/scan": {
+      "post": {
+        "tags": ["projects"],
+        "summary": "Dry-run pier init — propose a manifest from a repo",
+        "description": "Reads the repo (compose detection, env scan, existing manifest if any) and returns the manifest a `pier init -y` would write. No files are touched. The UI uses `suggested_manifest` to pre-fill an edit form.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectScanRequest" } } }
+        },
+        "responses": {
+          "200": { "description": "Proposal", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ProjectScanResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "422": { "description": "Repo cannot be scanned (missing, no compose file, etc.)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
+    "/api/v1/projects/{name}": {
+      "parameters": [
+        { "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "get": {
+        "tags": ["projects"],
+        "summary": "Get one project (manifest + counts)",
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["projects"],
+        "summary": "Unregister a project",
+        "description": "Removes the registry row only — does NOT delete the manifest, worktrees, or running workloads. Idempotent (200 on missing).",
+        "responses": {
+          "200": { "description": "Unregistered" }
+        }
+      }
+    },
+    "/api/v1/projects/{name}/worktrees": {
+      "parameters": [
+        { "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "get": {
+        "tags": ["projects"],
+        "summary": "List git worktrees of the project's repo",
+        "description": "Each entry is annotated with its workload (status, URLs, containers) when one is registered for that path.",
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/WorktreeListItem" } } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
     "/api/v1/worktrees": {
       "post": {
         "tags": ["worktrees"],
         "summary": "Create a worktree (and optionally up the workload)",
+        "description": "Specify either `project` (resolves the repo from the registry — preferred) or `repo` (absolute path — legacy). When both are set, `project` wins.",
         "requestBody": {
           "required": true,
           "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorktreeCreateRequest" } } }
@@ -109,6 +185,7 @@
         "responses": {
           "200": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorktreeCreateResponse" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
           "500": { "$ref": "#/components/responses/InternalError" }
         }
       }
@@ -116,12 +193,13 @@
     "/api/v1/worktrees/{slug}": {
       "parameters": [
         { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } },
-        { "name": "repo", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Absolute path of the primary worktree" }
+        { "name": "project", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Project name (resolves repo from registry — preferred)" },
+        { "name": "repo", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Absolute path of the primary worktree (legacy alternative to project)" }
       ],
       "delete": {
         "tags": ["worktrees"],
         "summary": "Stop and remove a worktree",
-        "description": "Always passes --force to `git worktree remove`. When the rm fails part-way through (typical: container left root-owned files in a bind mount), pier prunes the dangling git metadata and surfaces a 200 + warning so the caller can show \"manual sudo rm needed\".",
+        "description": "Either `project` or `repo` query parameter is required (`project` wins when both are set). Always passes --force to `git worktree remove`. When the rm fails part-way through (typical: container left root-owned files in a bind mount), pier prunes the dangling git metadata and surfaces a 200 + warning so the caller can show \"manual sudo rm needed\".",
         "responses": {
           "200": { "description": "Removed (may include warning)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionResponse" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" },
@@ -252,13 +330,15 @@
       },
       "WorktreeCreateRequest": {
         "type": "object",
-        "required": ["repo", "slug"],
+        "required": ["slug"],
+        "description": "Specify either `project` (resolves repo from registry) or `repo` (absolute path). At least one is required; `project` wins.",
         "properties": {
-          "repo": { "type": "string", "description": "Absolute path of the primary worktree" },
-          "slug": { "type": "string", "description": "Doubles as the dir name and the workload slug" },
-          "branch": { "type": "string", "description": "Defaults to slug when omitted" },
-          "from": { "type": "string", "description": "Base ref override; defaults to manifest [worktree].base_ref then main/master then HEAD" },
-          "up": { "type": "boolean", "description": "When true, runs pier up after materialization and includes the resulting workload in the response" }
+          "project": { "type": "string", "description": "Project name from the registry — resolved to the repo path server-side" },
+          "repo":    { "type": "string", "description": "Absolute path of the primary worktree (legacy alternative to project)" },
+          "slug":    { "type": "string", "description": "Doubles as the dir name and the workload slug" },
+          "branch":  { "type": "string", "description": "Defaults to slug when omitted" },
+          "from":    { "type": "string", "description": "Base ref override; defaults to manifest [worktree].base_ref then main/master then HEAD" },
+          "up":      { "type": "boolean", "description": "When true, runs pier up after materialization and includes the resulting workload in the response" }
         }
       },
       "WorktreeCreateResponse": {
@@ -270,6 +350,164 @@
           "branch": { "type": "string" },
           "worktree_path": { "type": "string" },
           "workload": { "$ref": "#/components/schemas/Workload" }
+        }
+      },
+      "WorktreeListItem": {
+        "type": "object",
+        "required": ["path", "slug", "branch", "has_workload"],
+        "properties": {
+          "path":         { "type": "string", "description": "Absolute worktree path" },
+          "slug":         { "type": "string", "description": "Workload slug when has_workload, otherwise basename of path" },
+          "branch":       { "type": "string", "description": "Empty when detached" },
+          "has_workload": { "type": "boolean" },
+          "workload":     { "$ref": "#/components/schemas/Workload" }
+        }
+      },
+      "ProjectListItem": {
+        "type": "object",
+        "required": ["name", "repo_path", "registered_at", "has_manifest", "active_workloads"],
+        "properties": {
+          "name":             { "type": "string" },
+          "repo_path":        { "type": "string" },
+          "registered_at":    { "type": "string", "format": "date-time" },
+          "has_manifest":     { "type": "boolean", "description": "True when <repo>/.pier.toml parses successfully" },
+          "active_workloads": { "type": "integer" }
+        }
+      },
+      "Project": {
+        "type": "object",
+        "required": ["name", "repo_path", "registered_at", "has_manifest", "active_workloads", "worktree_count"],
+        "properties": {
+          "name":             { "type": "string" },
+          "repo_path":        { "type": "string" },
+          "registered_at":    { "type": "string", "format": "date-time" },
+          "has_manifest":     { "type": "boolean" },
+          "manifest":         { "$ref": "#/components/schemas/Manifest" },
+          "active_workloads": { "type": "integer" },
+          "worktree_count":   { "type": "integer" }
+        }
+      },
+      "ProjectScanRequest": {
+        "type": "object",
+        "required": ["repo"],
+        "properties": {
+          "repo": { "type": "string", "description": "Absolute path of the repo to scan" }
+        }
+      },
+      "ProjectScanResponse": {
+        "type": "object",
+        "required": ["repo", "toplevel", "manifest_path", "services", "is_reinit"],
+        "properties": {
+          "repo":              { "type": "string" },
+          "toplevel":          { "type": "string", "description": "Git toplevel — equal to repo when scan was given the toplevel directly" },
+          "manifest_path":     { "type": "string" },
+          "compose_file":      { "type": "string" },
+          "services":          { "type": "array", "items": { "$ref": "#/components/schemas/ScanService" } },
+          "existing_manifest": { "$ref": "#/components/schemas/Manifest" },
+          "suggested_manifest":{ "$ref": "#/components/schemas/Manifest" },
+          "is_reinit":         { "type": "boolean" }
+        }
+      },
+      "ScanService": {
+        "type": "object",
+        "required": ["name", "image", "port"],
+        "properties": {
+          "name":  { "type": "string" },
+          "image": { "type": "string" },
+          "port":  { "type": "integer", "description": "First published container port" }
+        }
+      },
+      "ProjectCreateRequest": {
+        "type": "object",
+        "required": ["repo", "manifest"],
+        "properties": {
+          "repo":     { "type": "string", "description": "Absolute path of the repo to write into" },
+          "manifest": { "$ref": "#/components/schemas/Manifest" }
+        }
+      },
+      "ProjectCreateResponse": {
+        "type": "object",
+        "required": ["repo", "project_name", "manifest_path", "registered", "merged"],
+        "properties": {
+          "repo":          { "type": "string" },
+          "project_name":  { "type": "string" },
+          "manifest_path": { "type": "string" },
+          "registered":    { "type": "boolean", "description": "False when the manifest was written but the registry refused (conflict on a different mapping)" },
+          "merged":        { "type": "boolean", "description": "True when a .pier.toml already existed at the repo (the write replaced it)" },
+          "warning":       { "type": "string" }
+        }
+      },
+      "Manifest": {
+        "type": "object",
+        "description": "Mirror of the .pier.toml on-disk format. JSON tags match TOML tags.",
+        "required": ["project", "stack", "expose"],
+        "properties": {
+          "project":     { "$ref": "#/components/schemas/ManifestProject" },
+          "stack":       { "$ref": "#/components/schemas/ManifestStack" },
+          "expose":      { "type": "array", "items": { "$ref": "#/components/schemas/ManifestExpose" } },
+          "env":         { "type": "object", "additionalProperties": { "type": "object", "additionalProperties": { "type": "string" } }, "description": "service -> key -> value" },
+          "materialize": { "$ref": "#/components/schemas/ManifestMaterialize" },
+          "hooks":       { "$ref": "#/components/schemas/ManifestHooks" },
+          "watch":       { "$ref": "#/components/schemas/ManifestWatch" },
+          "worktree":    { "$ref": "#/components/schemas/ManifestWorktree" }
+        }
+      },
+      "ManifestProject": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name":        { "type": "string" },
+          "base_domain": { "type": "string", "description": "Defaults to <name>.<installed-tld> at runtime when empty" }
+        }
+      },
+      "ManifestStack": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind":           { "type": "string", "enum": ["compose", "dockerfile"] },
+          "file":           { "type": "string", "description": "Compose file path (for kind=compose)" },
+          "dockerfile":     { "type": "string", "description": "Dockerfile path (kind=dockerfile, Phase 3)" },
+          "service":        { "type": "string", "description": "Service that gets the bare-slug alias" },
+          "match_host_uid": { "type": "boolean", "description": "Inject user: <uid>:<gid> in the compose override (distroless/nonroot fix)" }
+        }
+      },
+      "ManifestExpose": {
+        "type": "object",
+        "required": ["service", "port"],
+        "properties": {
+          "service": { "type": "string" },
+          "port":    { "type": "integer" },
+          "host":    { "type": "string", "description": "Sub-domain label, defaults to service when empty" }
+        }
+      },
+      "ManifestMaterialize": {
+        "type": "object",
+        "properties": {
+          "symlinks":  { "type": "array", "items": { "type": "string" } },
+          "snapshots": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "ManifestHooks": {
+        "type": "object",
+        "properties": {
+          "pre_up":    { "type": "string" },
+          "post_up":   { "type": "string" },
+          "pre_down":  { "type": "string" },
+          "post_down": { "type": "string" }
+        }
+      },
+      "ManifestWatch": {
+        "type": "object",
+        "properties": {
+          "paths":     { "type": "array", "items": { "type": "string" } },
+          "on_change": { "type": "string", "enum": ["rebuild", "restart"] }
+        }
+      },
+      "ManifestWorktree": {
+        "type": "object",
+        "properties": {
+          "dir":      { "type": "string", "description": "Where pier worktree add places trees (relative paths resolve against the primary)" },
+          "base_ref": { "type": "string", "description": "Default base ref for new worktree branches" }
         }
       },
       "Error": {

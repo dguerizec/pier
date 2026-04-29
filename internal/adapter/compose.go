@@ -241,25 +241,34 @@ func ensureDockerNetwork(name string) error {
 	return nil
 }
 
-// exposedBlock describes one [[expose]]'d service rendered into the
-// override: pier-managed container_name, traefik labels (one or two
-// routers), host ports stripped, networks attached. Two routers when this
-// is the default service — the second matches the bare `<slug>.<base>`.
-type exposedBlock struct {
-	Service       string // compose service name (YAML key)
-	ContainerName string // pier-managed name
-	RouterID      string // traefik router/service id
-	HostRule      string // primary Host(`...`) target
-	AliasRule     string // bare-slug Host(`...`); empty when not the default
+// exposedDetails carries the traefik / container_name plumbing pier emits
+// for an [[expose]]'d service. AliasRule is non-empty only on the
+// default service (the one Stack.Service points at), where pier emits a
+// second router matching the bare `<slug>.<base>` host.
+type exposedDetails struct {
+	ContainerName string
+	RouterID      string
+	HostRule      string
+	AliasRule     string
 	Port          int
 }
 
-// resetBlock describes a non-exposed service that needs its host bindings
-// or explicit container_name removed so multi-worktree runs don't collide.
-type resetBlock struct {
+// envEntry is one rendered KEY=value line for the compose `environment:`
+// list. Stored sorted by key so override output is deterministic.
+type envEntry struct {
+	Key, Value string
+}
+
+// serviceOverride is the union of every section pier may emit for one
+// compose service. A service can be exposed and have env injection at
+// once; a non-exposed service can still need its host ports / explicit
+// container_name reset to avoid colliding with sibling worktrees.
+type serviceOverride struct {
 	Service            string
+	Exposed            *exposedDetails
 	ResetPorts         bool
 	ResetContainerName bool
+	Env                []envEntry
 }
 
 func renderOverride(c Ctx) ([]byte, error) {
@@ -270,46 +279,70 @@ func renderOverride(c Ctx) ([]byte, error) {
 		return nil, errors.New("compose: at least one [[expose]] entry is required")
 	}
 
-	exposed := make([]exposedBlock, 0, len(c.Expose))
-	exposedSet := make(map[string]bool, len(c.Expose))
+	blocks := map[string]*serviceOverride{}
+	get := func(name string) *serviceOverride {
+		b, ok := blocks[name]
+		if !ok {
+			b = &serviceOverride{Service: name}
+			blocks[name] = b
+		}
+		return b
+	}
+
 	for _, e := range c.Expose {
-		exposedSet[e.Service] = true
-		host := HostFor(e, c.Slug, c.BaseDomain)
 		alias := ""
 		if e.Service == c.DefaultService {
 			alias = AliasHost(c.Slug, c.BaseDomain)
 		}
-		exposed = append(exposed, exposedBlock{
-			Service:       e.Service,
+		b := get(e.Service)
+		b.Exposed = &exposedDetails{
 			ContainerName: ServiceName(c.Project, c.Slug, e.Service),
 			RouterID:      ServiceName(c.Project, c.Slug, e.Service),
-			HostRule:      host,
+			HostRule:      HostFor(e, c.Slug, c.BaseDomain),
 			AliasRule:     alias,
 			Port:          e.Port,
-		})
+		}
+		// Exposed services always have their host ports stripped — traefik
+		// routes via the pier network, host bindings would collide between
+		// worktrees. ResetContainerName isn't needed because Exposed sets
+		// container_name to a pier-managed value that takes precedence.
+		b.ResetPorts = true
 	}
-	sort.Slice(exposed, func(i, j int) bool { return exposed[i].Service < exposed[j].Service })
 
-	var resets []resetBlock
 	for name, info := range scanComposeServices(c) {
-		if exposedSet[name] {
+		b, exists := blocks[name]
+		if !exists && !info.hasPorts && !info.hasContainerName {
 			continue
 		}
-		if !info.hasPorts && !info.hasContainerName {
-			continue
+		if !exists {
+			b = get(name)
 		}
-		resets = append(resets, resetBlock{
-			Service:            name,
-			ResetPorts:         info.hasPorts,
-			ResetContainerName: info.hasContainerName,
-		})
+		if b.Exposed == nil {
+			b.ResetPorts = b.ResetPorts || info.hasPorts
+			b.ResetContainerName = info.hasContainerName
+		}
 	}
-	sort.Slice(resets, func(i, j int) bool { return resets[i].Service < resets[j].Service })
+
+	for service, env := range c.Env {
+		expanded, err := ExpandEnvBlock(env, c)
+		if err != nil {
+			return nil, fmt.Errorf("env[%s]: %w", service, err)
+		}
+		b := get(service)
+		b.Env = sortedEnv(expanded)
+	}
+
+	ordered := make([]*serviceOverride, 0, len(blocks))
+	for _, b := range blocks {
+		ordered = append(ordered, b)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Service < ordered[j].Service })
 
 	t := template.Must(template.New("override").Parse(`# managed by pier — do not edit
 services:
-{{- range .Exposed}}
+{{- range .Blocks}}
   {{.Service}}:
+{{- with .Exposed}}
     container_name: {{.ContainerName}}
 {{- if $.User}}
     user: "{{$.User}}"
@@ -327,15 +360,18 @@ services:
       - traefik.docker.network={{$.Network}}
       - traefik.http.services.{{.RouterID}}.loadbalancer.server.port={{.Port}}
     networks: [default, {{$.Network}}]
-    ports: !reset []
 {{- end}}
-{{- range .Resets}}
-  {{.Service}}:
-{{- if .ResetContainerName}}
+{{- if and (not .Exposed) .ResetContainerName}}
     container_name: !reset null
 {{- end}}
 {{- if .ResetPorts}}
     ports: !reset []
+{{- end}}
+{{- if .Env}}
+    environment:
+{{- range .Env}}
+      - {{.Key}}={{.Value}}
+{{- end}}
 {{- end}}
 {{- end}}
 
@@ -349,19 +385,31 @@ networks:
 	}
 	data := struct {
 		Network, User string
-		Exposed       []exposedBlock
-		Resets        []resetBlock
+		Blocks        []*serviceOverride
 	}{
 		Network: c.TraefikNetwork,
 		User:    user,
-		Exposed: exposed,
-		Resets:  resets,
+		Blocks:  ordered,
 	}
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, data); err != nil {
 		return nil, fmt.Errorf("render override: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// sortedEnv flattens an env map into key-sorted entries so the rendered
+// override is byte-stable.
+func sortedEnv(env map[string]string) []envEntry {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make([]envEntry, 0, len(env))
+	for k, v := range env {
+		out = append(out, envEntry{Key: k, Value: v})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
 }
 
 // composeServiceInfo records what we need from a compose service to decide

@@ -94,6 +94,17 @@ host    = "backend"
 	}
 }
 
+func TestValidate_BaseDomainOptional(t *testing.T) {
+	m := Manifest{
+		Project: Project{Name: "x"},
+		Stack:   Stack{Kind: KindCompose, File: "a"},
+		Expose:  []ExposeRule{{Service: "a", Port: 1}},
+	}
+	if err := m.Validate(); err != nil {
+		t.Errorf("unset base_domain should validate (composed at runtime), got %v", err)
+	}
+}
+
 func TestDefaultExpose_NoMatch(t *testing.T) {
 	m := Manifest{
 		Project: Project{Name: "x", BaseDomain: "x.test"},
@@ -158,11 +169,6 @@ func TestValidate_Errors(t *testing.T) {
 			"invalid name",
 			Manifest{Project: Project{Name: "My_App", BaseDomain: "x.test"}, Stack: Stack{Kind: KindCompose, File: "a"}, Expose: okExpose},
 			"DNS label",
-		},
-		{
-			"missing base_domain",
-			Manifest{Project: Project{Name: "x"}, Stack: Stack{Kind: KindCompose, File: "a"}, Expose: okExpose},
-			"base_domain",
 		},
 		{
 			"missing kind",

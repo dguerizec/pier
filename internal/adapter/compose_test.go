@@ -186,6 +186,89 @@ func TestRenderOverride_StripsHostBindings(t *testing.T) {
 	}
 }
 
+func TestRenderOverride_EnvInjection(t *testing.T) {
+	c := Ctx{
+		Project:        "w3t",
+		Slug:           "x",
+		BaseDomain:     "w3t.test",
+		TraefikNetwork: "pier",
+		Stack: manifest.Stack{
+			Kind:    manifest.KindCompose,
+			File:    "docker-compose.yml",
+			Service: "front",
+		},
+		Expose: []manifest.ExposeRule{
+			{Service: "front", Port: 8080},
+			{Service: "api", Port: 8000},
+		},
+		DefaultService: "front",
+		Env: map[string]map[string]string{
+			"front": {
+				"API_URL":    "{url.api}",
+				"PUBLIC_URL": "{url.default}",
+			},
+		},
+	}
+	got, err := renderOverride(c)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	s := string(got)
+	for _, w := range []string{
+		"environment:",
+		"- API_URL=http://api.x.w3t.test",
+		"- PUBLIC_URL=http://x.w3t.test",
+	} {
+		if !strings.Contains(s, w) {
+			t.Errorf("override missing %q\n--- rendered ---\n%s", w, s)
+		}
+	}
+}
+
+func TestRenderOverride_EnvOnNonExposedService(t *testing.T) {
+	// Env injection on a service that's neither exposed nor mentioned in
+	// the user's compose file at scan time should still produce a block —
+	// otherwise the value would silently disappear.
+	c := Ctx{
+		Project:        "w3t",
+		Slug:           "x",
+		BaseDomain:     "w3t.test",
+		TraefikNetwork: "pier",
+		Stack: manifest.Stack{
+			Kind: manifest.KindCompose,
+			File: "docker-compose.yml",
+		},
+		Expose: []manifest.ExposeRule{{Service: "api", Port: 8000}},
+		Env: map[string]map[string]string{
+			"worker": {"API_URL": "{url.api}"},
+		},
+	}
+	got, err := renderOverride(c)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	s := string(got)
+	if !strings.Contains(s, "  worker:\n    environment:\n      - API_URL=http://api.x.w3t.test") {
+		t.Errorf("worker env missing or mis-shaped:\n%s", s)
+	}
+}
+
+func TestRenderOverride_EnvBadToken(t *testing.T) {
+	c := Ctx{
+		Project:        "w3t",
+		Slug:           "x",
+		BaseDomain:     "w3t.test",
+		TraefikNetwork: "pier",
+		Stack:          manifest.Stack{Kind: manifest.KindCompose, File: "docker-compose.yml"},
+		Expose:         []manifest.ExposeRule{{Service: "api", Port: 8000}},
+		Env:            map[string]map[string]string{"api": {"X": "{url.ghost}"}},
+	}
+	_, err := renderOverride(c)
+	if err == nil {
+		t.Fatal("expected error on unknown service in env template")
+	}
+}
+
 func TestURLs_AndDefault(t *testing.T) {
 	c := Ctx{
 		Slug:           "x",

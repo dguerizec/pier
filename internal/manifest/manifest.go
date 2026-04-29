@@ -25,18 +25,24 @@ var ErrNotFound = errors.New("manifest: .pier.toml not found (run `pier init`)")
 
 // Manifest is the in-memory representation of .pier.toml.
 type Manifest struct {
-	Project     Project       `toml:"project"`
-	Stack       Stack         `toml:"stack"`
-	Expose      []ExposeRule  `toml:"expose"`
-	Materialize Materialize   `toml:"materialize,omitempty"`
-	Hooks       Hooks         `toml:"hooks,omitempty"`
-	Watch       Watch         `toml:"watch,omitempty"`
-	Worktree    Worktree      `toml:"worktree,omitempty"`
+	Project     Project                      `toml:"project"`
+	Stack       Stack                        `toml:"stack"`
+	Expose      []ExposeRule                 `toml:"expose"`
+	Env         map[string]map[string]string `toml:"env,omitempty"`
+	Materialize Materialize                  `toml:"materialize,omitempty"`
+	Hooks       Hooks                        `toml:"hooks,omitempty"`
+	Watch       Watch                        `toml:"watch,omitempty"`
+	Worktree    Worktree                     `toml:"worktree,omitempty"`
 }
 
 type Project struct {
-	Name       string `toml:"name"`
-	BaseDomain string `toml:"base_domain"`
+	Name string `toml:"name"`
+	// BaseDomain is optional. When empty, pier composes it at runtime as
+	// `<name>.<installed-tld>` so the same manifest works across machines
+	// where contributors may have installed pier on different TLDs. Set
+	// it explicitly only when you need a fixed domain (multi-team setup,
+	// custom DNS).
+	BaseDomain string `toml:"base_domain,omitempty"`
 }
 
 // Stack covers the supported adapter kinds. Pier is intentionally
@@ -161,9 +167,9 @@ func (m *Manifest) Validate() error {
 	if !dnsLabel.MatchString(m.Project.Name) {
 		return fmt.Errorf("manifest: project.name %q is not a valid DNS label", m.Project.Name)
 	}
-	if m.Project.BaseDomain == "" {
-		return errors.New("manifest: project.base_domain is required")
-	}
+	// project.base_domain is optional — empty means pier composes it from
+	// the installed TLD at runtime. Validation only checks the format
+	// when set.
 
 	switch m.Stack.Kind {
 	case KindCompose:

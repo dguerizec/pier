@@ -34,7 +34,8 @@ func newLsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := infra.LoadConfig(paths); err != nil {
+			cfg, err := infra.LoadConfig(paths)
+			if err != nil {
 				return err
 			}
 			store, err := state.Open(paths.StateDB)
@@ -53,7 +54,7 @@ func newLsCmd() *cobra.Command {
 				rows = append(rows, lsRow{
 					Project: w.Project,
 					Slug:    w.Slug,
-					URL:     workloadURL(w),
+					URL:     workloadURL(w, cfg.TLD),
 					Status:  containerStatus(w),
 					Uptime:  humanUptime(time.Since(w.StartedAt)),
 				})
@@ -78,13 +79,21 @@ func renderTable(cmd *cobra.Command, rows []lsRow) error {
 	return w.Flush()
 }
 
-// workloadURL derives the workload's default URL from its manifest. Falls
-// back to a `<slug>.<project>.test` shape when the manifest is gone or
-// unparseable so `pier ls` always prints something the user can react to.
-func workloadURL(w *state.Workload) string {
+// workloadURL derives the workload's default URL from its manifest, using
+// the installed TLD as fallback for an unset project.base_domain (the
+// usual case — manifests are portable across contributors). Falls back to
+// `<slug>.<project>.<tld>` entirely when the manifest is gone so
+// `pier ls` always prints something the user can react to.
+func workloadURL(w *state.Workload, tld string) string {
 	m, err := manifest.Load(w.WorktreePath)
 	if err != nil {
-		return "http://" + w.Slug + "." + w.Project + ".test"
+		return "http://" + w.Slug + "." + w.Project + "." + tld
+	}
+	baseDomain := m.Project.BaseDomain
+	if baseDomain == "" {
+		baseDomain = m.Project.Name + "." + tld
+	} else if expanded, err := adapter.ExpandPierTokens(baseDomain, tld); err == nil {
+		baseDomain = expanded
 	}
 	defaultService := ""
 	if d := m.DefaultExpose(); d != nil {
@@ -92,7 +101,7 @@ func workloadURL(w *state.Workload) string {
 	}
 	return adapter.DefaultURL(adapter.Ctx{
 		Slug:           w.Slug,
-		BaseDomain:     m.Project.BaseDomain,
+		BaseDomain:     baseDomain,
 		Expose:         m.Expose,
 		DefaultService: defaultService,
 	})

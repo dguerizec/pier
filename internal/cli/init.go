@@ -117,10 +117,12 @@ func runInit(stdin io.Reader, stdout io.Writer, toplevel string, opts initOpts) 
 		return err
 	}
 
-	defaultDomain := name + "." + installedTLD()
-	domain := pick(opts.domain, defaultDomain)
-	if domain == "" || !opts.yes {
-		domain = ask(reader, stdout, "Base domain", domain, opts.yes)
+	// Default base_domain uses the {pier.tld} template so the same manifest
+	// stays portable across contributors who may run pier on different
+	// TLDs. --domain forces an explicit literal when a project needs one.
+	domain := opts.domain
+	if domain == "" {
+		domain = name + ".{pier.tld}"
 	}
 
 	if len(candidates) == 0 {

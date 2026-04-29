@@ -130,6 +130,20 @@ func resolveDaily(slugOverride string) (*daily, error) {
 		defaultService = d.Service
 	}
 
+	// base_domain may use {pier.tld} so the same manifest works across
+	// contributors who installed pier on different TLDs (e.g.
+	// `base_domain = "myapp.{pier.tld}"`). Empty falls back to the
+	// composed `<name>.<tld>` shape.
+	baseDomain := m.Project.BaseDomain
+	if baseDomain == "" {
+		baseDomain = m.Project.Name + "." + cfg.TLD
+	} else {
+		baseDomain, err = adapter.ExpandPierTokens(baseDomain, cfg.TLD)
+		if err != nil {
+			return nil, fmt.Errorf("project.base_domain: %w", err)
+		}
+	}
+
 	return &daily{
 		Worktree: info,
 		Manifest: m,
@@ -140,11 +154,13 @@ func resolveDaily(slugOverride string) (*daily, error) {
 		Ctx: adapter.Ctx{
 			Project:        m.Project.Name,
 			Slug:           slug,
-			BaseDomain:     m.Project.BaseDomain,
+			BaseDomain:     baseDomain,
+			TLD:            cfg.TLD,
 			WorktreePath:   info.Toplevel,
 			Stack:          m.Stack,
 			Expose:         m.Expose,
 			DefaultService: defaultService,
+			Env:            m.Env,
 			TraefikNetwork: cfg.EffectiveTraefikNetwork(),
 			Out:            os.Stdout,
 			Err:            os.Stderr,

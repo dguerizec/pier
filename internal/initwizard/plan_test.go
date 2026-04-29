@@ -14,6 +14,20 @@ type testWriter struct{ b []byte }
 
 func (w *testWriter) Write(p []byte) (int, error) { w.b = append(w.b, p...); return len(p), nil }
 
+// TestMain isolates the test process from the developer's real
+// ~/.config/pier/prefs.toml so worktree-dir resolution falls back to
+// the built-in default rather than picking up local state.
+func TestMain(m *testing.M) {
+	tmp, err := os.MkdirTemp("", "pier-prefs-")
+	if err != nil {
+		os.Exit(1)
+	}
+	os.Setenv("XDG_CONFIG_HOME", tmp)
+	code := m.Run()
+	os.RemoveAll(tmp)
+	os.Exit(code)
+}
+
 func tomlDecodeFile(path string, v any) (toml.MetaData, error) { return toml.DecodeFile(path, v) }
 
 func writeCompose(t *testing.T, dir, body string) {
@@ -304,6 +318,101 @@ func TestDerive_FlagsHonored(t *testing.T) {
 	}
 	if p.WorktreeDir != "trees" || p.BaseRef != "develop" {
 		t.Errorf("worktree/base not honoured: %+v", p)
+	}
+}
+
+func TestApply_FreshInit_NoWorktreeDirInManifest(t *testing.T) {
+	dir := t.TempDir()
+	writeCompose(t, dir, `services:
+  app:
+    image: x
+    ports: ["3000:3000"]
+`)
+	p, _, err := Derive(dir, Opts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w testWriter
+	if err := Apply(p, &w); err != nil {
+		t.Fatal(err)
+	}
+	rt := &manifest.Manifest{}
+	if _, err := tomlDecodeFile(filepath.Join(dir, ".pier.toml"), rt); err != nil {
+		t.Fatal(err)
+	}
+	if rt.Worktree.Dir != "" {
+		t.Errorf("fresh init should not pin worktree.dir in the manifest, got %q", rt.Worktree.Dir)
+	}
+}
+
+func TestApply_PreservesProjectWorktreeDirOnReinit(t *testing.T) {
+	dir := t.TempDir()
+	writeCompose(t, dir, `services:
+  app:
+    image: x
+    ports: ["3000:3000"]
+`)
+	if err := os.WriteFile(filepath.Join(dir, ".pier.toml"), []byte(`
+[project]
+name = "p"
+[stack]
+kind = "compose"
+file = "docker-compose.dev.yml"
+service = "app"
+[[expose]]
+service = "app"
+port = 3000
+[worktree]
+dir = "./project-pinned"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, _, err := Derive(dir, Opts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w testWriter
+	if err := Apply(p, &w); err != nil {
+		t.Fatal(err)
+	}
+	rt := &manifest.Manifest{}
+	if _, err := tomlDecodeFile(filepath.Join(dir, ".pier.toml"), rt); err != nil {
+		t.Fatal(err)
+	}
+	if rt.Worktree.Dir != "./project-pinned" {
+		t.Errorf("project pin lost on re-init: %q", rt.Worktree.Dir)
+	}
+}
+
+func TestApply_PersistsExplicitFlagToPrefs(t *testing.T) {
+	dir := t.TempDir()
+	writeCompose(t, dir, `services:
+  app:
+    image: x
+    ports: ["3000:3000"]
+`)
+	p, _, err := Derive(dir, Opts{WorktreeDir: "/tmp/custom-worktrees"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.WorktreeDirExplicit {
+		t.Fatal("WorktreeDirExplicit should be true when --worktree-dir is set")
+	}
+	var w testWriter
+	if err := Apply(p, &w); err != nil {
+		t.Fatal(err)
+	}
+	rt := &manifest.Manifest{}
+	if _, err := tomlDecodeFile(filepath.Join(dir, ".pier.toml"), rt); err != nil {
+		t.Fatal(err)
+	}
+	if rt.Worktree.Dir != "" {
+		t.Errorf("--worktree-dir should not write to manifest, got %q", rt.Worktree.Dir)
+	}
+	// Prefs file should have been created with the new value.
+	got := loadPrefsWorktreeDir()
+	if got != "/tmp/custom-worktrees" {
+		t.Errorf("prefs not persisted: got %q", got)
 	}
 }
 

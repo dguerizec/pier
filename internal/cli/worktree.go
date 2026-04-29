@@ -60,7 +60,7 @@ func runWorktreeAdd(cmd *cobra.Command, target string, opts wtAddOpts) error {
 		return fmt.Errorf("primary manifest: %w (hint: run `pier init` in the primary worktree first)", err)
 	}
 
-	abs, err := resolveWorktreePath(primary, target, m.Worktree.Dir)
+	abs, err := resolveWorktreePath(primary, target, effectiveWorktreeDir(m))
 	if err != nil {
 		return err
 	}
@@ -161,13 +161,13 @@ func runWorktreeRm(cmd *cobra.Command, target string, opts wtRmOpts) error {
 	}
 
 	// Mirror the resolution logic of `pier worktree add`: a bare name like
-	// `feat-x` resolves to <primary>/<manifest.worktree.dir>/feat-x. Without
+	// `feat-x` resolves to <primary>/<effective dir>/feat-x. Without
 	// this, `pier worktree rm feat-x` would try <cwd>/feat-x and fail.
-	dir := ""
-	if m, err := manifest.Load(info.PrimaryPath); err == nil {
-		dir = m.Worktree.Dir
+	var m *manifest.Manifest
+	if loaded, err := manifest.Load(info.PrimaryPath); err == nil {
+		m = loaded
 	}
-	abs, err := resolveWorktreePath(info.PrimaryPath, target, dir)
+	abs, err := resolveWorktreePath(info.PrimaryPath, target, effectiveWorktreeDir(m))
 	if err != nil {
 		return err
 	}

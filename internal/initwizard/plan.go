@@ -9,6 +9,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/LeoPartt/pier/internal/infra"
 	"github.com/LeoPartt/pier/internal/manifest"
 )
 
@@ -51,6 +52,12 @@ type Plan struct {
 	// the rewrite so user-curated sections (env, materialize, hooks, watch,
 	// stack.match_host_uid) survive untouched. Nil on first init.
 	Existing *manifest.Manifest
+
+	// WorktreeDirExplicit is true when the user passed --worktree-dir on
+	// the command line. Apply uses it to decide whether to persist the
+	// value to ~/.config/pier/prefs.toml: implicit defaults stay
+	// untouched so wizard runs don't keep churning the user's prefs.
+	WorktreeDirExplicit bool
 
 	// EnvSuggestions are templatisable env values discovered in the
 	// compose file. Aligned with EnvAccepted: only suggestions whose flag
@@ -168,7 +175,12 @@ func Derive(toplevel string, opts Opts) (*Plan, []Ambiguity, error) {
 		})
 	}
 
-	worktreeDir := firstNonEmpty(opts.WorktreeDir, existingWorktreeDir(existing), ".pier/worktrees")
+	worktreeDir := firstNonEmpty(
+		opts.WorktreeDir,
+		existingWorktreeDir(existing),
+		loadPrefsWorktreeDir(),
+		".pier/worktrees",
+	)
 	baseRef := firstNonEmpty(opts.BaseRef, existingBaseRef(existing), DetectDefaultBranch(toplevel))
 
 	envSuggestions := ScanEnvSuggestions(composeFile, existing)
@@ -204,13 +216,30 @@ func Derive(toplevel string, opts Opts) (*Plan, []Ambiguity, error) {
 		DefaultService: defaultService,
 		WorktreeDir:    worktreeDir,
 		BaseRef:        baseRef,
-		Share:          !opts.Private,
-		Existing:       existing,
-		EnvSuggestions: envSuggestions,
-		EnvAccepted:    envAccepted,
-		EnvVarPrompts:  envVarPrompts,
-		EnvVarValues:   envVarValues,
+		Share:               !opts.Private,
+		Existing:            existing,
+		WorktreeDirExplicit: opts.WorktreeDir != "",
+		EnvSuggestions:      envSuggestions,
+		EnvAccepted:         envAccepted,
+		EnvVarPrompts:       envVarPrompts,
+		EnvVarValues:        envVarValues,
 	}, ambig, nil
+}
+
+// loadPrefsWorktreeDir reads the per-user worktree default from
+// prefs.toml. Errors and missing files collapse to the empty string so
+// the caller can fall through to the next source in the resolution
+// chain.
+func loadPrefsWorktreeDir() string {
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		return ""
+	}
+	prefs, err := infra.LoadPrefs(paths)
+	if err != nil {
+		return ""
+	}
+	return prefs.WorktreeDir
 }
 
 // AcceptedEnvSuggestions returns the suggestions the user opted into,

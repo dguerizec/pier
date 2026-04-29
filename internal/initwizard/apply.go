@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/LeoPartt/pier/internal/infra"
 	"github.com/LeoPartt/pier/internal/manifest"
 )
 
@@ -56,7 +57,21 @@ func Apply(p *Plan, stdout io.Writer) error {
 	m.Stack.Dockerfile = "" // wizard only emits compose stacks
 	m.Stack.Service = p.DefaultService
 	m.Expose = exposes
-	m.Worktree = manifest.Worktree{Dir: p.WorktreeDir, BaseRef: p.BaseRef}
+	// worktree.dir is a per-user preference, not a project setting:
+	// fresh manifests omit it entirely, so the resolution chain
+	// (.pier.local.toml → .pier.toml → prefs.toml → default) lands on
+	// the user's prefs at lookup time. Re-init preserves an explicit
+	// project pin if one is already in the manifest.
+	m.Worktree.BaseRef = p.BaseRef
+	if !p.IsReinit() || p.Existing.Worktree.Dir == "" {
+		m.Worktree.Dir = ""
+	}
+
+	if p.WorktreeDirExplicit {
+		if err := persistWorktreeDirPref(p.WorktreeDir, stdout); err != nil {
+			fmt.Fprintf(stdout, "warning: could not save worktree dir to prefs: %v\n", err)
+		}
+	}
 
 	for _, s := range p.AcceptedEnvSuggestions() {
 		ensureEnv(m, s.Service)
@@ -140,4 +155,27 @@ func warnIfErr(stdout io.Writer, err error) {
 	if err != nil {
 		fmt.Fprintf(stdout, "warning: could not update .gitignore: %v\n", err)
 	}
+}
+
+// persistWorktreeDirPref saves dir into ~/.config/pier/prefs.toml,
+// preserving any other prefs already on disk. Called only when the user
+// passed --worktree-dir explicitly.
+func persistWorktreeDirPref(dir string, stdout io.Writer) error {
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		return err
+	}
+	prefs, err := infra.LoadPrefs(paths)
+	if err != nil {
+		return err
+	}
+	if prefs.WorktreeDir == dir {
+		return nil
+	}
+	prefs.WorktreeDir = dir
+	if err := prefs.Save(paths); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "✓ saved worktree dir to %s\n", infra.PrefsPath(paths))
+	return nil
 }

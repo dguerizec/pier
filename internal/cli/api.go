@@ -73,15 +73,19 @@ type apiDoctorReport struct {
 type apiHandler struct {
 	paths *infra.Paths
 	cfg   *infra.Config
+	hub   *eventHub // nil = no SSE endpoint registered (used in tests)
 }
 
-// register mounts the read-only v1 endpoints on mux. Phase 2+ endpoints
-// (SSE events, action POSTs) will hang off the same handler.
+// register mounts the v1 endpoints on mux. Phase 3 action POSTs will hang
+// off the same handler.
 func (h *apiHandler) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/workloads", h.listWorkloads)
 	mux.HandleFunc("GET /api/v1/workloads/{project}/{slug}", h.getWorkload)
 	mux.HandleFunc("GET /api/v1/config", h.getConfig)
 	mux.HandleFunc("GET /api/v1/doctor", h.getDoctor)
+	if h.hub != nil {
+		mux.HandleFunc("GET /api/v1/events", h.streamEvents)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

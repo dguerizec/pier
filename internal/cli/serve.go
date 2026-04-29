@@ -42,12 +42,15 @@ func newServeCmd() *cobra.Command {
 				return err
 			}
 
+			hub := newEventHub(paths, cfg)
+			hub.start(cmd.Context())
+
 			addr := net.JoinHostPort(bind, fmt.Sprintf("%d", port))
 			mux := http.NewServeMux()
 			// Pin the dashboard to the exact root path so the catch-all
 			// doesn't shadow /api/v1/* and break the mux's 405 handling.
 			mux.Handle("GET /{$}", &webHandler{paths: paths, cfg: cfg, refresh: refresh})
-			(&apiHandler{paths: paths, cfg: cfg}).register(mux)
+			(&apiHandler{paths: paths, cfg: cfg, hub: hub}).register(mux)
 
 			fmt.Fprintf(cmd.OutOrStdout(), "→ http://%s\n", addr)
 			fmt.Fprintln(cmd.OutOrStdout(), "  ctrl-c to stop")

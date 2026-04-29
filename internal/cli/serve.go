@@ -2,14 +2,11 @@ package cli
 
 import (
 	_ "embed"
-	"encoding/json"
 	"fmt"
 	"html/template"
 	"net"
 	"net/http"
-	"os/exec"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -34,7 +31,7 @@ func newServeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "serve",
 		Aliases: []string{"web"},
-		Short:   "Serve a small web dashboard listing running workloads and their URLs",
+		Short:   "Serve the pier HTTP surface (dashboard at /, REST API at /api/v1/)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			paths, err := infra.DefaultPaths()
 			if err != nil {
@@ -46,13 +43,11 @@ func newServeCmd() *cobra.Command {
 			}
 
 			addr := net.JoinHostPort(bind, fmt.Sprintf("%d", port))
-			handler := &webHandler{
-				paths:   paths,
-				cfg:     cfg,
-				refresh: refresh,
-			}
 			mux := http.NewServeMux()
-			mux.Handle("/", handler)
+			// Pin the dashboard to the exact root path so the catch-all
+			// doesn't shadow /api/v1/* and break the mux's 405 handling.
+			mux.Handle("GET /{$}", &webHandler{paths: paths, cfg: cfg, refresh: refresh})
+			(&apiHandler{paths: paths, cfg: cfg}).register(mux)
 
 			fmt.Fprintf(cmd.OutOrStdout(), "→ http://%s\n", addr)
 			fmt.Fprintln(cmd.OutOrStdout(), "  ctrl-c to stop")
@@ -74,10 +69,6 @@ type webHandler struct {
 }
 
 func (h *webHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
 	page, err := h.buildPage()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -85,7 +76,6 @@ func (h *webHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := webPageTemplate.Execute(w, page); err != nil {
-		// Headers already sent — best we can do is log.
 		fmt.Fprintf(w, "\n<!-- template error: %v -->", err)
 	}
 }
@@ -108,21 +98,9 @@ type webWorkload struct {
 	Branch     string
 	Status     string
 	Uptime     string
-	URLs       []webURL
-	Containers []webContainer
+	URLs       []apiURL
+	Containers []apiContainer
 	ErrMsg     string
-}
-
-type webURL struct {
-	URL     string
-	Label   string
-	Default bool
-}
-
-type webContainer struct {
-	Name   string
-	Image  string
-	Status string
 }
 
 func (h *webHandler) buildPage() (*webPage, error) {
@@ -178,7 +156,7 @@ func (h *webHandler) workloadView(w *state.Workload) webWorkload {
 	if err != nil {
 		view.ErrMsg = fmt.Sprintf("manifest unreadable: %v", err)
 	} else {
-		view.URLs = h.urlsFor(w, m)
+		view.URLs = workloadURLs(h.cfg, w, m)
 	}
 
 	containers, cerr := listProjectContainers(adapter.Name(w.Project, w.Slug))
@@ -192,11 +170,14 @@ func (h *webHandler) workloadView(w *state.Workload) webWorkload {
 	return view
 }
 
-func (h *webHandler) urlsFor(w *state.Workload, m *manifest.Manifest) []webURL {
+// workloadURLs returns every public URL derived from a workload's manifest,
+// flagged with `Default` for the alias host. Shared by the HTML dashboard
+// and the REST API so both layers stay in lock-step.
+func workloadURLs(cfg *infra.Config, w *state.Workload, m *manifest.Manifest) []apiURL {
 	baseDomain := m.Project.BaseDomain
 	if baseDomain == "" {
-		baseDomain = m.Project.Name + "." + h.cfg.TLD
-	} else if expanded, err := adapter.ExpandPierTokens(baseDomain, h.cfg.TLD); err == nil {
+		baseDomain = m.Project.Name + "." + cfg.TLD
+	} else if expanded, err := adapter.ExpandPierTokens(baseDomain, cfg.TLD); err == nil {
 		baseDomain = expanded
 	}
 
@@ -205,49 +186,14 @@ func (h *webHandler) urlsFor(w *state.Workload, m *manifest.Manifest) []webURL {
 		defaultService = d.Service
 	}
 
-	var out []webURL
+	var out []apiURL
 	if defaultService != "" {
 		alias := adapter.AliasHost(w.Slug, baseDomain)
-		out = append(out, webURL{URL: "http://" + alias, Label: alias, Default: true})
+		out = append(out, apiURL{URL: "http://" + alias, Label: alias, Default: true})
 	}
 	for _, e := range m.Expose {
 		host := adapter.HostFor(e, w.Slug, baseDomain)
-		out = append(out, webURL{URL: "http://" + host, Label: host})
+		out = append(out, apiURL{URL: "http://" + host, Label: host})
 	}
 	return out
-}
-
-// listProjectContainers asks docker for every container labelled with the
-// given compose project. The format keeps the columns stable — we parse
-// JSON because `--format` text would split on spaces in image refs.
-func listProjectContainers(projectName string) ([]webContainer, error) {
-	cmd := exec.Command("docker", "ps", "-a",
-		"--filter", "label=com.docker.compose.project="+projectName,
-		"--format", "{{json .}}",
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-	var containers []webContainer
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "" {
-			continue
-		}
-		var entry struct {
-			Names string `json:"Names"`
-			Image string `json:"Image"`
-			State string `json:"State"`
-		}
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
-		}
-		containers = append(containers, webContainer{
-			Name:   entry.Names,
-			Image:  entry.Image,
-			Status: entry.State,
-		})
-	}
-	sort.Slice(containers, func(i, j int) bool { return containers[i].Name < containers[j].Name })
-	return containers, nil
 }

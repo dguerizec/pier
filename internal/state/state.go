@@ -1,6 +1,8 @@
-// Package state persists workload metadata in a tiny SQLite file
-// (DESIGN §5.3). The DB is a cache rebuildable from docker/git inspection;
-// truth still lives in the runtime, not here.
+// Package state persists pier metadata in a tiny SQLite file (DESIGN
+// §5.3). Two tables: `workloads` is a cache rebuildable from docker/git
+// inspection (the runtime is the truth); `projects` is the authoritative
+// registry of repos pier knows about — populated by `pier init` and the
+// REST API, not derivable from the runtime.
 package state
 
 import (
@@ -25,10 +27,30 @@ CREATE TABLE IF NOT EXISTS workloads (
     started_at    INTEGER NOT NULL,
     PRIMARY KEY (project, slug)
 );
+CREATE TABLE IF NOT EXISTS projects (
+    name          TEXT PRIMARY KEY,
+    repo_path     TEXT NOT NULL UNIQUE,
+    registered_at INTEGER NOT NULL
+);
 `
 
 // ErrNotFound is returned when a (project, slug) pair has no row.
 var ErrNotFound = errors.New("state: workload not found")
+
+// ErrProjectNotFound is returned when no projects row matches the lookup.
+var ErrProjectNotFound = errors.New("state: project not found")
+
+// ErrProjectExists is returned when registering a project would clash on
+// either `name` or `repo_path` (both UNIQUE). The caller decides whether
+// to surface it (POST /projects) or merge silently (CLI re-init).
+var ErrProjectExists = errors.New("state: project already registered")
+
+// Project mirrors one row of the projects table.
+type Project struct {
+	Name         string
+	RepoPath     string
+	RegisteredAt time.Time
+}
 
 // Workload mirrors one row in the workloads table.
 type Workload struct {
@@ -179,4 +201,98 @@ func nullableInt(n int64) any {
 		return nil
 	}
 	return n
+}
+
+// RegisterProject inserts a (name, repo_path) row. If the project name
+// already exists with the SAME repo_path, this is a no-op (returns the
+// existing row). Conflicts on either column with a different mapping
+// return ErrProjectExists so the caller can decide how to react.
+func (s *Store) RegisterProject(name, repoPath string) (*Project, error) {
+	if name == "" || repoPath == "" {
+		return nil, errors.New("state: name and repo_path are required")
+	}
+	if existing, err := s.GetProject(name); err == nil {
+		if existing.RepoPath == repoPath {
+			return existing, nil
+		}
+		return nil, fmt.Errorf("%w: name %q already maps to %s", ErrProjectExists, name, existing.RepoPath)
+	} else if !errors.Is(err, ErrProjectNotFound) {
+		return nil, err
+	}
+	if existing, err := s.GetProjectByRepo(repoPath); err == nil {
+		return nil, fmt.Errorf("%w: repo %s already registered as %q", ErrProjectExists, repoPath, existing.Name)
+	} else if !errors.Is(err, ErrProjectNotFound) {
+		return nil, err
+	}
+	now := time.Now().Unix()
+	if _, err := s.db.Exec(
+		`INSERT INTO projects (name, repo_path, registered_at) VALUES (?, ?, ?)`,
+		name, repoPath, now,
+	); err != nil {
+		return nil, err
+	}
+	return &Project{Name: name, RepoPath: repoPath, RegisteredAt: time.Unix(now, 0)}, nil
+}
+
+// GetProject fetches one project by name. Returns ErrProjectNotFound when
+// nothing matches.
+func (s *Store) GetProject(name string) (*Project, error) {
+	row := s.db.QueryRow(
+		`SELECT name, repo_path, registered_at FROM projects WHERE name = ?`,
+		name,
+	)
+	return scanProject(row)
+}
+
+// GetProjectByRepo fetches a project by absolute repo path. Same error
+// surface as GetProject.
+func (s *Store) GetProjectByRepo(repoPath string) (*Project, error) {
+	row := s.db.QueryRow(
+		`SELECT name, repo_path, registered_at FROM projects WHERE repo_path = ?`,
+		repoPath,
+	)
+	return scanProject(row)
+}
+
+// ListProjects returns every registered project, ordered by name.
+func (s *Store) ListProjects() ([]*Project, error) {
+	rows, err := s.db.Query(
+		`SELECT name, repo_path, registered_at FROM projects ORDER BY name`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Project
+	for rows.Next() {
+		p, err := scanProject(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// UnregisterProject deletes the row for `name`. No-op if absent. Does
+// NOT cascade to workloads — those keep their `project` text and remain
+// listable; the registry just forgets where the repo lives.
+func (s *Store) UnregisterProject(name string) error {
+	_, err := s.db.Exec(`DELETE FROM projects WHERE name = ?`, name)
+	return err
+}
+
+func scanProject(r rowScanner) (*Project, error) {
+	var (
+		p            Project
+		registeredAt int64
+	)
+	if err := r.Scan(&p.Name, &p.RepoPath, &registeredAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrProjectNotFound
+		}
+		return nil, err
+	}
+	p.RegisteredAt = time.Unix(registeredAt, 0)
+	return &p, nil
 }

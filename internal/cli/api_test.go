@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/LeoPartt/pier/internal/infra"
@@ -121,5 +122,55 @@ func TestAPIMethodNotAllowed(t *testing.T) {
 	// stdlib mux returns 405 when method doesn't match a registered pattern.
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", rec.Code)
+	}
+}
+
+func TestAPIDownIdempotentWhenAbsent(t *testing.T) {
+	// POST /down on an unknown workload returns 200 with status=down —
+	// the caller can retry without checking existence first.
+	_, mux := newTestAPI(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workloads/foo/bar/down", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got apiActionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Project != "foo" || got.Slug != "bar" || got.Status != "down" {
+		t.Errorf("unexpected response: %+v", got)
+	}
+}
+
+func TestAPIUpRequiresWorktreePath(t *testing.T) {
+	// POST /up with no state row and no body field: 400 with explicit
+	// hint pointing at the worktrees endpoint.
+	_, mux := newTestAPI(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workloads/foo/bar/up", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "worktree_path") {
+		t.Errorf("expected hint about worktree_path: %s", rec.Body.String())
+	}
+}
+
+func TestAPIUpInvalidJSON(t *testing.T) {
+	_, mux := newTestAPI(t)
+	body := `{not json}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/workloads/foo/bar/up",
+		strings.NewReader(body))
+	req.ContentLength = int64(len(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body %s", rec.Code, rec.Body.String())
 	}
 }

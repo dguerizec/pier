@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os/exec"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	"github.com/LeoPartt/pier/internal/infra"
 	"github.com/LeoPartt/pier/internal/manifest"
 	"github.com/LeoPartt/pier/internal/state"
+	"github.com/LeoPartt/pier/internal/worktree"
 )
 
 // JSON shapes under /api/v1/* are a contract. Any breaking change must
@@ -76,13 +78,15 @@ type apiHandler struct {
 	hub   *eventHub // nil = no SSE endpoint registered (used in tests)
 }
 
-// register mounts the v1 endpoints on mux. Phase 3 action POSTs will hang
-// off the same handler.
+// register mounts the v1 endpoints on mux. Phase 3 worktree CRUD will
+// hang off the same handler.
 func (h *apiHandler) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/workloads", h.listWorkloads)
 	mux.HandleFunc("GET /api/v1/workloads/{project}/{slug}", h.getWorkload)
 	mux.HandleFunc("GET /api/v1/config", h.getConfig)
 	mux.HandleFunc("GET /api/v1/doctor", h.getDoctor)
+	mux.HandleFunc("POST /api/v1/workloads/{project}/{slug}/up", h.postWorkloadUp)
+	mux.HandleFunc("POST /api/v1/workloads/{project}/{slug}/down", h.postWorkloadDown)
 	if h.hub != nil {
 		mux.HandleFunc("GET /api/v1/events", h.streamEvents)
 	}
@@ -268,4 +272,158 @@ func listProjectContainers(projectName string) ([]apiContainer, error) {
 	}
 	sort.Slice(containers, func(i, j int) bool { return containers[i].Name < containers[j].Name })
 	return containers, nil
+}
+
+// apiUpRequest is the optional body of POST /up. Sillage uses
+// worktree_path on the first call after a `pier down` (which dropped the
+// state row), since pier doesn't keep a persistent (project, slug) →
+// path index outside state. Subsequent calls can omit it; the state row
+// from the previous up provides the path.
+type apiUpRequest struct {
+	WorktreePath string `json:"worktree_path,omitempty"`
+}
+
+// apiActionResponse is the lightweight POST /down response. POST /up
+// returns a full apiWorkload — there's no apiWorkload to return for a
+// just-stopped workload (the state row is gone), so we surface just
+// enough for sillage to confirm what happened.
+type apiActionResponse struct {
+	Project string `json:"project"`
+	Slug    string `json:"slug"`
+	Status  string `json:"status"`            // "running" | "down"
+	Warning string `json:"warning,omitempty"` // surfaced when the row was dropped despite the worktree being gone
+}
+
+func (h *apiHandler) postWorkloadUp(w http.ResponseWriter, r *http.Request) {
+	project := r.PathValue("project")
+	slug := r.PathValue("slug")
+
+	var body apiUpRequest
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+			return
+		}
+	}
+
+	path := body.WorktreePath
+	if path == "" {
+		// Look up the existing state row to recover the worktree path.
+		// Missing row + missing body field = caller hasn't told us where
+		// the worktree lives, and pier has no central registry.
+		store, err := state.Open(h.paths.StateDB)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		wl, err := store.Get(project, slug)
+		store.Close()
+		if err == nil {
+			path = wl.WorktreePath
+		}
+	}
+	if path == "" {
+		writeAPIError(w, http.StatusBadRequest,
+			"no state row for "+project+"/"+slug+
+				"; provide worktree_path in the request body, or POST /api/v1/worktrees first")
+		return
+	}
+
+	info, err := worktree.DetectFrom(path)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "worktree at "+path+": "+err.Error())
+		return
+	}
+
+	d, err := dailyForWorktree(info, slug, io.Discard, io.Discard)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer d.State.Close()
+
+	if d.Manifest.Project.Name != project {
+		writeAPIError(w, http.StatusConflict,
+			fmt.Sprintf("manifest at %s declares project=%q, URL says %q",
+				info.Toplevel, d.Manifest.Project.Name, project))
+		return
+	}
+
+	// Idempotent up: if a row already exists and its container is
+	// running, return the current state without touching docker. Mirrors
+	// `docker compose up -d` no-op semantics — sillage retries are safe.
+	if existing, err := d.State.Get(project, slug); err == nil {
+		if containerStatus(existing) == "running" {
+			writeJSON(w, http.StatusOK, buildAPIWorkload(h.cfg, existing))
+			return
+		}
+	}
+
+	if err := runUp(d, io.Discard, io.Discard); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "up failed: "+err.Error())
+		return
+	}
+
+	wl, err := d.State.Get(project, slug)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "post-up state read: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, buildAPIWorkload(h.cfg, wl))
+}
+
+func (h *apiHandler) postWorkloadDown(w http.ResponseWriter, r *http.Request) {
+	project := r.PathValue("project")
+	slug := r.PathValue("slug")
+
+	store, err := state.Open(h.paths.StateDB)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	wl, err := store.Get(project, slug)
+	store.Close()
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			// Already down — idempotent success.
+			writeJSON(w, http.StatusOK, apiActionResponse{
+				Project: project, Slug: slug, Status: "down",
+			})
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	info, err := worktree.DetectFrom(wl.WorktreePath)
+	if err != nil {
+		// Worktree gone (deleted out from under pier). The containers
+		// might still exist; we can't drive compose without a manifest,
+		// so just drop the orphaned row and warn the caller.
+		s, e := state.Open(h.paths.StateDB)
+		if e == nil {
+			_ = s.Delete(project, slug)
+			s.Close()
+		}
+		writeJSON(w, http.StatusOK, apiActionResponse{
+			Project: project, Slug: slug, Status: "down",
+			Warning: "worktree at " + wl.WorktreePath + " missing; state row dropped without docker compose down",
+		})
+		return
+	}
+
+	d, err := dailyForWorktree(info, slug, io.Discard, io.Discard)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer d.State.Close()
+
+	if err := runDown(d, false, io.Discard, io.Discard); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "down failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, apiActionResponse{
+		Project: project, Slug: slug, Status: "down",
+	})
 }

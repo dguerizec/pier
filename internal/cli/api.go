@@ -251,7 +251,7 @@ func buildAPIWorkload(cfg *infra.Config, wl *state.Workload) apiWorkload {
 		Containers:    []apiContainer{},
 	}
 
-	m, err := manifest.Load(wl.WorktreePath)
+	m, err := loadManifestForWorkloadPath(wl.WorktreePath)
 	if err != nil {
 		out.Error = "manifest unreadable: " + err.Error()
 	} else {

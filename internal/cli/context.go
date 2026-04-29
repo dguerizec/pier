@@ -103,6 +103,43 @@ func branchExists(toplevel, name string) bool {
 	return cmd.Run() == nil
 }
 
+// loadManifestForWorktree loads <info.Toplevel>/.pier.toml, with a fallback
+// to the primary worktree when the secondary doesn't have one. Rationale:
+// the manifest is project config, not source code. Users typically do not
+// commit `.pier.toml` (the CLI init wizard gitignores it by default), so a
+// freshly-created worktree won't carry the manifest in its initial
+// checkout. Falling back to the primary lets `pier up` and friends work
+// from any worktree without forcing the user to commit-and-push first.
+//
+// When the secondary HAS its own `.pier.toml`, that one wins — which is
+// what you want if a branch deliberately overrides the manifest.
+func loadManifestForWorktree(info *worktree.Info) (*manifest.Manifest, error) {
+	m, err := manifest.Load(info.Toplevel)
+	if err == nil {
+		return m, nil
+	}
+	if !errors.Is(err, manifest.ErrNotFound) {
+		return nil, err
+	}
+	if info.PrimaryPath == "" || info.PrimaryPath == info.Toplevel {
+		return nil, err
+	}
+	return manifest.Load(info.PrimaryPath)
+}
+
+// loadManifestForWorkloadPath is the lookup variant used when we only have
+// a worktree path (state row) and need the manifest. Detects the worktree
+// to find its primary, then defers to loadManifestForWorktree.
+func loadManifestForWorkloadPath(worktreePath string) (*manifest.Manifest, error) {
+	info, err := worktree.DetectFrom(worktreePath)
+	if err != nil {
+		// Fall back to the original behaviour — surfaces the
+		// manifest-not-found error if the path is broken.
+		return manifest.Load(worktreePath)
+	}
+	return loadManifestForWorktree(info)
+}
+
 // resolveDaily detects the worktree, loads the manifest, computes the slug
 // (PIER_SLUG env or --slug flag override the branch derivation), and opens
 // the state DB. When --slug points at a different worktree than cwd, the
@@ -137,7 +174,7 @@ func dailyForWorktree(info *worktree.Info, slug string, out, errW io.Writer) (*d
 		slug = derived
 	}
 
-	m, err := manifest.Load(info.Toplevel)
+	m, err := loadManifestForWorktree(info)
 	if err != nil {
 		return nil, err
 	}

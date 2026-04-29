@@ -12,7 +12,6 @@ import (
 
 	"github.com/LeoPartt/pier/internal/adapter"
 	"github.com/LeoPartt/pier/internal/infra"
-	"github.com/LeoPartt/pier/internal/manifest"
 	"github.com/LeoPartt/pier/internal/state"
 )
 
@@ -85,7 +84,7 @@ func renderTable(cmd *cobra.Command, rows []lsRow) error {
 // `<slug>.<project>.<tld>` entirely when the manifest is gone so
 // `pier ls` always prints something the user can react to.
 func workloadURL(w *state.Workload, tld string) string {
-	m, err := manifest.Load(w.WorktreePath)
+	m, err := loadManifestForWorkloadPath(w.WorktreePath)
 	if err != nil {
 		return "http://" + w.Slug + "." + w.Project + "." + tld
 	}

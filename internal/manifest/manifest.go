@@ -26,25 +26,31 @@ const (
 var ErrNotFound = errors.New("manifest: .pier.toml not found (run `pier init`)")
 
 // Manifest is the in-memory representation of .pier.toml.
+//
+// JSON tags mirror the TOML tags so the same struct is the on-disk
+// format AND the wire format for the REST API (POST /api/v1/projects).
+// Adding a field gives both representations for free; renaming or
+// removing one is a breaking change in both surfaces at once — that's
+// the trade for not maintaining duplicate DTOs.
 type Manifest struct {
-	Project     Project                      `toml:"project"`
-	Stack       Stack                        `toml:"stack"`
-	Expose      []ExposeRule                 `toml:"expose"`
-	Env         map[string]map[string]string `toml:"env,omitempty"`
-	Materialize Materialize                  `toml:"materialize,omitempty"`
-	Hooks       Hooks                        `toml:"hooks,omitempty"`
-	Watch       Watch                        `toml:"watch,omitempty"`
-	Worktree    Worktree                     `toml:"worktree,omitempty"`
+	Project     Project                      `toml:"project"               json:"project"`
+	Stack       Stack                        `toml:"stack"                 json:"stack"`
+	Expose      []ExposeRule                 `toml:"expose"                json:"expose"`
+	Env         map[string]map[string]string `toml:"env,omitempty"         json:"env,omitempty"`
+	Materialize Materialize                  `toml:"materialize,omitempty" json:"materialize,omitempty"`
+	Hooks       Hooks                        `toml:"hooks,omitempty"       json:"hooks,omitempty"`
+	Watch       Watch                        `toml:"watch,omitempty"       json:"watch,omitempty"`
+	Worktree    Worktree                     `toml:"worktree,omitempty"    json:"worktree,omitempty"`
 }
 
 type Project struct {
-	Name string `toml:"name"`
+	Name string `toml:"name" json:"name"`
 	// BaseDomain is optional. When empty, pier composes it at runtime as
 	// `<name>.<installed-tld>` so the same manifest works across machines
 	// where contributors may have installed pier on different TLDs. Set
 	// it explicitly only when you need a fixed domain (multi-team setup,
 	// custom DNS).
-	BaseDomain string `toml:"base_domain,omitempty"`
+	BaseDomain string `toml:"base_domain,omitempty" json:"base_domain,omitempty"`
 }
 
 // Stack covers the supported adapter kinds. Pier is intentionally
@@ -52,21 +58,21 @@ type Project struct {
 // to declare a docker-compose.dev.yml. The README has a 10-line minimal
 // example for projects that don't otherwise containerize.
 type Stack struct {
-	Kind       string `toml:"kind"`
-	File       string `toml:"file,omitempty"`       // compose
-	Dockerfile string `toml:"dockerfile,omitempty"` // dockerfile (Phase 3 — synthesized compose)
+	Kind       string `toml:"kind"                 json:"kind"`
+	File       string `toml:"file,omitempty"       json:"file,omitempty"`       // compose
+	Dockerfile string `toml:"dockerfile,omitempty" json:"dockerfile,omitempty"` // dockerfile (Phase 3 — synthesized compose)
 
 	// Service names the [[expose]] entry that should also be reachable at
 	// the bare `<slug>.<base_domain>` (no sub-domain). When empty or when
 	// no [[expose]] matches, no alias is emitted — every exposed service
 	// is reachable only via its own `<host>.<slug>.<base_domain>`.
-	Service string `toml:"service,omitempty"`
+	Service string `toml:"service,omitempty" json:"service,omitempty"`
 
 	// MatchHostUID, when true, makes pier inject `user: "<uid>:<gid>"`
 	// into the compose override so the container runs as the host user.
 	// Resolves the EACCES class on bind-mounted host paths when the image
 	// uses a non-matching default user (typical for distroless/nonroot).
-	MatchHostUID bool `toml:"match_host_uid,omitempty"`
+	MatchHostUID bool `toml:"match_host_uid,omitempty" json:"match_host_uid,omitempty"`
 }
 
 // ExposeRule is one service that pier should publish behind traefik.
@@ -75,10 +81,10 @@ type Stack struct {
 // pointed at by Stack.Service additionally gets `http://<slug>.<base_domain>`
 // as an alias.
 type ExposeRule struct {
-	Service string `toml:"service"`
-	Port    int    `toml:"port"`
+	Service string `toml:"service" json:"service"`
+	Port    int    `toml:"port"    json:"port"`
 	// Host is the sub-domain label. Defaults to Service when empty.
-	Host string `toml:"host,omitempty"`
+	Host string `toml:"host,omitempty" json:"host,omitempty"`
 }
 
 // Hostname returns the sub-domain label this rule advertises.
@@ -90,30 +96,30 @@ func (e ExposeRule) Hostname() string {
 }
 
 type Materialize struct {
-	Symlinks  []string `toml:"symlinks,omitempty"`
-	Snapshots []string `toml:"snapshots,omitempty"`
+	Symlinks  []string `toml:"symlinks,omitempty"  json:"symlinks,omitempty"`
+	Snapshots []string `toml:"snapshots,omitempty" json:"snapshots,omitempty"`
 }
 
 type Hooks struct {
-	PreUp    string `toml:"pre_up,omitempty"`
-	PostUp   string `toml:"post_up,omitempty"`
-	PreDown  string `toml:"pre_down,omitempty"`
-	PostDown string `toml:"post_down,omitempty"`
+	PreUp    string `toml:"pre_up,omitempty"    json:"pre_up,omitempty"`
+	PostUp   string `toml:"post_up,omitempty"   json:"post_up,omitempty"`
+	PreDown  string `toml:"pre_down,omitempty"  json:"pre_down,omitempty"`
+	PostDown string `toml:"post_down,omitempty" json:"post_down,omitempty"`
 }
 
 type Watch struct {
-	Paths    []string `toml:"paths,omitempty"`
-	OnChange string   `toml:"on_change,omitempty"` // rebuild | restart
+	Paths    []string `toml:"paths,omitempty"     json:"paths,omitempty"`
+	OnChange string   `toml:"on_change,omitempty" json:"on_change,omitempty"` // rebuild | restart
 }
 
 // Worktree configures the `pier worktree add` UX.
 type Worktree struct {
 	// Dir places new trees here when <name> has no path separator;
 	// relative paths resolve against the primary worktree.
-	Dir string `toml:"dir,omitempty"` // e.g. ".claude/worktrees"
+	Dir string `toml:"dir,omitempty" json:"dir,omitempty"` // e.g. ".claude/worktrees"
 	// BaseRef is the git ref new branches fork from. Defaults to "main"
 	// (then "master") when unset; --from on the command line wins.
-	BaseRef string `toml:"base_ref,omitempty"` // e.g. "main"
+	BaseRef string `toml:"base_ref,omitempty" json:"base_ref,omitempty"` // e.g. "main"
 }
 
 // Load reads <root>/.pier.toml, then layers <root>/.pier.local.toml on top

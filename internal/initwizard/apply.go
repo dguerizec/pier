@@ -20,30 +20,14 @@ func ensureEnv(m *manifest.Manifest, service string) {
 	}
 }
 
-// Apply validates the Plan and writes .pier.toml + .gitignore entries.
-//
-// On re-init (Plan.Existing != nil) the existing manifest is used as the
-// base so user-curated sections — env, materialize, hooks, watch and
-// stack.match_host_uid — pass through untouched. Apply only rewrites the
-// sections the wizard owns: project, expose, worktree and the wizard
-// fields of stack (kind, file, service).
-//
-// Status messages are printed to stdout so the CLI doesn't have to know
-// about the file layout.
-func Apply(p *Plan, stdout io.Writer) error {
+// ProposeManifest computes the manifest that Apply would write, without
+// touching disk. Useful for surfaces that want to preview the result
+// (REST API scan endpoint, dry-run modes). The returned manifest is
+// validated; nil + error on validation failure.
+func ProposeManifest(p *Plan) (*manifest.Manifest, error) {
 	exposes := p.SelectedExposes()
 	if len(exposes) == 0 {
-		return errors.New("at least one service must be exposed")
-	}
-
-	if p.DefaultService != "" && !exposesContain(exposes, p.DefaultService) {
-		fmt.Fprintf(stdout, "warning: default service %q is not exposed; no alias will be emitted\n", p.DefaultService)
-	}
-
-	if p.IsReinit() {
-		if dropped := droppedServices(p.Existing.Expose, exposes); len(dropped) > 0 {
-			fmt.Fprintf(stdout, "note: dropping previously exposed services: %v\n", dropped)
-		}
+		return nil, errors.New("at least one service must be exposed")
 	}
 
 	m := p.Existing
@@ -54,23 +38,14 @@ func Apply(p *Plan, stdout io.Writer) error {
 	// Preserve stack.match_host_uid; only rewrite the wizard-owned fields.
 	m.Stack.Kind = manifest.KindCompose
 	m.Stack.File = relTo(p.Toplevel, p.ComposeFile)
-	m.Stack.Dockerfile = "" // wizard only emits compose stacks
+	m.Stack.Dockerfile = ""
 	m.Stack.Service = p.DefaultService
 	m.Expose = exposes
-	// worktree.dir is a per-user preference, not a project setting:
-	// fresh manifests omit it entirely, so the resolution chain
-	// (.pier.local.toml → .pier.toml → prefs.toml → default) lands on
-	// the user's prefs at lookup time. Re-init preserves an explicit
-	// project pin if one is already in the manifest.
+	// worktree.dir is a per-user preference, not a project setting; see
+	// Apply for the resolution chain.
 	m.Worktree.BaseRef = p.BaseRef
 	if !p.IsReinit() || p.Existing.Worktree.Dir == "" {
 		m.Worktree.Dir = ""
-	}
-
-	if p.WorktreeDirExplicit {
-		if err := persistWorktreeDirPref(p.WorktreeDir, stdout); err != nil {
-			fmt.Fprintf(stdout, "warning: could not save worktree dir to prefs: %v\n", err)
-		}
 	}
 
 	for _, s := range p.AcceptedEnvSuggestions() {
@@ -88,8 +63,40 @@ func Apply(p *Plan, stdout io.Writer) error {
 		ensureEnv(m, prompt.Service)
 		m.Env[prompt.Service][prompt.Key] = val
 	}
-
 	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// Apply validates the Plan and writes .pier.toml + .gitignore entries.
+//
+// On re-init (Plan.Existing != nil) the existing manifest is used as the
+// base so user-curated sections — env, materialize, hooks, watch and
+// stack.match_host_uid — pass through untouched. Apply only rewrites the
+// sections the wizard owns: project, expose, worktree and the wizard
+// fields of stack (kind, file, service).
+//
+// Status messages are printed to stdout so the CLI doesn't have to know
+// about the file layout.
+func Apply(p *Plan, stdout io.Writer) error {
+	if p.DefaultService != "" && !exposesContain(p.SelectedExposes(), p.DefaultService) {
+		fmt.Fprintf(stdout, "warning: default service %q is not exposed; no alias will be emitted\n", p.DefaultService)
+	}
+	if p.IsReinit() {
+		if dropped := droppedServices(p.Existing.Expose, p.SelectedExposes()); len(dropped) > 0 {
+			fmt.Fprintf(stdout, "note: dropping previously exposed services: %v\n", dropped)
+		}
+	}
+
+	if p.WorktreeDirExplicit {
+		if err := persistWorktreeDirPref(p.WorktreeDir, stdout); err != nil {
+			fmt.Fprintf(stdout, "warning: could not save worktree dir to prefs: %v\n", err)
+		}
+	}
+
+	m, err := ProposeManifest(p)
+	if err != nil {
 		return err
 	}
 	if err := m.Write(p.ManifestPath); err != nil {

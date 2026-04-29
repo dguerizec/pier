@@ -95,6 +95,7 @@ func (h *apiHandler) register(mux *http.ServeMux) {
 	if h.hub != nil {
 		mux.HandleFunc("GET /api/v1/events", h.streamEvents)
 	}
+	h.registerProjects(mux)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

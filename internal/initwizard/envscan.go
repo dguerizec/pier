@@ -25,6 +25,18 @@ type EnvSuggestion struct {
 	Replacement string // proposed value, e.g. "{url.api}" or "{url.api}/v1"
 }
 
+// EnvVarPrompt represents an env var whose compose value is a pure
+// host-side interpolation (e.g. `${VITE_ALLOWED_HOSTS-}`). The wizard
+// asks the user whether they want to pin a value in [env.<service>]
+// instead of leaving it to the surrounding shell or .env file.
+type EnvVarPrompt struct {
+	Service string
+	Key     string
+	Raw     string // raw compose value, e.g. "${VITE_ALLOWED_HOSTS-}"
+	HostVar string // host env var the interpolation references
+	Default string // the -default / :-default portion, "" when none
+}
+
 // composeEnv is the slice of compose docs we care about for env scanning.
 // We re-parse the file rather than threading state through detect.go
 // because the env-scan path is optional and only runs when the wizard
@@ -40,6 +52,12 @@ type composeDoc struct {
 // pier `{url.<svc>}` template. Group 1 is the host, group 2 the port
 // (with the leading colon kept), group 3 the path.
 var urlRE = regexp.MustCompile(`^https?://([A-Za-z0-9_.-]+)(?::(\d+))?(/[^\s]*)?$`)
+
+// pureInterpRE matches an env value that is a single ${...}
+// interpolation with nothing around it. We only handle this strict form
+// — partial interpolations like "prefix-${VAR}" are too ambiguous to
+// suggest a sensible replacement for.
+var pureInterpRE = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)([:-][^}]*)?\}$`)
 
 // ScanEnvSuggestions reads composePath, walks every service.environment
 // entry, and proposes substitutions for values that point at another
@@ -104,6 +122,74 @@ func ScanEnvSuggestions(composePath string, existing *manifest.Manifest) []EnvSu
 				Value:       val,
 				Target:      target,
 				Replacement: replacement,
+			})
+		}
+	}
+	return out
+}
+
+// ScanEnvVarPrompts walks service.environment and returns one entry for
+// every value that is a pure ${VAR} or ${VAR-default} interpolation.
+// These values are not actually set inside the container until something
+// in the host shell or .env exports them; pier's [env.<service>] table
+// is the natural place to pin them per-worktree.
+//
+// Keys already present in the existing manifest's [env.<svc>] are
+// filtered out so re-init doesn't re-prompt for what the user has
+// already settled.
+func ScanEnvVarPrompts(composePath string, existing *manifest.Manifest) []EnvVarPrompt {
+	body, err := os.ReadFile(composePath)
+	if err != nil {
+		return nil
+	}
+	var doc composeDoc
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		return nil
+	}
+
+	serviceNames := make([]string, 0, len(doc.Services))
+	for name := range doc.Services {
+		serviceNames = append(serviceNames, name)
+	}
+	sort.Strings(serviceNames)
+
+	var out []EnvVarPrompt
+	for _, name := range serviceNames {
+		entries := flattenEnv(doc.Services[name].Environment)
+		keys := make([]string, 0, len(entries))
+		for k := range entries {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if alreadyOverridden(existing, name, key) {
+				continue
+			}
+			raw := strings.TrimSpace(entries[key])
+			m := pureInterpRE.FindStringSubmatch(raw)
+			if m == nil {
+				continue
+			}
+			hostVar := m[1]
+			def := ""
+			if m[2] != "" {
+				// m[2] is ":-default", "-default", ":?error", or ":+alt".
+				// We only treat ":-" and "-" as actual defaults the user
+				// may want to inherit; the others are diagnostic forms
+				// that don't carry a sensible pin value.
+				switch {
+				case strings.HasPrefix(m[2], ":-"):
+					def = m[2][2:]
+				case strings.HasPrefix(m[2], "-"):
+					def = m[2][1:]
+				}
+			}
+			out = append(out, EnvVarPrompt{
+				Service: name,
+				Key:     key,
+				Raw:     raw,
+				HostVar: hostVar,
+				Default: def,
 			})
 		}
 	}

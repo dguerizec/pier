@@ -5,9 +5,19 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 
 	"github.com/LeoPartt/pier/internal/manifest"
 )
+
+func ensureEnv(m *manifest.Manifest, service string) {
+	if m.Env == nil {
+		m.Env = map[string]map[string]string{}
+	}
+	if m.Env[service] == nil {
+		m.Env[service] = map[string]string{}
+	}
+}
 
 // Apply validates the Plan and writes .pier.toml + .gitignore entries.
 //
@@ -49,13 +59,19 @@ func Apply(p *Plan, stdout io.Writer) error {
 	m.Worktree = manifest.Worktree{Dir: p.WorktreeDir, BaseRef: p.BaseRef}
 
 	for _, s := range p.AcceptedEnvSuggestions() {
-		if m.Env == nil {
-			m.Env = map[string]map[string]string{}
-		}
-		if m.Env[s.Service] == nil {
-			m.Env[s.Service] = map[string]string{}
-		}
+		ensureEnv(m, s.Service)
 		m.Env[s.Service][s.Key] = s.Replacement
+	}
+	for i, prompt := range p.EnvVarPrompts {
+		if i >= len(p.EnvVarValues) {
+			break
+		}
+		val := strings.TrimSpace(p.EnvVarValues[i])
+		if val == "" {
+			continue
+		}
+		ensureEnv(m, prompt.Service)
+		m.Env[prompt.Service][prompt.Key] = val
 	}
 
 	if err := m.Validate(); err != nil {

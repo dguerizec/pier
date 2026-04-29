@@ -95,23 +95,51 @@ func PromptHuh(p *Plan, ambig []Ambiguity) error {
 		}
 	}
 
-	if wantEnv && len(p.EnvSuggestions) > 0 {
-		opts := make([]huh.Option[int], 0, len(p.EnvSuggestions))
+	if wantEnv {
+		fields := []huh.Field{}
+
 		var selected []int
-		for i, s := range p.EnvSuggestions {
-			label := fmt.Sprintf("[%s] %s = %q  →  %q", s.Service, s.Key, s.Value, s.Replacement)
-			opts = append(opts, huh.NewOption(label, i).Selected(true))
-			selected = append(selected, i)
+		if len(p.EnvSuggestions) > 0 {
+			opts := make([]huh.Option[int], 0, len(p.EnvSuggestions))
+			for i, s := range p.EnvSuggestions {
+				label := fmt.Sprintf("[%s] %s = %q  →  %q", s.Service, s.Key, s.Value, s.Replacement)
+				opts = append(opts, huh.NewOption(label, i).Selected(true))
+				selected = append(selected, i)
+			}
+			fields = append(fields, huh.NewMultiSelect[int]().
+				Title("Templatise these env values?").
+				Description("Selected entries get written to [env.<service>] using pier's {url.X} placeholders.").
+				Options(opts...).
+				Value(&selected))
 		}
-		ms := huh.NewMultiSelect[int]().
-			Title("Templatise these env values?").
-			Description("Selected entries get written to [env.<service>] using pier's {url.X} placeholders.").
-			Options(opts...).
-			Value(&selected)
-		if err := huh.NewForm(huh.NewGroup(ms)).Run(); err != nil {
-			return err
+
+		// Pre-fill the interactive value with the upstream default so the
+		// user sees the compose-shipped value and can edit, accept, or
+		// clear it. Derive intentionally leaves EnvVarValues empty so
+		// non-interactive runs don't pin defaults silently.
+		for i, prompt := range p.EnvVarPrompts {
+			if p.EnvVarValues[i] == "" {
+				p.EnvVarValues[i] = prompt.Default
+			}
 		}
-		applyEnvSelection(p, selected)
+		for i := range p.EnvVarPrompts {
+			prompt := p.EnvVarPrompts[i]
+			desc := fmt.Sprintf("compose: %s", prompt.Raw)
+			fields = append(fields, huh.NewInput().
+				Title(fmt.Sprintf("[%s] %s", prompt.Service, prompt.Key)).
+				Description(desc).
+				Placeholder("(leave blank to skip)").
+				Value(&p.EnvVarValues[i]))
+		}
+
+		if len(fields) > 0 {
+			if err := huh.NewForm(huh.NewGroup(fields...)).Run(); err != nil {
+				return err
+			}
+			if len(p.EnvSuggestions) > 0 {
+				applyEnvSelection(p, selected)
+			}
+		}
 	}
 
 	return nil

@@ -138,6 +138,70 @@ func TestParseHostPort(t *testing.T) {
 	}
 }
 
+func TestScanEnvVarPrompts(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yml")
+	writeFile(t, path, `services:
+  app:
+    ports: ["3000:3000"]
+    environment:
+      VITE_ALLOWED_HOSTS: ${VITE_ALLOWED_HOSTS-}
+      VITE_API_TARGET: http://backend:14140
+      DB_URL: ${DB_URL:-postgres://localhost/dev}
+      ERR_VAR: ${MUST_BE_SET:?missing}
+      INLINE: prefix-${THING-x}
+      STATIC: hello
+`)
+	got := ScanEnvVarPrompts(path, nil)
+	byKey := map[string]EnvVarPrompt{}
+	for _, p := range got {
+		byKey[p.Key] = p
+	}
+
+	if p, ok := byKey["VITE_ALLOWED_HOSTS"]; !ok {
+		t.Errorf("missing VITE_ALLOWED_HOSTS prompt")
+	} else if p.HostVar != "VITE_ALLOWED_HOSTS" || p.Default != "" {
+		t.Errorf("unexpected: %+v", p)
+	}
+	if p, ok := byKey["DB_URL"]; !ok {
+		t.Errorf("missing DB_URL prompt")
+	} else if p.Default != "postgres://localhost/dev" {
+		t.Errorf("DB_URL default: %q", p.Default)
+	}
+	if _, ok := byKey["VITE_API_TARGET"]; ok {
+		t.Errorf("VITE_API_TARGET is a literal URL, should not be a prompt")
+	}
+	if _, ok := byKey["INLINE"]; ok {
+		t.Errorf("partial interpolation should not be a prompt")
+	}
+	if _, ok := byKey["STATIC"]; ok {
+		t.Errorf("static value should not be a prompt")
+	}
+	if p, ok := byKey["ERR_VAR"]; ok {
+		// :? is diagnostic, not a default — Default must stay empty.
+		if p.Default != "" {
+			t.Errorf("ERR_VAR default should be empty, got %q", p.Default)
+		}
+	}
+}
+
+func TestScanEnvVarPrompts_SkipsOverridden(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "compose.yml")
+	writeFile(t, path, `services:
+  app:
+    ports: ["3000:3000"]
+    environment:
+      FOO: ${FOO-}
+`)
+	existing := &manifest.Manifest{
+		Env: map[string]map[string]string{"app": {"FOO": "set"}},
+	}
+	if got := ScanEnvVarPrompts(path, existing); len(got) != 0 {
+		t.Errorf("overridden key should be skipped, got %+v", got)
+	}
+}
+
 func TestApply_WritesAcceptedEnv(t *testing.T) {
 	dir := t.TempDir()
 	writeCompose(t, dir, `services:
@@ -183,5 +247,44 @@ func TestApply_WritesAcceptedEnv(t *testing.T) {
 	}
 	if rt2.Env["front"]["API_URL"] != "{url.api}/v1" {
 		t.Errorf("expected templated value, got %+v", rt2.Env)
+	}
+}
+
+func TestApply_WritesFilledEnvVarPrompts(t *testing.T) {
+	dir := t.TempDir()
+	writeCompose(t, dir, `services:
+  app:
+    image: x
+    ports: ["3000:3000"]
+    environment:
+      ALLOWED: ${ALLOWED-}
+      OTHER: ${OTHER-}
+`)
+	p, _, err := Derive(dir, Opts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.EnvVarPrompts) != 2 {
+		t.Fatalf("expected 2 prompts, got %+v", p.EnvVarPrompts)
+	}
+	// Fill ALLOWED, leave OTHER empty.
+	for i, prompt := range p.EnvVarPrompts {
+		if prompt.Key == "ALLOWED" {
+			p.EnvVarValues[i] = "host1,host2"
+		}
+	}
+	var w testWriter
+	if err := Apply(p, &w); err != nil {
+		t.Fatal(err)
+	}
+	rt := &manifest.Manifest{}
+	if _, err := tomlDecodeFile(filepath.Join(dir, ".pier.toml"), rt); err != nil {
+		t.Fatal(err)
+	}
+	if rt.Env["app"]["ALLOWED"] != "host1,host2" {
+		t.Errorf("ALLOWED not written: %+v", rt.Env)
+	}
+	if _, ok := rt.Env["app"]["OTHER"]; ok {
+		t.Errorf("empty value should not be written, got %+v", rt.Env)
 	}
 }

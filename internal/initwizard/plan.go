@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 
@@ -56,6 +57,13 @@ type Plan struct {
 	// is true are written to the manifest.
 	EnvSuggestions []EnvSuggestion
 	EnvAccepted    []bool
+
+	// EnvVarPrompts mirrors compose values that are pure host-side
+	// interpolations (e.g. `${VITE_ALLOWED_HOSTS-}`). EnvVarValues holds
+	// the per-prompt user input collected by PromptHuh; an empty value
+	// means "skip — don't write this key into the manifest".
+	EnvVarPrompts []EnvVarPrompt
+	EnvVarValues  []string
 }
 
 // IsReinit reports whether the wizard is editing an existing manifest
@@ -169,10 +177,19 @@ func Derive(toplevel string, opts Opts) (*Plan, []Ambiguity, error) {
 	// pre-checks every suggestion so accepting the form keeps the
 	// templated form, but unattended runs leave compose env untouched.
 	envAccepted := make([]bool, len(envSuggestions))
-	if len(envSuggestions) > 0 {
+
+	envVarPrompts := ScanEnvVarPrompts(composeFile, existing)
+	// Values start empty so --yes / non-TTY doesn't accidentally pin the
+	// compose default into the manifest. PromptHuh copies Default into
+	// EnvVarValues just before rendering the input so the user sees the
+	// upstream default but explicitly chooses to keep, change, or skip.
+	envVarValues := make([]string, len(envVarPrompts))
+
+	if len(envSuggestions) > 0 || len(envVarPrompts) > 0 {
 		ambig = append(ambig, Ambiguity{
-			Kind:    AmbEnvSuggestions,
-			Message: fmt.Sprintf("%d env values look like cross-service URLs; review templatisation", len(envSuggestions)),
+			Kind: AmbEnvSuggestions,
+			Message: fmt.Sprintf("%d cross-service URLs and %d host-interpolated values found in compose env",
+				len(envSuggestions), len(envVarPrompts)),
 		})
 	}
 
@@ -191,6 +208,8 @@ func Derive(toplevel string, opts Opts) (*Plan, []Ambiguity, error) {
 		Existing:       existing,
 		EnvSuggestions: envSuggestions,
 		EnvAccepted:    envAccepted,
+		EnvVarPrompts:  envVarPrompts,
+		EnvVarValues:   envVarValues,
 	}, ambig, nil
 }
 
@@ -202,6 +221,22 @@ func (p *Plan) AcceptedEnvSuggestions() []EnvSuggestion {
 		if i < len(p.EnvAccepted) && p.EnvAccepted[i] {
 			out = append(out, s)
 		}
+	}
+	return out
+}
+
+// FilledEnvVarPrompts returns the prompt/value pairs that ended up with
+// a non-empty value. Apply uses these to populate [env.<service>].
+func (p *Plan) FilledEnvVarPrompts() []EnvVarPrompt {
+	out := make([]EnvVarPrompt, 0, len(p.EnvVarPrompts))
+	for i, prompt := range p.EnvVarPrompts {
+		if i >= len(p.EnvVarValues) {
+			break
+		}
+		if strings.TrimSpace(p.EnvVarValues[i]) == "" {
+			continue
+		}
+		out = append(out, prompt)
 	}
 	return out
 }

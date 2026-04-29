@@ -10,10 +10,11 @@ A Go CLI that gives every git worktree a stable URL on a local dev TLD by orches
 
 ```
 cmd/pier/main.go        entry point — just calls cli.Execute()
-internal/cli/           cobra commands. Each command is a thin shim over internal/<package>.
+internal/cli/           cobra commands + the REST API on `pier serve` (api*.go). Each command is a thin shim over internal/<package>.
 internal/adapter/       compose adapter (today); dockerfile (synthesized compose) lands in Phase 3. Pier is intentionally docker-coupled — no process adapter.
-internal/infra/         install/uninstall/doctor: traefik + dnsmasq + host DNS bootstrap.
-internal/detect/        host introspection (tailscale, traefik, headscale) for the wizard.
+internal/infra/         install/uninstall/doctor: traefik + dnsmasq + host DNS bootstrap; per-user prefs.toml.
+internal/initwizard/    `pier init` logic: detect compose services, scan env interpolations, plan/prompt/apply manifest changes. Pure helpers, charm/huh prompts, slug + tld + tty + gitignore utilities.
+internal/detect/        host introspection (tailscale, traefik, headscale) for the install wizard.
 internal/headscale/     split-DNS yaml patch + extra_records JSON adapter (file-locked).
 internal/manifest/      .pier.toml parsing/validation (BurntSushi/toml).
 internal/materialize/   symlink + snapshot copy from primary to secondary worktrees.

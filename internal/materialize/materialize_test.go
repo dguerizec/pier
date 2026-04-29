@@ -164,6 +164,58 @@ func TestApply_Snapshot_PreservesExisting(t *testing.T) {
 	}
 }
 
+func TestApply_Snapshot_MergesNewFilesIntoNonEmptyDir(t *testing.T) {
+	primary, current := setup(t)
+	// primary has the canonical seed; current already holds a worktree-local
+	// file, plus an entry that overlaps with primary by name.
+	mustMkdir(t, filepath.Join(primary, "data-dev"))
+	mustWrite(t, filepath.Join(primary, "data-dev", "shared.db"), "from-primary")
+	mustWrite(t, filepath.Join(primary, "data-dev", "fixtures", "user.json"), `{"id":1}`)
+	mustWrite(t, filepath.Join(primary, "data-dev", "fixtures", "new.json"), `{"new":true}`)
+
+	mustMkdir(t, filepath.Join(current, "data-dev"))
+	mustWrite(t, filepath.Join(current, "data-dev", "shared.db"), "worktree-mutated")
+	mustWrite(t, filepath.Join(current, "data-dev", "fixtures", "user.json"), `{"id":99}`)
+	mustWrite(t, filepath.Join(current, "data-dev", "local-only.txt"), "kept")
+
+	if err := Apply(primary, current, manifest.Materialize{Snapshots: []string{"data-dev"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Existing entries at dst are preserved verbatim — file-level skip.
+	body, _ := os.ReadFile(filepath.Join(current, "data-dev", "shared.db"))
+	if string(body) != "worktree-mutated" {
+		t.Errorf("shared.db overwritten: %q", body)
+	}
+	body, _ = os.ReadFile(filepath.Join(current, "data-dev", "fixtures", "user.json"))
+	if string(body) != `{"id":99}` {
+		t.Errorf("nested file overwritten: %q", body)
+	}
+	body, _ = os.ReadFile(filepath.Join(current, "data-dev", "local-only.txt"))
+	if string(body) != "kept" {
+		t.Errorf("local-only.txt lost: %q", body)
+	}
+	// Files only in primary now land at dst.
+	body, err := os.ReadFile(filepath.Join(current, "data-dev", "fixtures", "new.json"))
+	if err != nil || string(body) != `{"new":true}` {
+		t.Errorf("new.json not merged: body=%q err=%v", body, err)
+	}
+}
+
+func TestApply_Snapshot_FilePreservedNotOverwritten(t *testing.T) {
+	primary, current := setup(t)
+	mustWrite(t, filepath.Join(primary, "config.toml"), "from-primary")
+	mustWrite(t, filepath.Join(current, "config.toml"), "worktree-local")
+
+	if err := Apply(primary, current, manifest.Materialize{Snapshots: []string{"config.toml"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(filepath.Join(current, "config.toml"))
+	if string(body) != "worktree-local" {
+		t.Errorf("file snapshot overwrote existing dst: %q", body)
+	}
+}
+
 func TestPurge(t *testing.T) {
 	_, current := setup(t)
 	mustMkdir(t, filepath.Join(current, "data-dev"))

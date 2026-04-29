@@ -1,0 +1,282 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "pier API",
+    "version": "v1",
+    "description": "REST API exposed by `pier serve`. Drives the same workload + worktree lifecycle as the pier CLI. Source: https://github.com/LeoPartt/pier",
+    "license": { "name": "MIT" }
+  },
+  "servers": [
+    { "url": "/", "description": "current server" }
+  ],
+  "tags": [
+    { "name": "workloads", "description": "Per-(project, slug) workload lifecycle" },
+    { "name": "worktrees", "description": "Git worktree CRUD" },
+    { "name": "infra", "description": "Pier install state and health" },
+    { "name": "events", "description": "Server-Sent Events" }
+  ],
+  "paths": {
+    "/api/v1/workloads": {
+      "get": {
+        "tags": ["workloads"],
+        "summary": "List all workloads",
+        "responses": {
+          "200": {
+            "description": "Sorted list (by project, then slug)",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Workload" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workloads/{project}/{slug}": {
+      "parameters": [
+        { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } },
+        { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "get": {
+        "tags": ["workloads"],
+        "summary": "Get one workload",
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Workload" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/v1/workloads/{project}/{slug}/up": {
+      "parameters": [
+        { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } },
+        { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "post": {
+        "tags": ["workloads"],
+        "summary": "Bring the workload up (idempotent)",
+        "description": "Returns 200 with current state when already running. Body is optional — provide `worktree_path` the first time a (project, slug) is brought up; subsequent calls can omit it (the previous state row carries the path).",
+        "requestBody": {
+          "required": false,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpRequest" } } }
+        },
+        "responses": {
+          "200": { "description": "Running workload state", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Workload" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "409": { "$ref": "#/components/responses/Conflict" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/workloads/{project}/{slug}/down": {
+      "parameters": [
+        { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } },
+        { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } }
+      ],
+      "post": {
+        "tags": ["workloads"],
+        "summary": "Stop the workload (idempotent)",
+        "description": "Returns 200 with status=down even when no state row exists.",
+        "responses": {
+          "200": { "description": "Stopped", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionResponse" } } } }
+        }
+      }
+    },
+    "/api/v1/workloads/{project}/{slug}/logs": {
+      "parameters": [
+        { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } },
+        { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } },
+        { "name": "follow", "in": "query", "schema": { "type": "boolean", "default": false } },
+        { "name": "tail", "in": "query", "schema": { "type": "integer", "default": 200 } }
+      ],
+      "get": {
+        "tags": ["workloads"],
+        "summary": "Stream container logs (chunked)",
+        "description": "Chunked text/plain. follow=true tails new lines until the client disconnects (which kills the underlying docker process).",
+        "responses": {
+          "200": { "description": "Log stream", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/v1/worktrees": {
+      "post": {
+        "tags": ["worktrees"],
+        "summary": "Create a worktree (and optionally up the workload)",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorktreeCreateRequest" } } }
+        },
+        "responses": {
+          "200": { "description": "Created", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorktreeCreateResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/v1/worktrees/{slug}": {
+      "parameters": [
+        { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } },
+        { "name": "repo", "in": "query", "required": true, "schema": { "type": "string" }, "description": "Absolute path of the primary worktree" }
+      ],
+      "delete": {
+        "tags": ["worktrees"],
+        "summary": "Stop and remove a worktree",
+        "description": "Always passes --force to `git worktree remove`. When the rm fails part-way through (typical: container left root-owned files in a bind mount), pier prunes the dangling git metadata and surfaces a 200 + warning so the caller can show \"manual sudo rm needed\".",
+        "responses": {
+          "200": { "description": "Removed (may include warning)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionResponse" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/v1/config": {
+      "get": {
+        "tags": ["infra"],
+        "summary": "Pier install state",
+        "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Config" } } } } }
+      }
+    },
+    "/api/v1/doctor": {
+      "get": {
+        "tags": ["infra"],
+        "summary": "Health check report",
+        "description": "Mirrors `pier doctor` (read-only).",
+        "responses": { "200": { "description": "Report", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DoctorReport" } } } } }
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "tags": ["events"],
+        "summary": "Server-Sent Events stream",
+        "description": "Long-lived text/event-stream. Initial `state.snapshot` event with the full workload list, followed by transitions (`workload.up`, `workload.crashed`, `workload.restarting`, `workload.removed`, `doctor.fail`, `doctor.recovered`) and `ping` heartbeats every 30s. Browsers consume directly via EventSource. Slow consumers see events dropped — they can recover by reconnecting and reading the new `state.snapshot`.",
+        "responses": {
+          "200": {
+            "description": "SSE stream",
+            "content": { "text/event-stream": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "NotFound": { "description": "Resource not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "BadRequest": { "description": "Invalid request", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Conflict": { "description": "State conflict (manifest project name disagrees with URL)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "InternalError": { "description": "Server error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    },
+    "schemas": {
+      "Workload": {
+        "type": "object",
+        "required": ["project", "slug", "branch", "kind", "status", "urls", "containers", "worktree_path", "started_at", "uptime_seconds"],
+        "properties": {
+          "project": { "type": "string" },
+          "slug": { "type": "string" },
+          "branch": { "type": "string" },
+          "kind": { "type": "string", "enum": ["compose"] },
+          "status": { "type": "string", "description": "docker State.Status — running/exited/restarting/missing/unknown" },
+          "urls": { "type": "array", "items": { "$ref": "#/components/schemas/URL" } },
+          "containers": { "type": "array", "items": { "$ref": "#/components/schemas/Container" } },
+          "worktree_path": { "type": "string" },
+          "container_id": { "type": "string" },
+          "started_at": { "type": "string", "format": "date-time" },
+          "uptime_seconds": { "type": "integer" },
+          "error": { "type": "string", "description": "non-fatal error encountered while building the view (e.g. manifest unreadable, docker ps failure)" }
+        }
+      },
+      "URL": {
+        "type": "object",
+        "required": ["url", "label"],
+        "properties": {
+          "url": { "type": "string", "format": "uri" },
+          "label": { "type": "string" },
+          "default": { "type": "boolean", "description": "true for the bare-slug alias when [stack].service is set" }
+        }
+      },
+      "Container": {
+        "type": "object",
+        "required": ["name", "image", "status"],
+        "properties": {
+          "name": { "type": "string" },
+          "image": { "type": "string" },
+          "status": { "type": "string" }
+        }
+      },
+      "Config": {
+        "type": "object",
+        "required": ["mode", "tld", "bind_ip", "answer_ip", "traefik_network", "version"],
+        "properties": {
+          "mode": { "type": "string", "enum": ["local", "server"] },
+          "tld": { "type": "string" },
+          "bind_ip": { "type": "string" },
+          "answer_ip": { "type": "string" },
+          "traefik_network": { "type": "string" },
+          "external_traefik": { "type": "string" },
+          "headscale_records_path": { "type": "string" },
+          "version": { "type": "string" }
+        }
+      },
+      "Check": {
+        "type": "object",
+        "required": ["name", "status"],
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "type": "string", "enum": ["pass", "warn", "fail"] },
+          "detail": { "type": "string" },
+          "fix_hint": { "type": "string" }
+        }
+      },
+      "DoctorReport": {
+        "type": "object",
+        "required": ["failed", "checks"],
+        "properties": {
+          "failed": { "type": "boolean" },
+          "checks": { "type": "array", "items": { "$ref": "#/components/schemas/Check" } }
+        }
+      },
+      "ActionResponse": {
+        "type": "object",
+        "required": ["project", "slug", "status"],
+        "properties": {
+          "project": { "type": "string" },
+          "slug": { "type": "string" },
+          "status": { "type": "string", "enum": ["running", "down", "removed"] },
+          "warning": { "type": "string", "description": "set when the action partially succeeded — e.g. state row dropped but worktree dir still present" }
+        }
+      },
+      "UpRequest": {
+        "type": "object",
+        "properties": {
+          "worktree_path": { "type": "string", "description": "Absolute path of the worktree, required only when no state row exists for (project, slug)" }
+        }
+      },
+      "WorktreeCreateRequest": {
+        "type": "object",
+        "required": ["repo", "slug"],
+        "properties": {
+          "repo": { "type": "string", "description": "Absolute path of the primary worktree" },
+          "slug": { "type": "string", "description": "Doubles as the dir name and the workload slug" },
+          "branch": { "type": "string", "description": "Defaults to slug when omitted" },
+          "from": { "type": "string", "description": "Base ref override; defaults to manifest [worktree].base_ref then main/master then HEAD" },
+          "up": { "type": "boolean", "description": "When true, runs pier up after materialization and includes the resulting workload in the response" }
+        }
+      },
+      "WorktreeCreateResponse": {
+        "type": "object",
+        "required": ["project", "slug", "branch", "worktree_path"],
+        "properties": {
+          "project": { "type": "string" },
+          "slug": { "type": "string" },
+          "branch": { "type": "string" },
+          "worktree_path": { "type": "string" },
+          "workload": { "$ref": "#/components/schemas/Workload" }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": { "error": { "type": "string" } }
+      }
+    }
+  }
+}

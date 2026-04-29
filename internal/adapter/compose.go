@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,7 +111,11 @@ func composeRun(c Ctx, args []string, overridePath string, stream bool) (string,
 	}
 	full = append(full, args...)
 
-	cmd := exec.Command("docker", full...)
+	ctx := c.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := exec.CommandContext(ctx, "docker", full...)
 	cmd.Dir = c.WorktreePath
 	if stream {
 		cmd.Stdout = c.Out

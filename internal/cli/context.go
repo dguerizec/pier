@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -121,6 +122,20 @@ func resolveDaily(slugOverride string) (*daily, error) {
 	if err != nil {
 		return nil, err
 	}
+	return dailyForWorktree(info, slug, os.Stdout, os.Stderr)
+}
+
+// dailyForWorktree builds a daily for a pre-resolved worktree info. Used
+// by resolveDaily (via cwd) and the REST API (via state-DB path lookup).
+// When slug is empty, derive it from the worktree's branch.
+func dailyForWorktree(info *worktree.Info, slug string, out, errW io.Writer) (*daily, error) {
+	if slug == "" {
+		derived, err := sluglib.FromBranch(info.Branch)
+		if err != nil {
+			return nil, fmt.Errorf("derive slug from branch %q: %w", info.Branch, err)
+		}
+		slug = derived
+	}
 
 	m, err := manifest.Load(info.Toplevel)
 	if err != nil {
@@ -161,6 +176,7 @@ func resolveDaily(slugOverride string) (*daily, error) {
 	} else {
 		baseDomain, err = adapter.ExpandPierTokens(baseDomain, cfg.TLD)
 		if err != nil {
+			store.Close()
 			return nil, fmt.Errorf("project.base_domain: %w", err)
 		}
 	}
@@ -183,8 +199,8 @@ func resolveDaily(slugOverride string) (*daily, error) {
 			DefaultService: defaultService,
 			Env:            m.Env,
 			TraefikNetwork: cfg.EffectiveTraefikNetwork(),
-			Out:            os.Stdout,
-			Err:            os.Stderr,
+			Out:            out,
+			Err:            errW,
 		},
 	}, nil
 }

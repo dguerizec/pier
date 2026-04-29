@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/spf13/cobra"
 
@@ -28,51 +29,7 @@ func newUpCmd() *cobra.Command {
 				return err
 			}
 			defer d.State.Close()
-
-			if err := materialize.Apply(d.Worktree.PrimaryPath, d.Worktree.Toplevel, d.Manifest.Materialize, cmd.OutOrStdout()); err != nil {
-				return err
-			}
-
-			a, err := adapter.For(d.Manifest.Stack.Kind)
-			if err != nil {
-				return err
-			}
-
-			h, err := a.Up(d.Ctx)
-			if err != nil {
-				return err
-			}
-
-			err = d.State.Upsert(&state.Workload{
-				Project:      d.Ctx.Project,
-				Slug:         d.Ctx.Slug,
-				WorktreePath: d.Ctx.WorktreePath,
-				Branch:       d.Worktree.Branch,
-				Kind:         d.Manifest.Stack.Kind,
-				ContainerID:  h.ContainerID,
-			})
-			if err != nil {
-				return fmt.Errorf("persist workload: %w", err)
-			}
-
-			if d.Config.HeadscaleRecordsPath != "" {
-				ip := d.Config.EffectiveAnswerIP()
-				for _, name := range adapter.RecordNames(d.Ctx) {
-					added, err := headscale.Add(d.Config.HeadscaleRecordsPath, name, ip)
-					if errors.Is(err, headscale.ErrConflict) {
-						fmt.Fprintf(cmd.ErrOrStderr(), "! headscale: %s already mapped elsewhere; not overwriting\n", name)
-					} else if err != nil {
-						return fmt.Errorf("headscale records: %w", err)
-					} else if added {
-						fmt.Fprintf(cmd.OutOrStdout(), "✓ headscale record: %s → %s\n", name, ip)
-					}
-				}
-			}
-
-			for _, u := range adapter.URLs(d.Ctx) {
-				fmt.Fprintf(cmd.OutOrStdout(), "→ %s\n", u)
-			}
-			return nil
+			return runUp(d, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	f := cmd.Flags()
@@ -80,4 +37,56 @@ func newUpCmd() *cobra.Command {
 	f.BoolVar(&opts.fresh, "fresh", false, "skip snapshot copy, mkdir empty dirs instead (post-MVP)")
 	registerSlugCompletion(cmd)
 	return cmd
+}
+
+// runUp materializes files, calls the adapter's Up, persists the workload
+// in state, registers headscale records when configured, and prints URLs.
+// Shared between the cobra command and the REST POST /up handler — keep
+// it pure so the API can call it with io.Discard writers without
+// surprising the CLI flow.
+func runUp(d *daily, out, errOut io.Writer) error {
+	if err := materialize.Apply(d.Worktree.PrimaryPath, d.Worktree.Toplevel, d.Manifest.Materialize, out); err != nil {
+		return err
+	}
+
+	a, err := adapter.For(d.Manifest.Stack.Kind)
+	if err != nil {
+		return err
+	}
+
+	h, err := a.Up(d.Ctx)
+	if err != nil {
+		return err
+	}
+
+	err = d.State.Upsert(&state.Workload{
+		Project:      d.Ctx.Project,
+		Slug:         d.Ctx.Slug,
+		WorktreePath: d.Ctx.WorktreePath,
+		Branch:       d.Worktree.Branch,
+		Kind:         d.Manifest.Stack.Kind,
+		ContainerID:  h.ContainerID,
+	})
+	if err != nil {
+		return fmt.Errorf("persist workload: %w", err)
+	}
+
+	if d.Config.HeadscaleRecordsPath != "" {
+		ip := d.Config.EffectiveAnswerIP()
+		for _, name := range adapter.RecordNames(d.Ctx) {
+			added, err := headscale.Add(d.Config.HeadscaleRecordsPath, name, ip)
+			if errors.Is(err, headscale.ErrConflict) {
+				fmt.Fprintf(errOut, "! headscale: %s already mapped elsewhere; not overwriting\n", name)
+			} else if err != nil {
+				return fmt.Errorf("headscale records: %w", err)
+			} else if added {
+				fmt.Fprintf(out, "✓ headscale record: %s → %s\n", name, ip)
+			}
+		}
+	}
+
+	for _, u := range adapter.URLs(d.Ctx) {
+		fmt.Fprintf(out, "→ %s\n", u)
+	}
+	return nil
 }

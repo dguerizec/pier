@@ -53,16 +53,33 @@ func runWorktreeAdd(cmd *cobra.Command, target string, opts wtAddOpts) error {
 	if err != nil {
 		return err
 	}
-	primary := info.PrimaryPath
+	abs, _, err := createWorktreeAt(info.PrimaryPath, target, opts, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	if err != nil {
+		return err
+	}
+	if opts.up {
+		// CLI re-execs pier up to inherit user terminal; the API path
+		// uses runUp directly. Both flow through the same compose adapter.
+		return runPierIn(cmd, abs, "up")
+	}
+	return nil
+}
 
+// createWorktreeAt builds the new worktree under primary, materializes
+// symlinks/snapshots, and reports the absolute path + branch name. Up is
+// not handled here — callers that want it call runUp (API) or re-exec
+// pier up (CLI). Shared by runWorktreeAdd and the REST POST handler so
+// the two stay in lock-step on git args, materialize order, and
+// snapshot pre-creation.
+func createWorktreeAt(primary, target string, opts wtAddOpts, out, errOut io.Writer) (string, string, error) {
 	m, err := manifest.Load(primary)
 	if err != nil {
-		return fmt.Errorf("primary manifest: %w (hint: run `pier init` in the primary worktree first)", err)
+		return "", "", fmt.Errorf("primary manifest: %w (hint: run `pier init` in the primary worktree first)", err)
 	}
 
 	abs, err := resolveWorktreePath(primary, target, effectiveWorktreeDir(m))
 	if err != nil {
-		return err
+		return "", "", err
 	}
 
 	branch := opts.branch
@@ -75,36 +92,32 @@ func runWorktreeAdd(cmd *cobra.Command, target string, opts wtAddOpts) error {
 		// Branch already exists: check it out at the new path. No -b, no
 		// base ref — git refuses both for an existing branch.
 		gitArgs = append(gitArgs, abs, branch)
-		fmt.Fprintf(cmd.OutOrStdout(), "  checking out existing branch %s\n", branch)
+		fmt.Fprintf(out, "  checking out existing branch %s\n", branch)
 	} else {
 		gitArgs = append(gitArgs, "-b", branch, abs)
 		if ref := pickBaseRef(opts.from, m.Worktree.BaseRef, primary); ref != "" {
 			gitArgs = append(gitArgs, ref)
-			fmt.Fprintf(cmd.OutOrStdout(), "  creating branch %s from %s\n", branch, ref)
+			fmt.Fprintf(out, "  creating branch %s from %s\n", branch, ref)
 		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "  creating branch %s from HEAD\n", branch)
+			fmt.Fprintf(out, "  creating branch %s from HEAD\n", branch)
 		}
 	}
 	git := exec.Command("git", gitArgs...)
 	git.Dir = primary
-	git.Stdout = cmd.OutOrStdout()
-	git.Stderr = cmd.ErrOrStderr()
+	git.Stdout = out
+	git.Stderr = errOut
 	if err := git.Run(); err != nil {
-		return fmt.Errorf("git worktree add: %w", err)
+		return "", "", fmt.Errorf("git worktree add: %w", err)
 	}
 
-	if err := preCreateSnapshotDirs(primary, abs, m.Materialize.Snapshots, cmd.OutOrStdout()); err != nil {
-		return err
+	if err := preCreateSnapshotDirs(primary, abs, m.Materialize.Snapshots, out); err != nil {
+		return abs, branch, err
 	}
-	if err := materialize.Apply(primary, abs, m.Materialize, cmd.OutOrStdout()); err != nil {
-		return err
+	if err := materialize.Apply(primary, abs, m.Materialize, out); err != nil {
+		return abs, branch, err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "✓ worktree ready: %s\n", abs)
-
-	if opts.up {
-		return runPierIn(cmd, abs, "up")
-	}
-	return nil
+	fmt.Fprintf(out, "✓ worktree ready: %s\n", abs)
+	return abs, branch, nil
 }
 
 // preCreateSnapshotDirs makes sure every snapshot path exists in the new
@@ -159,20 +172,11 @@ func runWorktreeRm(cmd *cobra.Command, target string, opts wtRmOpts) error {
 	if err != nil {
 		return err
 	}
+	primary := info.PrimaryPath
 
-	// Mirror the resolution logic of `pier worktree add`: a bare name like
-	// `feat-x` resolves to <primary>/<effective dir>/feat-x. Without
-	// this, `pier worktree rm feat-x` would try <cwd>/feat-x and fail.
-	var m *manifest.Manifest
-	if loaded, err := manifest.Load(info.PrimaryPath); err == nil {
-		m = loaded
-	}
-	abs, err := resolveWorktreePath(info.PrimaryPath, target, effectiveWorktreeDir(m))
+	abs, err := resolveExistingWorktreePath(primary, target)
 	if err != nil {
 		return err
-	}
-	if _, err := os.Stat(abs); errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("worktree %s does not exist", abs)
 	}
 
 	if !opts.skipDown {
@@ -184,20 +188,56 @@ func runWorktreeRm(cmd *cobra.Command, target string, opts wtRmOpts) error {
 		_ = runPierIn(cmd, abs, args...)
 	}
 
+	return removeWorktreeAt(primary, abs, opts.force, cmd.OutOrStdout(), cmd.ErrOrStderr())
+}
+
+// resolveExistingWorktreePath resolves <target> the same way
+// `pier worktree add` would have placed it (effectiveWorktreeDir(m) —
+// manifest, then prefs.toml, then the built-in default) and errors when
+// the resulting path doesn't exist on disk. Pulled out so the CLI and
+// API delete paths share resolution + existence semantics.
+func resolveExistingWorktreePath(primary, target string) (string, error) {
+	var m *manifest.Manifest
+	if loaded, err := manifest.Load(primary); err == nil {
+		m = loaded
+	}
+	abs, err := resolveWorktreePath(primary, target, effectiveWorktreeDir(m))
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(abs); errors.Is(err, os.ErrNotExist) {
+		return abs, fmt.Errorf("worktree %s does not exist", abs)
+	}
+	return abs, nil
+}
+
+// removeWorktreeAt runs `git worktree remove` against primary, with --force
+// when force is true. Caller is responsible for stopping the workload
+// first (CLI does runPierIn down; API does runDown via dailyForWorktree).
+//
+// On failure, runs `git worktree prune` so that even when the rm hit a
+// permission error mid-way (typical when a container left root-owned
+// files in a bind-mounted dir — see AGENTS.md pitfall #4), git's
+// internal worktree list stays consistent. The dir itself may need a
+// `sudo rm -rf` to fully clean up.
+func removeWorktreeAt(primary, abs string, force bool, out, errOut io.Writer) error {
 	gitArgs := []string{"worktree", "remove"}
-	if opts.force {
+	if force {
 		gitArgs = append(gitArgs, "--force")
 	}
 	gitArgs = append(gitArgs, abs)
 
 	git := exec.Command("git", gitArgs...)
-	git.Dir = info.PrimaryPath
-	git.Stdout = cmd.OutOrStdout()
-	git.Stderr = cmd.ErrOrStderr()
+	git.Dir = primary
+	git.Stdout = out
+	git.Stderr = errOut
 	if err := git.Run(); err != nil {
+		prune := exec.Command("git", "worktree", "prune")
+		prune.Dir = primary
+		_ = prune.Run()
 		return fmt.Errorf("git worktree remove: %w", err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "✓ removed worktree %s\n", abs)
+	fmt.Fprintf(out, "✓ removed worktree %s\n", abs)
 	return nil
 }
 

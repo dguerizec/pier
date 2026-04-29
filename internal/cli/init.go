@@ -69,6 +69,9 @@ func runInit(stdout io.Writer, toplevel string, opts initOpts) error {
 		return err
 	}
 
+	if plan.IsReinit() {
+		fmt.Fprintln(stdout, "Updating existing .pier.toml; user-curated sections (env, materialize, hooks, watch) preserved.")
+	}
 	printDetection(stdout, plan)
 
 	if !opts.yes && len(ambig) > 0 && initwizard.IsInteractive() {

@@ -4,7 +4,17 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/BurntSushi/toml"
+
+	"github.com/LeoPartt/pier/internal/manifest"
 )
+
+type testWriter struct{ b []byte }
+
+func (w *testWriter) Write(p []byte) (int, error) { w.b = append(w.b, p...); return len(p), nil }
+
+func tomlDecodeFile(path string, v any) (toml.MetaData, error) { return toml.DecodeFile(path, v) }
 
 func writeCompose(t *testing.T, dir, body string) {
 	t.Helper()
@@ -104,18 +114,145 @@ func TestDerive_MultiService_ServiceFlagSilencesDefault(t *testing.T) {
 	}
 }
 
-func TestDerive_AlreadyExists(t *testing.T) {
+func TestDerive_ReinitLoadsExisting(t *testing.T) {
 	dir := t.TempDir()
 	writeCompose(t, dir, `services:
-  app:
+  api:
     image: x
-    ports: ["3000:3000"]
+    ports: ["8000:8000"]
+  web:
+    image: y
+    ports: ["80:80"]
 `)
-	if err := os.WriteFile(filepath.Join(dir, ".pier.toml"), []byte(""), 0o644); err != nil {
+	existingTOML := `[project]
+name = "myproj"
+base_domain = "myproj.example"
+
+[stack]
+kind = "compose"
+file = "docker-compose.dev.yml"
+service = "web"
+match_host_uid = true
+
+[[expose]]
+service = "web"
+port = 80
+host = "frontend"
+
+[worktree]
+dir = "trees"
+base_ref = "develop"
+
+[env.web]
+API_URL = "{url.api}"
+`
+	if err := os.WriteFile(filepath.Join(dir, ".pier.toml"), []byte(existingTOML), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := Derive(dir, Opts{}); err == nil {
-		t.Error("expected error when .pier.toml exists")
+
+	p, _, err := Derive(dir, Opts{})
+	if err != nil {
+		t.Fatalf("re-init Derive: %v", err)
+	}
+	if !p.IsReinit() {
+		t.Fatal("expected IsReinit true")
+	}
+	if p.Name != "myproj" {
+		t.Errorf("name should come from existing, got %q", p.Name)
+	}
+	if p.Domain != "myproj.example" {
+		t.Errorf("domain should come from existing, got %q", p.Domain)
+	}
+	if p.DefaultService != "web" {
+		t.Errorf("default service should come from existing, got %q", p.DefaultService)
+	}
+	if p.WorktreeDir != "trees" || p.BaseRef != "develop" {
+		t.Errorf("worktree should come from existing: %+v", p)
+	}
+	// Selection mirrors existing exposes only — "api" is a candidate but
+	// wasn't previously exposed, so it should not be pre-selected.
+	for i, c := range p.Candidates {
+		if c.Service == "api" && p.Selected[i] {
+			t.Error("api should not be pre-selected on re-init (not in existing)")
+		}
+		if c.Service == "web" && !p.Selected[i] {
+			t.Error("web should be pre-selected on re-init")
+		}
+	}
+	// Existing customisations preserved on the rule.
+	rules := p.SelectedExposes()
+	if len(rules) != 1 || rules[0].Host != "frontend" {
+		t.Errorf("custom host not preserved: %+v", rules)
+	}
+	// match_host_uid kept on Existing.
+	if !p.Existing.Stack.MatchHostUID {
+		t.Error("match_host_uid should survive on Existing")
+	}
+	// env.web kept on Existing.
+	if v := p.Existing.Env["web"]["API_URL"]; v != "{url.api}" {
+		t.Errorf("env.web preserved? got %q", v)
+	}
+}
+
+func TestApply_ReinitPreservesUserSections(t *testing.T) {
+	dir := t.TempDir()
+	writeCompose(t, dir, `services:
+  api:
+    image: x
+    ports: ["8000:8000"]
+`)
+	existingTOML := `[project]
+name = "myproj"
+base_domain = "myproj.example"
+
+[stack]
+kind = "compose"
+file = "docker-compose.dev.yml"
+service = "api"
+
+[[expose]]
+service = "api"
+port = 8000
+
+[materialize]
+symlinks = [".env"]
+snapshots = ["data/"]
+
+[hooks]
+pre_up = "echo hi"
+
+[env.api]
+SECRET = "shh"
+`
+	if err := os.WriteFile(filepath.Join(dir, ".pier.toml"), []byte(existingTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p, _, err := Derive(dir, Opts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out testWriter
+	if err := Apply(p, &out); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	// Read back and verify the user sections survived.
+	roundtrip := &manifest.Manifest{}
+	if _, err := tomlDecodeFile(filepath.Join(dir, ".pier.toml"), roundtrip); err != nil {
+		t.Fatal(err)
+	}
+	if len(roundtrip.Materialize.Symlinks) != 1 || roundtrip.Materialize.Symlinks[0] != ".env" {
+		t.Errorf("symlinks lost: %+v", roundtrip.Materialize)
+	}
+	if len(roundtrip.Materialize.Snapshots) != 1 {
+		t.Errorf("snapshots lost: %+v", roundtrip.Materialize)
+	}
+	if roundtrip.Hooks.PreUp != "echo hi" {
+		t.Errorf("hooks lost: %+v", roundtrip.Hooks)
+	}
+	if roundtrip.Env["api"]["SECRET"] != "shh" {
+		t.Errorf("env.api lost: %+v", roundtrip.Env)
 	}
 }
 

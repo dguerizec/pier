@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -87,6 +88,7 @@ func (h *apiHandler) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/doctor", h.getDoctor)
 	mux.HandleFunc("POST /api/v1/workloads/{project}/{slug}/up", h.postWorkloadUp)
 	mux.HandleFunc("POST /api/v1/workloads/{project}/{slug}/down", h.postWorkloadDown)
+	mux.HandleFunc("GET /api/v1/workloads/{project}/{slug}/logs", h.streamWorkloadLogs)
 	if h.hub != nil {
 		mux.HandleFunc("GET /api/v1/events", h.streamEvents)
 	}
@@ -426,4 +428,102 @@ func (h *apiHandler) postWorkloadDown(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, apiActionResponse{
 		Project: project, Slug: slug, Status: "down",
 	})
+}
+
+// streamWorkloadLogs proxies `docker compose logs` to the response body
+// with chunked transfer. follow=true keeps the stream open until the
+// client disconnects — at which point r.Context() cancels and the
+// underlying docker process gets SIGKILL via exec.CommandContext.
+func (h *apiHandler) streamWorkloadLogs(w http.ResponseWriter, r *http.Request) {
+	project := r.PathValue("project")
+	slug := r.PathValue("slug")
+
+	follow := r.URL.Query().Get("follow") == "true"
+	tail := 200
+	if t := r.URL.Query().Get("tail"); t != "" {
+		if n, err := strconv.Atoi(t); err == nil && n >= 0 {
+			tail = n
+		}
+	}
+
+	store, err := state.Open(h.paths.StateDB)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	wl, err := store.Get(project, slug)
+	store.Close()
+	if err != nil {
+		if errors.Is(err, state.ErrNotFound) {
+			writeAPIError(w, http.StatusNotFound,
+				"no state row for "+project+"/"+slug+"; workload is down or never started")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	info, err := worktree.DetectFrom(wl.WorktreePath)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "worktree at "+wl.WorktreePath+": "+err.Error())
+		return
+	}
+
+	d, err := dailyForWorktree(info, slug, w, w)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer d.State.Close()
+
+	if d.Manifest.Project.Name != project {
+		writeAPIError(w, http.StatusConflict,
+			fmt.Sprintf("manifest at %s declares project=%q, URL says %q",
+				info.Toplevel, d.Manifest.Project.Name, project))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.Header().Set("Cache-Control", "no-cache")
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush() // commit headers before docker first-line latency
+	}
+
+	// Wrap w so each docker log write is flushed end-to-end. Without this,
+	// follow-mode buffers server-side until the chunked encoder fills,
+	// which can hide minutes of output on a quiet workload.
+	out := &lineFlushWriter{w: w, fl: flusher}
+
+	// Wire r.Context() into the adapter so client disconnect cancels the
+	// docker logs subprocess (otherwise it'd run until the workload dies).
+	d.Ctx.Out = out
+	d.Ctx.Err = out
+	d.Ctx.Context = r.Context()
+
+	a, err := adapter.For(d.Manifest.Stack.Kind)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// Logs returns an error on client disconnect (broken pipe) or ctx
+	// cancel ("signal: killed") — both are expected end-of-stream
+	// conditions, not failures the caller cares about.
+	_ = a.Logs(d.Ctx, follow, tail)
+}
+
+// lineFlushWriter forwards Writes to w and calls Flush after each one so
+// SSE / chunked responses surface output without server-side buffering.
+type lineFlushWriter struct {
+	w  io.Writer
+	fl http.Flusher
+}
+
+func (l *lineFlushWriter) Write(p []byte) (int, error) {
+	n, err := l.w.Write(p)
+	if l.fl != nil {
+		l.fl.Flush()
+	}
+	return n, err
 }

@@ -8,6 +8,7 @@
 package adapter
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +30,7 @@ type Ctx struct {
 	TraefikNetwork string                       // docker network the workload joins for label discovery
 	Out            io.Writer                    // command output sink
 	Err            io.Writer                    // command error sink
+	Context        context.Context              // cancels the underlying docker process; nil = no cancellation
 }
 
 // Handle is the state to persist after a successful Up.

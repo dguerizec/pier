@@ -174,3 +174,16 @@ func TestAPIUpInvalidJSON(t *testing.T) {
 		t.Fatalf("expected 400, got %d body %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestAPILogsMissingWorkload(t *testing.T) {
+	// GET /logs on an unknown workload returns 404 — unlike POST /down,
+	// there's no idempotent answer to give.
+	_, mux := newTestAPI(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workloads/foo/bar/logs", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body %s", rec.Code, rec.Body.String())
+	}
+}

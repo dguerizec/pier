@@ -243,3 +243,46 @@ func TestAPIDeleteWorktreeMissing(t *testing.T) {
 		t.Errorf("expected 404, got %d", rec.Code)
 	}
 }
+
+func TestAPIOpenAPISpec(t *testing.T) {
+	_, mux := newTestAPI(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("content-type = %q", got)
+	}
+	// Spec must parse — guards against a typo in the embedded file.
+	var spec map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &spec); err != nil {
+		t.Fatalf("invalid openapi.json: %v", err)
+	}
+	if v, _ := spec["openapi"].(string); !strings.HasPrefix(v, "3.") {
+		t.Errorf("openapi field = %v, want 3.x", spec["openapi"])
+	}
+	if _, ok := spec["paths"]; !ok {
+		t.Error("missing paths section")
+	}
+}
+
+func TestAPIDocsHTML(t *testing.T) {
+	_, mux := newTestAPI(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/docs", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "swagger-ui") {
+		t.Error("docs page should embed swagger-ui")
+	}
+	if !strings.Contains(body, "/api/v1/openapi.json") {
+		t.Error("docs page should reference the spec URL")
+	}
+}

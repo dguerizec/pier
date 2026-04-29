@@ -79,8 +79,7 @@ type apiHandler struct {
 	hub   *eventHub // nil = no SSE endpoint registered (used in tests)
 }
 
-// register mounts the v1 endpoints on mux. Phase 3 worktree CRUD will
-// hang off the same handler.
+// register mounts the v1 endpoints on mux.
 func (h *apiHandler) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/workloads", h.listWorkloads)
 	mux.HandleFunc("GET /api/v1/workloads/{project}/{slug}", h.getWorkload)
@@ -91,6 +90,8 @@ func (h *apiHandler) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/workloads/{project}/{slug}/logs", h.streamWorkloadLogs)
 	mux.HandleFunc("POST /api/v1/worktrees", h.postWorktree)
 	mux.HandleFunc("DELETE /api/v1/worktrees/{slug}", h.deleteWorktree)
+	mux.HandleFunc("GET /api/v1/openapi.json", h.getOpenAPI)
+	mux.HandleFunc("GET /api/docs", h.getDocs)
 	if h.hub != nil {
 		mux.HandleFunc("GET /api/v1/events", h.streamEvents)
 	}

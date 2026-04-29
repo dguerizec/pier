@@ -20,6 +20,12 @@ func WorktreeDirGitignoreEntry(toplevel, dir string) string {
 	if dir == "" {
 		return ""
 	}
+	// `~`-prefixed dirs always resolve outside the project (HOME), so
+	// there's nothing to gitignore. Treat them as out of scope before
+	// the IsAbs check, which doesn't recognise `~`.
+	if strings.HasPrefix(dir, "~") && (len(dir) == 1 || dir[1] == '/') {
+		return ""
+	}
 	abs := dir
 	if !filepath.IsAbs(abs) {
 		abs = filepath.Join(toplevel, abs)

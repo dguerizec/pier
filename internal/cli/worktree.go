@@ -289,17 +289,47 @@ func pickBaseRef(flag, manifest, primary string) string {
 }
 
 // resolveWorktreePath turns a `pier worktree add <name>` argument into an
-// absolute path. When <name> contains no path separator and the manifest
-// declares a [worktree].dir, we place the new worktree there — letting
-// users use a short name (`pier worktree add feat-x`) and keep all
-// branches under one folder (`.claude/worktrees/feat-x`). Anything else
-// is treated as an explicit path.
-func resolveWorktreePath(primary, target, manifestDir string) (string, error) {
+// absolute path. When <name> contains no path separator and a worktree
+// dir is configured (manifest, prefs, or built-in default), we place
+// the new worktree there — letting users use a short name (`pier
+// worktree add feat-x`) and keep all branches under one folder.
+// Anything else is treated as an explicit path.
+//
+// configuredDir is interpreted as:
+//
+//   - "~" or "~/..." → expanded against $HOME, then joined with target
+//   - absolute path → joined directly with target
+//   - relative path → relative to the primary worktree (project root)
+//
+// This lets a project pin "./worktrees" without leaking out, while a
+// user pref like "~/wt/myproj" or "/srv/worktrees" lands at the
+// absolute location they asked for.
+func resolveWorktreePath(primary, target, configuredDir string) (string, error) {
 	hasSep := strings.ContainsRune(target, filepath.Separator)
-	if !hasSep && manifestDir != "" {
-		return filepath.Abs(filepath.Join(primary, manifestDir, target))
+	if hasSep || configuredDir == "" {
+		return filepath.Abs(target)
 	}
-	return filepath.Abs(target)
+	base, err := expandWorktreeDir(primary, configuredDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Abs(filepath.Join(base, target))
+}
+
+// expandWorktreeDir resolves a configured worktree dir into an
+// absolute path. See resolveWorktreePath for the supported forms.
+func expandWorktreeDir(primary, dir string) (string, error) {
+	if strings.HasPrefix(dir, "~") && (len(dir) == 1 || dir[1] == '/') {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("expand %s: %w", dir, err)
+		}
+		return filepath.Join(home, dir[1:]), nil
+	}
+	if filepath.IsAbs(dir) {
+		return dir, nil
+	}
+	return filepath.Join(primary, dir), nil
 }
 
 // runPierIn invokes the currently running pier binary in dir with subargs.

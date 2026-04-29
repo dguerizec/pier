@@ -50,6 +50,12 @@ type Plan struct {
 	// the rewrite so user-curated sections (env, materialize, hooks, watch,
 	// stack.match_host_uid) survive untouched. Nil on first init.
 	Existing *manifest.Manifest
+
+	// EnvSuggestions are templatisable env values discovered in the
+	// compose file. Aligned with EnvAccepted: only suggestions whose flag
+	// is true are written to the manifest.
+	EnvSuggestions []EnvSuggestion
+	EnvAccepted    []bool
 }
 
 // IsReinit reports whether the wizard is editing an existing manifest
@@ -69,6 +75,9 @@ const (
 	// AmbDefaultService is set when at least two services will be exposed
 	// and the user didn't pin --service.
 	AmbDefaultService
+	// AmbEnvSuggestions is set when the compose file contains environment
+	// values that look like cross-service URLs we can templatise.
+	AmbEnvSuggestions
 )
 
 // Ambiguity flags a Plan field that took a default but a human might
@@ -154,6 +163,19 @@ func Derive(toplevel string, opts Opts) (*Plan, []Ambiguity, error) {
 	worktreeDir := firstNonEmpty(opts.WorktreeDir, existingWorktreeDir(existing), ".pier/worktrees")
 	baseRef := firstNonEmpty(opts.BaseRef, existingBaseRef(existing), DetectDefaultBranch(toplevel))
 
+	envSuggestions := ScanEnvSuggestions(composeFile, existing)
+	// Suggestions are off by default: rewriting a service's env behind the
+	// user's back is too sharp an edge for --yes. The interactive prompt
+	// pre-checks every suggestion so accepting the form keeps the
+	// templated form, but unattended runs leave compose env untouched.
+	envAccepted := make([]bool, len(envSuggestions))
+	if len(envSuggestions) > 0 {
+		ambig = append(ambig, Ambiguity{
+			Kind:    AmbEnvSuggestions,
+			Message: fmt.Sprintf("%d env values look like cross-service URLs; review templatisation", len(envSuggestions)),
+		})
+	}
+
 	return &Plan{
 		Toplevel:       toplevel,
 		ManifestPath:   manifestPath,
@@ -167,7 +189,21 @@ func Derive(toplevel string, opts Opts) (*Plan, []Ambiguity, error) {
 		BaseRef:        baseRef,
 		Share:          !opts.Private,
 		Existing:       existing,
+		EnvSuggestions: envSuggestions,
+		EnvAccepted:    envAccepted,
 	}, ambig, nil
+}
+
+// AcceptedEnvSuggestions returns the suggestions the user opted into,
+// preserving Plan order.
+func (p *Plan) AcceptedEnvSuggestions() []EnvSuggestion {
+	out := make([]EnvSuggestion, 0, len(p.EnvSuggestions))
+	for i, s := range p.EnvSuggestions {
+		if i < len(p.EnvAccepted) && p.EnvAccepted[i] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // initialSelection pre-checks the multi-select. On a fresh init every

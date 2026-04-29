@@ -15,7 +15,7 @@ import (
 // expose multi-select, and huh groups don't recompute their options
 // across runs cleanly.
 func PromptHuh(p *Plan, ambig []Ambiguity) error {
-	wantName, wantExpose, wantDefault := classify(ambig)
+	wantName, wantExpose, wantDefault, wantEnv := classify(ambig)
 
 	if wantName || wantExpose {
 		fields := []huh.Field{}
@@ -95,10 +95,29 @@ func PromptHuh(p *Plan, ambig []Ambiguity) error {
 		}
 	}
 
+	if wantEnv && len(p.EnvSuggestions) > 0 {
+		opts := make([]huh.Option[int], 0, len(p.EnvSuggestions))
+		var selected []int
+		for i, s := range p.EnvSuggestions {
+			label := fmt.Sprintf("[%s] %s = %q  →  %q", s.Service, s.Key, s.Value, s.Replacement)
+			opts = append(opts, huh.NewOption(label, i).Selected(true))
+			selected = append(selected, i)
+		}
+		ms := huh.NewMultiSelect[int]().
+			Title("Templatise these env values?").
+			Description("Selected entries get written to [env.<service>] using pier's {url.X} placeholders.").
+			Options(opts...).
+			Value(&selected)
+		if err := huh.NewForm(huh.NewGroup(ms)).Run(); err != nil {
+			return err
+		}
+		applyEnvSelection(p, selected)
+	}
+
 	return nil
 }
 
-func classify(ambig []Ambiguity) (name, expose, def bool) {
+func classify(ambig []Ambiguity) (name, expose, def, env bool) {
 	for _, a := range ambig {
 		switch a.Kind {
 		case AmbInvalidName:
@@ -107,9 +126,22 @@ func classify(ambig []Ambiguity) (name, expose, def bool) {
 			expose = true
 		case AmbDefaultService:
 			def = true
+		case AmbEnvSuggestions:
+			env = true
 		}
 	}
 	return
+}
+
+// applyEnvSelection toggles Plan.EnvAccepted to mirror the chosen indices.
+func applyEnvSelection(p *Plan, chosen []int) {
+	picked := map[int]bool{}
+	for _, i := range chosen {
+		picked[i] = true
+	}
+	for i := range p.EnvAccepted {
+		p.EnvAccepted[i] = picked[i]
+	}
 }
 
 // applySelection translates the chosen service names back into the

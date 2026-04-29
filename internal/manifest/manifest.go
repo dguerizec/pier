@@ -4,11 +4,13 @@
 package manifest
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -143,13 +145,83 @@ func Load(root string) (*Manifest, error) {
 }
 
 // Write serializes m as TOML to path. Overwrites any existing file.
+//
+// The default BurntSushi/toml encoder emits an explicit parent header
+// for every map-of-map field (e.g. `[env]` followed by an indented
+// `[env.front]`). Both forms parse identically, but the explicit
+// parent generates noisy diffs against hand-written manifests that use
+// the dotted form. We rewrite the output to drop empty parent headers
+// before persisting.
 func (m *Manifest) Write(path string) error {
-	f, err := os.Create(path)
-	if err != nil {
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(m); err != nil {
 		return err
 	}
-	defer f.Close()
-	return toml.NewEncoder(f).Encode(m)
+	return os.WriteFile(path, collapseEmptyParents(buf.Bytes()), 0o644)
+}
+
+// emptyParentRE matches a top-level `[name]` header on its own line.
+// We use it to detect candidates for collapsing; the actual decision
+// also looks ahead at the next non-blank line.
+var emptyParentRE = regexp.MustCompile(`^\[([A-Za-z0-9_-]+)\]$`)
+
+// collapseEmptyParents removes `[parent]` headers that are immediately
+// followed only by indented `[parent.child]` sub-tables, and dedents the
+// block by two spaces so the result matches the dotted-table style a
+// human would write by hand.
+func collapseEmptyParents(in []byte) []byte {
+	lines := strings.Split(string(in), "\n")
+	out := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); i++ {
+		m := emptyParentRE.FindStringSubmatch(lines[i])
+		if m == nil {
+			out = append(out, lines[i])
+			continue
+		}
+		parent := m[1]
+		// Look at the next non-blank line.
+		j := i + 1
+		for j < len(lines) && strings.TrimSpace(lines[j]) == "" {
+			j++
+		}
+		if j >= len(lines) || !strings.HasPrefix(strings.TrimLeft(lines[j], " \t"), "["+parent+".") {
+			out = append(out, lines[i])
+			continue
+		}
+		// Drop the `[parent]` line and dedent the block (everything
+		// until the next top-level header or EOF) by two spaces.
+		for k := i + 1; k < len(lines); k++ {
+			line := lines[k]
+			trimmed := strings.TrimLeft(line, " \t")
+			if trimmed != "" && strings.HasPrefix(trimmed, "[") && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+				// Reached the next top-level header; resume normal copy from here.
+				out = append(out, lines[i+1:k]...)
+				dedent(out[len(out)-(k-i-1):])
+				i = k - 1
+				goto next
+			}
+		}
+		// Block runs to EOF.
+		out = append(out, lines[i+1:]...)
+		dedent(out[len(out)-(len(lines)-i-1):])
+		i = len(lines)
+	next:
+	}
+	return []byte(strings.Join(out, "\n"))
+}
+
+// dedent strips up to two leading spaces from every non-empty line in
+// place. Used after dropping a parent header so sub-tables move flush
+// left.
+func dedent(block []string) {
+	for i, line := range block {
+		switch {
+		case strings.HasPrefix(line, "  "):
+			block[i] = line[2:]
+		case strings.HasPrefix(line, "\t"):
+			block[i] = line[1:]
+		}
+	}
 }
 
 var dnsLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)

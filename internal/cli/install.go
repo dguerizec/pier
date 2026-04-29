@@ -123,6 +123,7 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 	}
 
 	installUserSkill(out)
+	askWorktreeDirPref(cmd, base.yes)
 
 	if env.Headscale.Found && env.Tailscale.Active && env.Headscale.ConfigPath != "" {
 		// Records mode is already wired through Config — no headscale
@@ -266,6 +267,52 @@ func planSummary(p infra.InstallOptions) string {
 		parts = append(parts, "(records mode: "+p.HeadscaleRecordsPath+")")
 	}
 	return strings.Join(parts, " ")
+}
+
+// askWorktreeDirPref prompts once during the install wizard for the
+// per-user default worktree dir and saves it to prefs.toml. Called at
+// the tail of the wizard so the user has done all the infra steps and
+// reads this as a workflow preference, not an install option.
+//
+// Skips silently when:
+//   - --yes is in effect (script-style install must not block on UX),
+//   - prefs.toml already has a worktree_dir (re-running install
+//     shouldn't keep re-asking).
+func askWorktreeDirPref(cmd *cobra.Command, yes bool) {
+	if yes {
+		return
+	}
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		return
+	}
+	prefs, err := infra.LoadPrefs(paths)
+	if err != nil {
+		return
+	}
+	if prefs.WorktreeDir != "" {
+		return
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Where should `pier worktree add <name>` place new worktrees by default?")
+	fmt.Fprintln(out, "  Examples: .pier/worktrees (in-repo), ~/wt/<project> (in $HOME), /srv/wt (absolute)")
+	fmt.Fprintln(out, "  Each project can still pin its own location via [worktree].dir in .pier.toml.")
+	fmt.Fprint(out, "Worktree dir [skip]: ")
+
+	line, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	line = strings.TrimSpace(line)
+	if line == "" {
+		fmt.Fprintln(out, "  (skipped — built-in default `.pier/worktrees` applies)")
+		return
+	}
+	prefs.WorktreeDir = line
+	if err := prefs.Save(paths); err != nil {
+		fmt.Fprintf(out, "! could not save prefs: %v\n", err)
+		return
+	}
+	fmt.Fprintf(out, "✓ saved worktree dir to %s\n", infra.PrefsPath(paths))
 }
 
 // confirm reads a yes/no answer from stdin. Default applies on empty input.

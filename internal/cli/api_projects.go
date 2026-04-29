@@ -332,26 +332,29 @@ func (h *apiHandler) listProjectWorktrees(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Index workloads by slug so we can attach the matching one to its
-	// worktree row. Slug = basename of worktree path (matches the convention
-	// used by createWorktreeAt + the workload row).
+	// Match workloads to worktrees by path: the primary worktree's slug
+	// often differs from its directory basename (slug = branch on `pier
+	// up` from the primary), so basename-matching gives false negatives.
+	// worktree_path is stable on every state row.
 	workloads, _ := store.List()
-	bySlug := map[string]*state.Workload{}
+	byPath := map[string]*state.Workload{}
 	for _, wl := range workloads {
 		if wl.Project == p.Name {
-			bySlug[wl.Slug] = wl
+			byPath[wl.WorktreePath] = wl
 		}
 	}
 
 	out := make([]apiWorktreeListItem, 0, len(entries))
 	for _, e := range entries {
-		slug := filepath.Base(e.Path)
 		item := apiWorktreeListItem{
 			Path:   e.Path,
-			Slug:   slug,
+			Slug:   filepath.Base(e.Path),
 			Branch: e.Branch,
 		}
-		if wl, ok := bySlug[slug]; ok {
+		if wl, ok := byPath[e.Path]; ok {
+			// Surface the workload's slug — it's what the user typed in
+			// `pier up` and what the action endpoints expect.
+			item.Slug = wl.Slug
 			item.HasWorkload = true
 			view := buildAPIWorkload(h.cfg, wl)
 			item.Workload = &view

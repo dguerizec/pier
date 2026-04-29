@@ -89,6 +89,8 @@ func (h *apiHandler) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/workloads/{project}/{slug}/up", h.postWorkloadUp)
 	mux.HandleFunc("POST /api/v1/workloads/{project}/{slug}/down", h.postWorkloadDown)
 	mux.HandleFunc("GET /api/v1/workloads/{project}/{slug}/logs", h.streamWorkloadLogs)
+	mux.HandleFunc("POST /api/v1/worktrees", h.postWorktree)
+	mux.HandleFunc("DELETE /api/v1/worktrees/{slug}", h.deleteWorktree)
 	if h.hub != nil {
 		mux.HandleFunc("GET /api/v1/events", h.streamEvents)
 	}
@@ -526,4 +528,136 @@ func (l *lineFlushWriter) Write(p []byte) (int, error) {
 		l.fl.Flush()
 	}
 	return n, err
+}
+
+// apiWorktreeCreateRequest is the body of POST /api/v1/worktrees. `repo`
+// is the absolute path of the primary worktree (the API has no central
+// repo registry — sillage is responsible for remembering it). `slug`
+// doubles as the directory name under [worktree].dir and the workload
+// slug. `branch` defaults to slug; `from` defaults to manifest base_ref
+// then main/master then HEAD.
+type apiWorktreeCreateRequest struct {
+	Repo   string `json:"repo"`
+	Slug   string `json:"slug"`
+	Branch string `json:"branch,omitempty"`
+	From   string `json:"from,omitempty"`
+	Up     bool   `json:"up,omitempty"`
+}
+
+type apiWorktreeCreateResponse struct {
+	Project      string       `json:"project"`
+	Slug         string       `json:"slug"`
+	Branch       string       `json:"branch"`
+	WorktreePath string       `json:"worktree_path"`
+	Workload     *apiWorkload `json:"workload,omitempty"` // populated when up=true
+}
+
+func (h *apiHandler) postWorktree(w http.ResponseWriter, r *http.Request) {
+	var body apiWorktreeCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if body.Repo == "" || body.Slug == "" {
+		writeAPIError(w, http.StatusBadRequest, "repo and slug are required")
+		return
+	}
+
+	opts := wtAddOpts{
+		branch: body.Branch,
+		from:   body.From,
+		up:     false, // up handled below so we can return the apiWorkload
+	}
+	abs, branch, err := createWorktreeAt(body.Repo, body.Slug, opts, io.Discard, io.Discard)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	resp := apiWorktreeCreateResponse{
+		Slug:         body.Slug,
+		Branch:       branch,
+		WorktreePath: abs,
+	}
+	if m, err := manifest.Load(abs); err == nil {
+		resp.Project = m.Project.Name
+	}
+
+	if body.Up {
+		info, err := worktree.DetectFrom(abs)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "post-create detect: "+err.Error())
+			return
+		}
+		d, err := dailyForWorktree(info, body.Slug, io.Discard, io.Discard)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "post-create daily: "+err.Error())
+			return
+		}
+		defer d.State.Close()
+
+		if err := runUp(d, io.Discard, io.Discard); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "post-create up: "+err.Error())
+			return
+		}
+		if wl, err := d.State.Get(d.Ctx.Project, body.Slug); err == nil {
+			view := buildAPIWorkload(h.cfg, wl)
+			resp.Workload = &view
+			resp.Project = d.Ctx.Project
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *apiHandler) deleteWorktree(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	repo := r.URL.Query().Get("repo")
+	if repo == "" {
+		writeAPIError(w, http.StatusBadRequest,
+			"?repo=<absolute primary worktree path> required")
+		return
+	}
+
+	abs, err := resolveExistingWorktreePath(repo, slug)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	// Best-effort down. A `pier down` failure shouldn't block removal —
+	// the worktree might be wedged in a state where compose can't bring
+	// it down cleanly, and the user wants the dir gone anyway.
+	if info, err := worktree.DetectFrom(abs); err == nil {
+		if d, err := dailyForWorktree(info, slug, io.Discard, io.Discard); err == nil {
+			_ = runDown(d, false, io.Discard, io.Discard)
+			d.State.Close()
+		}
+	}
+
+	project := ""
+	if m, err := manifest.Load(repo); err == nil {
+		project = m.Project.Name
+	}
+
+	// API DELETE always passes --force: sillage is non-interactive, an
+	// uncommitted-changes safety check would just turn into an opaque
+	// 500. CLI users still get the prompt-by-default behavior.
+	if err := removeWorktreeAt(repo, abs, true, io.Discard, io.Discard); err != nil {
+		// Surface the partial-removal scenario as 200 + warning rather
+		// than 500: removeWorktreeAt's prune fallback already cleaned
+		// git's worktree list, so the API state is consistent — only
+		// the on-disk dir might linger (typical: root-owned files from
+		// a distroless container, see AGENTS.md pitfall #4).
+		writeJSON(w, http.StatusOK, apiActionResponse{
+			Project: project, Slug: slug, Status: "removed",
+			Warning: "git rm partial: " + err.Error() +
+				"; check " + abs + " — root-owned files may need `sudo rm -rf`",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, apiActionResponse{
+		Project: project, Slug: slug, Status: "removed",
+	})
 }

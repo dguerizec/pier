@@ -187,3 +187,59 @@ func TestAPILogsMissingWorkload(t *testing.T) {
 		t.Fatalf("expected 404, got %d body %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestAPIPostWorktreeRequiresRepoAndSlug(t *testing.T) {
+	_, mux := newTestAPI(t)
+	cases := []string{
+		`{}`,
+		`{"repo":"/x"}`,
+		`{"slug":"feat-x"}`,
+	}
+	for _, body := range cases {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/worktrees",
+			strings.NewReader(body))
+		req.ContentLength = int64(len(body))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %q: expected 400, got %d", body, rec.Code)
+		}
+	}
+}
+
+func TestAPIPostWorktreeInvalidJSON(t *testing.T) {
+	_, mux := newTestAPI(t)
+	body := `not-json`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/worktrees",
+		strings.NewReader(body))
+	req.ContentLength = int64(len(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestAPIDeleteWorktreeRequiresRepo(t *testing.T) {
+	_, mux := newTestAPI(t)
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/worktrees/feat-x", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "repo") {
+		t.Errorf("expected hint about repo query param: %s", rec.Body.String())
+	}
+}
+
+func TestAPIDeleteWorktreeMissing(t *testing.T) {
+	_, mux := newTestAPI(t)
+	req := httptest.NewRequest(http.MethodDelete,
+		"/api/v1/worktrees/feat-x?repo=/nonexistent/repo", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", rec.Code)
+	}
+}

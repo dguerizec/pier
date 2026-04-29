@@ -148,7 +148,7 @@
       "get": {
         "tags": ["events"],
         "summary": "Server-Sent Events stream",
-        "description": "Long-lived text/event-stream. Initial `state.snapshot` event with the full workload list, followed by transitions (`workload.up`, `workload.crashed`, `workload.restarting`, `workload.removed`, `doctor.fail`, `doctor.recovered`) and `ping` heartbeats every 30s. Browsers consume directly via EventSource. Slow consumers see events dropped — they can recover by reconnecting and reading the new `state.snapshot`.",
+        "description": "**⚠️ Not testable from this UI** — Swagger UI cannot render an open `text/event-stream`; the request will hang forever. Test with `curl -N http://<bind>:<port>/api/v1/events` or with a browser `EventSource('/api/v1/events')`.\n\nLong-lived text/event-stream. Initial `state.snapshot` event with the full workload list, followed by transitions (`workload.up`, `workload.crashed`, `workload.restarting`, `workload.removed`, `doctor.fail`, `doctor.recovered`) and `ping` heartbeats every 30s. Browsers consume directly via EventSource. Slow consumers see events dropped — they can recover by reconnecting and reading the new `state.snapshot`.",
         "responses": {
           "200": {
             "description": "SSE stream",

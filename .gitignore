@@ -1,0 +1,20 @@
+# Build artifacts
+/pier
+/dist/
+*.exe
+
+# Go
+/vendor/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*~
+
+# pier internal
+.pier/
+.pier.local.toml
+
+# OS
+.DS_Store

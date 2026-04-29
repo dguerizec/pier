@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="{{.RefreshSeconds}}">
+  <title>pier — running workloads</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --fg: #1a1a1a;
+      --muted: #6b7280;
+      --bg: #fafafa;
+      --card: #ffffff;
+      --border: #e5e7eb;
+      --accent: #2563eb;
+      --good: #10b981;
+      --bad: #ef4444;
+      --warn: #f59e0b;
+      --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --fg: #f3f4f6;
+        --muted: #9ca3af;
+        --bg: #0b0d12;
+        --card: #151821;
+        --border: #2a2f3a;
+        --accent: #60a5fa;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 2rem;
+      font: 14px/1.5 system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 2rem;
+      max-width: 64rem;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    h1 { margin: 0; font-size: 1.5rem; font-weight: 600; }
+    .meta { color: var(--muted); font-size: 0.85rem; }
+    main {
+      max-width: 64rem;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+    .empty {
+      text-align: center;
+      color: var(--muted);
+      padding: 4rem 1rem;
+      background: var(--card);
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+    }
+    .project {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .project h2 {
+      margin: 0;
+      padding: 0.75rem 1rem;
+      font-size: 1rem;
+      font-weight: 600;
+      border-bottom: 1px solid var(--border);
+      background: color-mix(in srgb, var(--card) 92%, var(--accent));
+    }
+    .workload {
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: minmax(0, 14rem) 1fr;
+      gap: 0.75rem 1.25rem;
+      align-items: start;
+    }
+    .workload:last-child { border-bottom: none; }
+    .workload .ident {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+      min-width: 0;
+    }
+    .slug {
+      font-family: var(--mono);
+      font-weight: 600;
+      font-size: 0.95rem;
+    }
+    .branch {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.75rem;
+      font-family: var(--mono);
+      color: var(--muted);
+    }
+    .dot {
+      width: 0.55rem;
+      height: 0.55rem;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .dot.running { background: var(--good); }
+    .dot.exited, .dot.dead { background: var(--bad); }
+    .dot.created, .dot.restarting, .dot.paused { background: var(--warn); }
+    .panels {
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+      min-width: 0;
+    }
+    .label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin-bottom: 0.2rem;
+    }
+    .urls a {
+      display: inline-block;
+      padding: 0.2rem 0.55rem;
+      margin: 0 0.35rem 0.35rem 0;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      text-decoration: none;
+    }
+    .urls a:hover { background: color-mix(in srgb, var(--card) 80%, var(--accent)); }
+    .urls a.default { font-weight: 600; }
+    .containers {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .container {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      color: var(--muted);
+      overflow: hidden;
+    }
+    .container .name {
+      color: var(--fg);
+      max-width: 14rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .container .image { opacity: 0.7; }
+    .err {
+      color: var(--bad);
+      font-family: var(--mono);
+      font-size: 0.78rem;
+    }
+    footer {
+      max-width: 64rem;
+      margin: 2rem auto 0;
+      color: var(--muted);
+      font-size: 0.75rem;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>pier <span class="meta">— running workloads</span></h1>
+    <div class="meta">{{.Now}} · auto-refresh {{.RefreshSeconds}}s</div>
+  </header>
+
+  <main>
+    {{if not .Projects}}
+      <div class="empty">No workloads running. Try <code>pier up</code> in a worktree.</div>
+    {{end}}
+
+    {{range .Projects}}
+    <section class="project">
+      <h2>{{.Name}}</h2>
+      {{range .Workloads}}
+      <div class="workload">
+        <div class="ident">
+          <span class="slug">{{.Slug}}</span>
+          <span class="branch">{{.Branch}}</span>
+          <span class="status"><span class="dot {{.Status}}"></span>{{.Status}} · {{.Uptime}}</span>
+        </div>
+        <div class="panels">
+          {{if .URLs}}
+          <div class="urls">
+            <div class="label">URLs</div>
+            {{range .URLs}}
+              <a href="{{.URL}}" target="_blank" rel="noopener" class="{{if .Default}}default{{end}}">{{.Label}}</a>
+            {{end}}
+          </div>
+          {{end}}
+          {{if .Containers}}
+          <div class="containers">
+            <div class="label">Containers</div>
+            {{range .Containers}}
+              <div class="container">
+                <span class="dot {{.Status}}"></span>
+                <span class="name">{{.Name}}</span>
+                <span class="image">{{.Image}}</span>
+              </div>
+            {{end}}
+          </div>
+          {{end}}
+          {{if .ErrMsg}}
+            <div class="err">! {{.ErrMsg}}</div>
+          {{end}}
+        </div>
+      </div>
+      {{end}}
+    </section>
+    {{end}}
+  </main>
+
+  <footer>pier {{.Version}} · TLD .{{.TLD}}</footer>
+</body>
+</html>

@@ -86,47 +86,128 @@ If for some reason you must use `git worktree remove` directly,
 `pier down` in the worktree FIRST, then remove. Then check `pier ls`
 and `pier gc` (when implemented) for any leftover state.
 
-## Manifest cheat sheet
+## Manifest reference (`.pier.toml`)
+
+`pier init` generates the project / stack / expose / worktree blocks
+from the compose file, but it does **not** generate `[env.<service>]` —
+those entries are the main thing you'll add by hand. Read this section
+in full before editing the manifest.
+
+### Full annotated example
 
 ```toml
 [project]
-name = "myapp"
-base_domain = "myapp.{pier.tld}"   # KEEP {pier.tld} — never inline a literal
+name        = "myapp"                # DNS label; becomes the workload sub-domain root
+base_domain = "myapp.{pier.tld}"     # KEEP {pier.tld} — never inline a literal TLD
 
 [stack]
-kind    = "compose"
-file    = "docker-compose.dev.yml"
-service = "front"                  # service whose host is also the bare slug alias
+kind    = "compose"                  # only `compose` supported today
+file    = "docker-compose.dev.yml"   # path relative to the worktree toplevel
+service = "front"                    # the service that ALSO answers at the bare <slug>.<base>;
+                                     # if empty, no alias is emitted
 
-[[expose]]                          # one entry per service to publish
+# match_host_uid = true              # optional; injects user: "<uid>:<gid>" into every
+                                     # exposed service so bind-mounted host paths stay
+                                     # writable when the image's default UID differs.
+
+# Each [[expose]] entry tells pier to publish one compose service behind
+# traefik. The container-side port is what traefik forwards to over the
+# pier docker network; host port bindings in the compose file are stripped
+# by pier at up time so multi-worktree runs don't collide.
+[[expose]]
 service = "front"
-port    = 8080                      # container-side port (NOT host port)
+port    = 8080
 
 [[expose]]
 service = "api"
 port    = 8000
-host    = "backend"                # optional; defaults to service name → backend.<slug>.<base>
+# host  = "backend"                  # optional; defaults to the service name.
+                                     # → backend.<slug>.<base> instead of api.<slug>.<base>
 
-[env.front]                         # injected by pier into the compose override
-API_PUBLIC_URL = "{url.api}"        # → http://backend.<slug>.<base>
+# [env.<service>] values are templated by pier at `pier up` time and
+# injected as environment variables into that service's container, so
+# the app reads the right URL for the current worktree without knowing
+# pier exists. Compose merges environment dict-wise, so these override
+# whatever the user's docker-compose.dev.yml set for the same key.
+[env.front]
+API_PUBLIC_URL = "{url.api}"         # → http://api.<slug>.<base> at runtime
+PUBLIC_URL     = "{url.default}"     # → http://<slug>.<base> (requires stack.service)
 
 [materialize]
-symlinks  = [".env"]
-snapshots = ["data-dev/"]
+symlinks  = [".env", "secrets/"]     # shared with the primary worktree (read-only intent)
+snapshots = ["data-dev/"]            # copied per worktree (mutable, isolated)
+
+[worktree]
+dir      = "./worktrees"             # `pier worktree add <name>` creates ./worktrees/<name>
+base_ref = "main"                    # new branches fork from this ref
 ```
 
 ### Templating tokens
 
-In `env.<service>` values:
+`pier init` does not write any `[env.<service>]` — you add them when an
+app needs to know the URL of a sibling service for the current
+worktree. Use these tokens in `[env.<service>]` values:
 
-- `{slug}`, `{base_domain}`, `{pier.tld}`
-- `{host.<service>}` → `<host>.<slug>.<base>` for an exposed service
-- `{url.<service>}`  → `http://<host>.<slug>.<base>`
-- `{host.default}` / `{url.default}` → the bare-slug alias (requires
-  `stack.service` to designate an exposed service)
+| Token | Expands to | Notes |
+|---|---|---|
+| `{slug}` | the workload's slug (DNS label) | derived from branch |
+| `{base_domain}` | post-template base domain (e.g. `myapp.test`) | |
+| `{pier.tld}` | the installed pier TLD | also valid in `project.base_domain` |
+| `{host.<service>}` | `<host>.<slug>.<base>` | `<service>` must appear in `[[expose]]` |
+| `{url.<service>}` | `http://<host>.<slug>.<base>` | same |
+| `{host.default}` | `<slug>.<base>` (bare slug alias) | requires `stack.service` set |
+| `{url.default}` | `http://<slug>.<base>` | same |
 
-Manifest fields read at startup (currently `project.base_domain`)
-accept `{pier.tld}` only.
+Unknown tokens fail the `pier up` with a clear error — typos surface
+immediately rather than silently producing broken values.
+
+`project.base_domain` is read at startup (before workload context
+exists), so it accepts `{pier.tld}` only.
+
+### Common `[env.<service>]` patterns
+
+Two-tier "front calls the API":
+
+```toml
+[[expose]]
+service = "front"
+port    = 8080
+
+[[expose]]
+service = "api"
+port    = 8000
+
+[env.front]
+API_URL = "{url.api}"               # browser-facing; the front injects it into pages
+```
+
+Backend that announces its public URL (e.g. for OAuth callbacks, share
+links, OpenAPI servers list):
+
+```toml
+[env.api]
+PUBLIC_URL = "{url.default}"        # if stack.service = "api"
+# or
+PUBLIC_URL = "{url.api}"            # explicit per-service host
+```
+
+Worker that needs the API URL (no `[[expose]]` for the worker — pier
+emits the env block even for non-exposed services):
+
+```toml
+[env.worker]
+API_URL = "{url.api}"
+```
+
+### What `pier init` does and doesn't do
+
+- ✅ Asks which detected services to `[[expose]]` and at what port/host.
+- ✅ Picks a default service for the bare-slug alias.
+- ✅ Writes `[stack]`, `[[expose]]`, `[worktree]`, sane `base_domain`.
+- ❌ Does NOT prompt for `[env.<service>]` — too project-specific.
+- ❌ Does NOT add `[materialize]` entries — add them when the app
+  expects `.env`, secrets, or a per-worktree mutable data dir.
+- ❌ Does NOT add `[hooks]`, `[watch]`, or `match_host_uid` — opt-in.
 
 ## Anti-patterns to avoid
 

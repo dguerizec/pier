@@ -199,6 +199,61 @@ emits the env block even for non-exposed services):
 API_URL = "{url.api}"
 ```
 
+### `[materialize]` — symlinks vs snapshots
+
+```toml
+[materialize]
+# Pointers shared with the primary worktree. Changes on either side are
+# visible everywhere. Use for static config and read-only secrets.
+symlinks  = [".env", "secrets/", "config/local.json"]
+
+# Per-worktree copies, taken from the primary at the first `pier up`.
+# Each worktree mutates its own copy in isolation. Use for SQLite files,
+# uploads dirs, build caches — anything the running app writes to.
+snapshots = ["data-dev/", "uploads/", ".cache/"]
+```
+
+Two ways to populate files in a secondary worktree from the primary,
+with opposite semantics:
+
+| | `symlinks` | `snapshots` |
+|---|---|---|
+| Storage | shared with the primary | duplicated per worktree |
+| Edit from secondary | propagates to primary (and every other worktree) | local to that worktree |
+| Edit from primary | visible everywhere | NOT propagated (snapshot is point-in-time) |
+| `pier down --purge` | preserved | removed |
+| Use for | static config, read-only secrets | mutable per-branch data |
+
+**Lifecycle of snapshots:**
+- Primary worktree: snapshots ignored — the primary IS the source of truth.
+- First `pier up` in a secondary: `cp -r primary/<path> → worktree/<path>`.
+  If the path doesn't exist on the primary, pier pre-creates an empty
+  dir as the host user (so docker doesn't bind-mount-create it as root).
+- Later `pier up`: no-op — pier respects local edits.
+- `pier down --purge`: wipes the secondary's snapshots only. Primary
+  untouched.
+
+**Typical entries:**
+- `.env`, `secrets/`, `config/local.json` → `symlinks`. Same value
+  everywhere, edits to the primary should fan out instantly.
+- `data-dev/` (SQLite db file, uploads dir, build cache, mutable
+  fixtures) → `snapshots`. Each branch needs its own copy so it can
+  mutate without trashing other branches' state.
+
+**Pitfalls:**
+- Large directories: snapshots use plain `cp -r`, no COW/reflink. A 5
+  GB snapshot duplicates 5 GB on disk per worktree at the first `pier
+  up`. For heavy datasets, prefer a docker named volume + a small
+  `dump/restore` hook (or just a symlink, accepting the shared-state
+  trade-off).
+- No auto re-sync: a primary update after the snapshot was taken
+  doesn't reach existing worktrees. Re-sync explicitly: `pier down
+  --purge && pier up` recreates the snapshot from the current primary.
+- A `git worktree add` (instead of `pier worktree add`) skips the snapshot
+  pre-create step. The next `pier up` may then have docker bind-mount-
+  create the path as root, locking the host user out. Recovery: `sudo
+  rm -rf <path>` then `pier up`. Avoid by using `pier worktree add`.
+
 ### What `pier init` does and doesn't do
 
 - ✅ Asks which detected services to `[[expose]]` and at what port/host.

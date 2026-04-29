@@ -3,10 +3,12 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/LeoPartt/pier/internal/cli/skill"
 	"github.com/LeoPartt/pier/internal/detect"
 	"github.com/LeoPartt/pier/internal/headscale"
 	"github.com/LeoPartt/pier/internal/infra"
@@ -43,7 +45,7 @@ func newInstallCmd() *cobra.Command {
 			if mode == "" {
 				mode = infra.ModeLocal
 			}
-			return infra.Install(infra.InstallOptions{
+			if err := infra.Install(infra.InstallOptions{
 				Mode:            mode,
 				TLD:             opts.tld,
 				BindIP:          opts.bindIP,
@@ -52,7 +54,11 @@ func newInstallCmd() *cobra.Command {
 				Out:             cmd.OutOrStdout(),
 				ExternalTraefik: opts.externalTraefik,
 				TraefikNetwork:  opts.traefikNetwork,
-			})
+			}); err != nil {
+				return err
+			}
+			installUserSkill(cmd.OutOrStdout())
+			return nil
 		},
 	}
 	f := cmd.Flags()
@@ -116,6 +122,8 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 		return err
 	}
 
+	installUserSkill(out)
+
 	if env.Headscale.Found && env.Tailscale.Active && env.Headscale.ConfigPath != "" {
 		// Records mode is already wired through Config — no headscale
 		// auto-patch needed. The MagicDNS layer resolves slugs as soon as
@@ -155,6 +163,24 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 		}
 	}
 	return nil
+}
+
+// installUserSkill drops the embedded SKILL.md at ~/.claude/skills/pier/.
+// Best-effort: a failure here doesn't block the install — the user may
+// not run Claude Code, or may be on a machine where $HOME isn't writable.
+// pier install is idempotent; we always overwrite to keep the skill in
+// sync with the installed binary version.
+func installUserSkill(out io.Writer) {
+	dst, err := skill.UserPath()
+	if err != nil {
+		fmt.Fprintf(out, "! skill: %v (skipped)\n", err)
+		return
+	}
+	if err := skill.Install(dst); err != nil {
+		fmt.Fprintf(out, "! skill install failed: %v (skipped)\n", err)
+		return
+	}
+	fmt.Fprintf(out, "✓ AI skill installed: %s\n", dst)
 }
 
 // tldIsUnder reports whether tld is the same as base or a sub-domain of it.
@@ -267,7 +293,18 @@ func newUninstallCmd() *cobra.Command {
 		Use:   "uninstall",
 		Short: "Stop infra containers, remove resolver files, clear config dir",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return infra.Uninstall(cmd.OutOrStdout(), manualDNS)
+			out := cmd.OutOrStdout()
+			if err := infra.Uninstall(out, manualDNS); err != nil {
+				return err
+			}
+			if dst, err := skill.UserPath(); err == nil {
+				if removed, err := skill.Uninstall(dst); err != nil {
+					fmt.Fprintf(out, "! skill removal failed: %v\n", err)
+				} else if removed {
+					fmt.Fprintf(out, "✓ AI skill removed: %s\n", dst)
+				}
+			}
+			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&manualDNS, "manual-dns", false, "do not touch host DNS, print revert instructions instead")

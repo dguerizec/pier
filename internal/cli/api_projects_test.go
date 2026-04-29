@@ -161,3 +161,32 @@ func TestAPIListProjectWorktreesNotFound(t *testing.T) {
 		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 }
+
+func TestAPIPostWorktreeUnknownProject(t *testing.T) {
+	// Specifying a project that isn't registered must return 404, not
+	// 500 — sillage / the UI need to distinguish "fix the request" from
+	// "server is broken".
+	_, mux := newTestAPI(t)
+	body := `{"project":"unknown-proj","slug":"feat-x"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/worktrees",
+		strings.NewReader(body))
+	req.ContentLength = int64(len(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d body %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAPIDeleteWorktreeProjectQuery(t *testing.T) {
+	// DELETE accepts ?project=<name> as an alternative to ?repo=<path>.
+	// Unknown project = 404 (same shape as POST).
+	_, mux := newTestAPI(t)
+	req := httptest.NewRequest(http.MethodDelete,
+		"/api/v1/worktrees/feat-x?project=unknown-proj", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}

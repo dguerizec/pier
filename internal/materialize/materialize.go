@@ -146,9 +146,20 @@ func ensureSymlink(target, link string) (result, error) {
 	return result{action: actionCreated}, nil
 }
 
-// ensureSnapshot copies src into dst on first up. Same docker-bind-mount
-// safety net as ensureSymlink: an empty dir is treated as "absent" since
-// the daemon often pre-creates it.
+// ensureSnapshot copies src into dst.
+//
+// For file snapshots the rule is "copy once": an existing dst is left
+// alone so worktree-local edits survive subsequent ups.
+//
+// For directory snapshots we merge instead of skip: every entry from
+// src that isn't already at dst lands there, and pre-existing entries
+// in dst are preserved. This matters because dst can come from
+// different sources — the docker daemon may have auto-created an empty
+// dir on a previous up, the workload may have written its own state,
+// or the user may have seeded a few files manually — and the user
+// expects new snapshot content from primary to land in any of those
+// cases. Skip-on-non-empty was a footgun: a primary that gained a new
+// fixture file never propagated to existing worktrees.
 //
 // We check src BEFORE touching dst — otherwise a primary that's missing
 // the snapshot source would have us remove the worktree's pre-existing
@@ -163,33 +174,66 @@ func ensureSnapshot(src, dst string) (result, error) {
 		return result{}, err
 	}
 
+	if srcInfo.IsDir() {
+		return ensureSnapshotDir(src, dst)
+	}
+	return ensureSnapshotFile(src, dst, srcInfo)
+}
+
+// ensureSnapshotDir merges src into dst at file granularity. Existing
+// entries at dst are preserved (file-level skip), missing entries are
+// copied from src. The empty-dir-rmdir-then-copy fast path is kept so
+// the root-owned bind-mount diagnostic still surfaces.
+func ensureSnapshotDir(src, dst string) (result, error) {
 	info, err := os.Lstat(dst)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		// fall through to copy
+		// fall through to first-time copy
 	case err != nil:
 		return result{}, err
-	case info.IsDir():
+	case !info.IsDir():
+		// dst is a file/symlink; user owns it, leave alone.
+		return result{action: actionNoop}, nil
+	case isEmpty(dst):
 		if rmErr := os.Remove(dst); rmErr != nil {
-			// Empty but unremovable (typically root-owned from an earlier
-			// docker bind mount before user:1000 was set). Tell the user.
-			if isEmpty(dst) {
-				return result{action: actionBlocked, reason: blockReason(dst, rmErr)}, nil
-			}
-			return result{action: actionNoop}, nil
+			// Empty but unremovable — typically root-owned from an
+			// earlier docker bind mount. Surface the diagnostic.
+			return result{action: actionBlocked, reason: blockReason(dst, rmErr)}, nil
 		}
 	default:
-		return result{action: actionNoop}, nil
+		// Non-empty dst dir → merge new entries from src into it.
+		copied, err := mergeTree(src, dst)
+		if err != nil {
+			return result{}, err
+		}
+		if copied == 0 {
+			return result{action: actionNoop}, nil
+		}
+		return result{action: actionCreated}, nil
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return result{}, err
 	}
-	if srcInfo.IsDir() {
-		if err := copyTree(src, dst); err != nil {
-			return result{}, err
-		}
-	} else if err := copyFile(src, dst, srcInfo.Mode()); err != nil {
+	if err := copyTree(src, dst); err != nil {
+		return result{}, err
+	}
+	return result{action: actionCreated}, nil
+}
+
+// ensureSnapshotFile copies a single-file snapshot. Existing dst is
+// always preserved, regardless of whether it's a file or a directory —
+// the user owns whatever's already at the path.
+func ensureSnapshotFile(src, dst string, srcInfo os.FileInfo) (result, error) {
+	if _, err := os.Lstat(dst); err == nil {
+		return result{action: actionNoop}, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return result{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return result{}, err
+	}
+	if err := copyFile(src, dst, srcInfo.Mode()); err != nil {
 		return result{}, err
 	}
 	return result{action: actionCreated}, nil
@@ -238,6 +282,49 @@ func copyTree(src, dst string) error {
 			return copyFile(path, target, info.Mode())
 		}
 	})
+}
+
+// mergeTree walks src and copies entries that don't already exist at
+// the corresponding path inside dst. Existing files/symlinks at dst
+// win over the source — the worktree's mutations are sacred. Returns
+// the number of leaf entries actually copied so callers can tell a
+// no-op from a real merge.
+func mergeTree(src, dst string) (copied int, err error) {
+	err = filepath.Walk(src, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		if _, err := os.Lstat(target); err == nil {
+			return nil // existing entry wins
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			if err := os.Symlink(link, target); err != nil {
+				return err
+			}
+			copied++
+			return nil
+		}
+		if err := copyFile(path, target, info.Mode()); err != nil {
+			return err
+		}
+		copied++
+		return nil
+	})
+	return copied, err
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {

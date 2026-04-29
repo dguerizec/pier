@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pier</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>pier</h1>
+      <span id="conn" class="conn" title="event stream">●</span>
+    </div>
+    <nav>
+      <a href="#/" data-route="workloads">workloads</a>
+      <a href="#/worktrees" data-route="worktrees">worktrees</a>
+      <a href="#/doctor" data-route="doctor">doctor</a>
+      <a href="#/config" data-route="config">config</a>
+      <a href="/api/docs" target="_blank" rel="noopener">api ↗</a>
+    </nav>
+  </header>
+
+  <main id="view"></main>
+
+  <footer>
+    pier <span id="version">…</span> · TLD .<span id="tld">…</span>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

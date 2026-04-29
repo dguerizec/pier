@@ -206,9 +206,35 @@ func statusString(s infra.Status) string {
 	return "unknown"
 }
 
+// workloadURLs returns every public URL derived from a workload's manifest,
+// flagged with `Default` for the alias host.
+func workloadURLs(cfg *infra.Config, w *state.Workload, m *manifest.Manifest) []apiURL {
+	baseDomain := m.Project.BaseDomain
+	if baseDomain == "" {
+		baseDomain = m.Project.Name + "." + cfg.TLD
+	} else if expanded, err := adapter.ExpandPierTokens(baseDomain, cfg.TLD); err == nil {
+		baseDomain = expanded
+	}
+
+	defaultService := ""
+	if d := m.DefaultExpose(); d != nil {
+		defaultService = d.Service
+	}
+
+	var out []apiURL
+	if defaultService != "" {
+		alias := adapter.AliasHost(w.Slug, baseDomain)
+		out = append(out, apiURL{URL: "http://" + alias, Label: alias, Default: true})
+	}
+	for _, e := range m.Expose {
+		host := adapter.HostFor(e, w.Slug, baseDomain)
+		out = append(out, apiURL{URL: "http://" + host, Label: host})
+	}
+	return out
+}
+
 // buildAPIWorkload assembles the JSON view of a workload — manifest URLs
-// + live container info + uptime. Mirrors webHandler.workloadView so the
-// dashboard and the API never disagree.
+// + live container info + uptime.
 func buildAPIWorkload(cfg *infra.Config, wl *state.Workload) apiWorkload {
 	out := apiWorkload{
 		Project:       wl.Project,

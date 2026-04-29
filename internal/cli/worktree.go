@@ -65,15 +65,25 @@ func runWorktreeAdd(cmd *cobra.Command, target string, opts wtAddOpts) error {
 		return err
 	}
 
-	gitArgs := []string{"worktree", "add"}
-	if opts.branch != "" {
-		gitArgs = append(gitArgs, "-b", opts.branch, abs)
-	} else {
-		gitArgs = append(gitArgs, abs)
+	branch := opts.branch
+	if branch == "" {
+		branch = filepath.Base(abs)
 	}
-	if ref := pickBaseRef(opts.from, m.Worktree.BaseRef, primary); ref != "" {
-		gitArgs = append(gitArgs, ref)
-		fmt.Fprintf(cmd.OutOrStdout(), "  forking from %s\n", ref)
+
+	gitArgs := []string{"worktree", "add"}
+	if localBranchExists(primary, branch) {
+		// Branch already exists: check it out at the new path. No -b, no
+		// base ref — git refuses both for an existing branch.
+		gitArgs = append(gitArgs, abs, branch)
+		fmt.Fprintf(cmd.OutOrStdout(), "  checking out existing branch %s\n", branch)
+	} else {
+		gitArgs = append(gitArgs, "-b", branch, abs)
+		if ref := pickBaseRef(opts.from, m.Worktree.BaseRef, primary); ref != "" {
+			gitArgs = append(gitArgs, ref)
+			fmt.Fprintf(cmd.OutOrStdout(), "  creating branch %s from %s\n", branch, ref)
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "  creating branch %s from HEAD\n", branch)
+		}
 	}
 	git := exec.Command("git", gitArgs...)
 	git.Dir = primary
@@ -246,6 +256,14 @@ func runWorktreeClean(cmd *cobra.Command, opts wtRmOpts) error {
 		}
 	}
 	return nil
+}
+
+// localBranchExists reports whether <name> is a local branch in the repo
+// at primary.
+func localBranchExists(primary, name string) bool {
+	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+name)
+	cmd.Dir = primary
+	return cmd.Run() == nil
 }
 
 // pickBaseRef resolves the ref to fork the new worktree's branch from. The

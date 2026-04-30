@@ -61,9 +61,15 @@ type apiScanResponse struct {
 // caller passes the FULL manifest verbatim — typically built by editing
 // the suggested_manifest from a prior /scan. Server writes <repo>/.pier.toml
 // and registers the (name, repo_path) pair in the state DB.
+//
+// `private` mirrors the CLI's --private flag: when true, .pier.toml is
+// added to .gitignore on first init (the manifest stays per-machine).
+// Default false matches the CLI default (manifest is committed so other
+// contributors and secondary worktrees inherit it).
 type apiProjectCreateRequest struct {
 	Repo     string             `json:"repo"`
 	Manifest *manifest.Manifest `json:"manifest"`
+	Private  bool               `json:"private,omitempty"`
 }
 
 type apiProjectCreateResponse struct {
@@ -172,6 +178,33 @@ func (h *apiHandler) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Gitignore parity with the CLI wizard. Only on first init — re-init
+	// must not second-guess the user's prior commit/share decisions.
+	//
+	// Always-private entries (per-machine state, secrets) are added every
+	// time. .pier.toml is conditional on `private`: default share = commit
+	// the manifest so secondary worktrees and other contributors inherit
+	// the project's pier config. Failures are non-fatal — they accumulate
+	// into a warning surfaced on the response.
+	var ignoreWarn string
+	if !merged {
+		entries := []string{manifest.LocalFileName, ".pier/"}
+		if body.Private {
+			entries = append([]string{manifest.FileName}, entries...)
+		}
+		if e := initwizard.WorktreeDirGitignoreEntry(abs, body.Manifest.Worktree.Dir); e != "" {
+			entries = append(entries, e)
+		}
+		for _, entry := range entries {
+			if err := initwizard.EnsureGitignore(abs, entry); err != nil {
+				if ignoreWarn != "" {
+					ignoreWarn += "; "
+				}
+				ignoreWarn += "gitignore " + entry + ": " + err.Error()
+			}
+		}
+	}
+
 	store, err := state.Open(h.paths.StateDB)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, err.Error())
@@ -197,6 +230,12 @@ func (h *apiHandler) createProject(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusInternalServerError, "register: "+err.Error())
 			return
 		}
+	}
+	if ignoreWarn != "" {
+		if resp.Warning != "" {
+			resp.Warning += "; "
+		}
+		resp.Warning += ignoreWarn
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

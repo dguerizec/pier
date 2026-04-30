@@ -432,6 +432,12 @@ function renderManifestForm(scanState, parentFlash) {
     value: "true",
   });
   if (m.stack?.match_host_uid) matchHostUID.checked = true;
+  // Mirror CLI default: share the manifest by default (commit it). Only
+  // shown on first init — the gitignore decision is settled on re-init.
+  const privateManifest = el("input", {
+    type: "checkbox", name: "private",
+    value: "true",
+  });
 
   const exposeRows = el("div", { class: "stack", style: "gap: 0.4rem;" });
   function addExposeRow(rule = { service: "", port: 80, host: "" }) {
@@ -486,7 +492,11 @@ function renderManifestForm(scanState, parentFlash) {
       try {
         const r = await api("/api/v1/projects", {
           method: "POST",
-          body: { repo: scanState.repo, manifest },
+          body: {
+            repo: scanState.repo,
+            manifest,
+            private: privateManifest.checked || undefined,
+          },
         });
         const msg = r.warning
           ? `manifest written (${r.merged ? "merged" : "created"}), but registry: ${r.warning}`
@@ -508,6 +518,10 @@ function renderManifestForm(scanState, parentFlash) {
     el("label", { class: "row" }, [
       matchHostUID,
       el("span", {}, "match host uid (for distroless/nonroot images)"),
+    ]),
+    scanState.isReinit ? null : el("label", { class: "row" }, [
+      privateManifest,
+      el("span", {}, "private (gitignore .pier.toml — keep manifest per-machine)"),
     ]),
     el("div", {}, [
       el("div", { class: "label" }, "expose rules"),

@@ -422,7 +422,8 @@
         "required": ["repo", "manifest"],
         "properties": {
           "repo":     { "type": "string", "description": "Absolute path of the repo to write into" },
-          "manifest": { "$ref": "#/components/schemas/Manifest" }
+          "manifest": { "$ref": "#/components/schemas/Manifest" },
+          "private":  { "type": "boolean", "description": "When true and on first init, gitignore .pier.toml so the manifest stays per-machine. Default false matches the CLI default (the manifest is committed so secondary worktrees and other contributors inherit the project's pier config). On re-init this flag is ignored — gitignore decisions made at first init are not revisited." }
         }
       },
       "ProjectCreateResponse": {

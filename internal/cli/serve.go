@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"os/exec"
 	"os/signal"
 	"slices"
 	"strings"
@@ -52,9 +54,10 @@ func newServeCmd() *cobra.Command {
 				return err
 			}
 
-			effectiveBind := bind
-			if effectiveBind == "" {
-				effectiveBind = autoBind(cfg)
+			out := cmd.OutOrStdout()
+			bindAddrs := resolveBinds(bind, cfg, out)
+			if len(bindAddrs) == 0 {
+				return errors.New("no bind address available; pass --bind explicitly")
 			}
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
@@ -71,15 +74,30 @@ func newServeCmd() *cobra.Command {
 
 			handler := withCORS(mux, corsOrigins)
 
-			out := cmd.OutOrStdout()
-			recordName, recordRegistered := registerDashboardRecord(cfg, effectiveBind, out)
+			recordName, recordRegistered := registerDashboardRecord(cfg, primaryReachableBind(bindAddrs), out)
+			routeName, routeRegistered := registerDashboardRoute(paths, cfg, port, out)
 
-			addr := net.JoinHostPort(effectiveBind, fmt.Sprintf("%d", port))
-			srv := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+			srv := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 
-			fmt.Fprintf(out, "→ http://%s\n", addr)
+			listeners := make([]net.Listener, 0, len(bindAddrs))
+			for _, addr := range bindAddrs {
+				full := net.JoinHostPort(addr, fmt.Sprintf("%d", port))
+				ln, err := net.Listen("tcp", full)
+				if err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "! listen %s: %v (skipped)\n", full, err)
+					continue
+				}
+				listeners = append(listeners, ln)
+				fmt.Fprintf(out, "→ http://%s\n", full)
+			}
+			if len(listeners) == 0 {
+				return errors.New("no listener could be opened")
+			}
 			if recordRegistered {
 				fmt.Fprintf(out, "→ http://%s:%d\n", recordName, port)
+			}
+			if routeRegistered {
+				fmt.Fprintf(out, "→ http://%s (via traefik)\n", routeName)
 			}
 			fmt.Fprintln(out, "  ctrl-c to stop")
 
@@ -92,20 +110,36 @@ func newServeCmd() *cobra.Command {
 						fmt.Fprintf(out, "✓ headscale record removed: %s\n", recordName)
 					}
 				}
+				if routeRegistered {
+					if err := infra.RemoveDashboardRoute(paths); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "! traefik route cleanup: %v\n", err)
+					} else {
+						fmt.Fprintf(out, "✓ traefik route removed: %s\n", routeName)
+					}
+				}
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
 				_ = srv.Shutdown(shutdownCtx)
 			}()
 
-			err = srv.ListenAndServe()
-			if errors.Is(err, http.ErrServerClosed) {
-				return nil
+			errCh := make(chan error, len(listeners))
+			for _, ln := range listeners {
+				go func(l net.Listener) {
+					errCh <- srv.Serve(l)
+				}(ln)
 			}
-			return err
+			// Block until any listener errors out (typically all of them
+			// once Shutdown has fired). ErrServerClosed is the clean exit.
+			for i := 0; i < len(listeners); i++ {
+				if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+					return err
+				}
+			}
+			return nil
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&bind, "bind", "", "interface to bind on (default: tailnet IP in server+records mode, else 127.0.0.1)")
+	f.StringVar(&bind, "bind", "", "interface to bind on (default: 127.0.0.1 + pier network gateway + tailnet IP in server+records mode)")
 	f.IntVar(&port, "port", 60080, "TCP port to listen on")
 	f.StringSliceVar(&corsOrigins, "cors-origin", []string{"*"}, "comma-separated CORS origins for /api/v1/* (default: any)")
 	return cmd
@@ -122,16 +156,80 @@ func serveAsset(contentType string, body []byte) http.HandlerFunc {
 	}
 }
 
-// autoBind picks the right interface when --bind isn't given. In a
-// server+records install pier already knows the tailnet-reachable IP
-// (AnswerIP), so binding on it makes the dashboard + API reachable from
-// peers without extra config. Anything else falls back to localhost so a
-// laptop install doesn't accidentally expose itself.
-func autoBind(cfg *infra.Config) string {
-	if cfg.Mode == infra.ModeServer && cfg.HeadscaleRecordsPath != "" && cfg.EffectiveAnswerIP() != "" {
-		return cfg.EffectiveAnswerIP()
+// resolveBinds builds the list of addresses pier serve listens on. An
+// explicit --bind short-circuits to a single address (advanced users
+// asked for a specific interface). When --bind is empty we layer:
+//
+//   - 127.0.0.1: the human-typed `localhost:60080` always works.
+//   - <pier network gateway>: the docker bridge IP traefik reaches via
+//     `host.docker.internal`. Required for the http://pier.<tld>
+//     traefik route from the host browser. Skipped silently when the
+//     network isn't there (no `pier install` yet, or BYO traefik).
+//   - tailnet IP: in server+records installs the daemon should be
+//     reachable from peers, mirroring the pre-existing autoBind behaviour.
+//
+// Duplicates are dropped so a tailnet-IP install doesn't open the same
+// port twice when the bridge gateway happens to coincide.
+func resolveBinds(explicit string, cfg *infra.Config, out io.Writer) []string {
+	if explicit != "" {
+		return []string{explicit}
 	}
-	return "127.0.0.1"
+	addrs := []string{"127.0.0.1"}
+	if bridge, err := discoverBridgeGatewayIP(infra.NetworkName); err == nil && bridge != "" {
+		addrs = appendUnique(addrs, bridge)
+	} else if err != nil {
+		// Quiet skip: no `pier install` yet, BYO traefik, or daemon
+		// down. The dashboard still works on loopback.
+		_ = err
+	}
+	if cfg.Mode == infra.ModeServer && cfg.HeadscaleRecordsPath != "" {
+		if tn := cfg.EffectiveAnswerIP(); tn != "" {
+			addrs = appendUnique(addrs, tn)
+		}
+	}
+	_ = out // reserved for future verbose logging
+	return addrs
+}
+
+// primaryReachableBind picks the bind address used for the headscale
+// auto-record. We need an address tailnet peers can resolve; loopback
+// and bridge-gateway IPs are local-only. Returns "" when the list has
+// no peer-reachable entry, which keeps registerDashboardRecord a no-op.
+func primaryReachableBind(addrs []string) string {
+	for _, a := range addrs {
+		if a == "127.0.0.1" || a == "0.0.0.0" || strings.HasPrefix(a, "172.") || strings.HasPrefix(a, "10.") || strings.HasPrefix(a, "192.168.") {
+			continue
+		}
+		return a
+	}
+	// Fallback: nothing matched the heuristic, return whatever's last
+	// so an explicit --bind on an "internal" IP still gets surfaced.
+	if len(addrs) == 0 {
+		return ""
+	}
+	return addrs[len(addrs)-1]
+}
+
+func appendUnique(xs []string, x string) []string {
+	for _, e := range xs {
+		if e == x {
+			return xs
+		}
+	}
+	return append(xs, x)
+}
+
+// discoverBridgeGatewayIP shells out to `docker network inspect` and
+// returns the gateway IP of the named user-defined bridge. We don't
+// want a stable docker SDK dependency for one read; the binary is
+// ~always around in pier's runtime.
+func discoverBridgeGatewayIP(network string) (string, error) {
+	cmd := exec.Command("docker", "network", "inspect", network, "--format", "{{(index .IPAM.Config 0).Gateway}}")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // registerDashboardRecord adds a `pier.<tld>` A record so peers can reach
@@ -163,6 +261,48 @@ func registerDashboardRecord(cfg *infra.Config, bind string, out io.Writer) (str
 	// removes it. Rationale: a previous serve run left the record
 	// behind on a crash; the running daemon should still tidy up.
 	return name, true
+}
+
+// registerDashboardRoute writes a traefik file-provider entry so
+// `http://pier.<tld>` lands on the running serve. Upstream is the pier
+// network's bridge gateway IP — pier serve listens on it (see
+// resolveBinds), and that IP is reachable from inside traefik because
+// traefik runs on the same network. We don't use docker's
+// `host.docker.internal:host-gateway` shortcut because the magic
+// resolves to the *default* bridge gateway (docker0), not the
+// user-defined network's gateway, so the alias points at an interface
+// pier serve doesn't listen on.
+//
+// No-op when the install has no TLD, when there is no pier-managed
+// traefik directory to drop the yaml in, or when the bridge gateway
+// can't be discovered (typically: docker daemon down, network not
+// created yet).
+//
+// Returns (fqdn, true) when a file was written so shutdown can remove
+// it; (_, false) when we skipped (nothing to clean up).
+func registerDashboardRoute(paths *infra.Paths, cfg *infra.Config, port int, out io.Writer) (string, bool) {
+	if cfg.TLD == "" {
+		return "", false
+	}
+	if _, err := os.Stat(paths.TraefikDynamic); err != nil {
+		return "", false
+	}
+	gateway, err := discoverBridgeGatewayIP(infra.NetworkName)
+	if err != nil || gateway == "" {
+		fmt.Fprintf(out, "! traefik route skipped: cannot discover %s network gateway (%v)\n", infra.NetworkName, err)
+		return "", false
+	}
+
+	upstream := fmt.Sprintf("http://%s:%d", gateway, port)
+	host := "pier"
+	fqdn := host + "." + cfg.TLD
+
+	if _, err := infra.WriteDashboardRoute(paths, host, cfg.TLD, upstream); err != nil {
+		fmt.Fprintf(out, "! traefik route %s: %v\n", fqdn, err)
+		return "", false
+	}
+	fmt.Fprintf(out, "✓ traefik route: %s → %s\n", fqdn, upstream)
+	return fqdn, true
 }
 
 // withCORS injects Access-Control-* headers on /api/v1/* responses and

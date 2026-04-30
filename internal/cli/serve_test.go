@@ -9,39 +9,73 @@ import (
 	"github.com/LeoPartt/pier/internal/infra"
 )
 
-func TestAutoBindServerRecordsMode(t *testing.T) {
+func TestResolveBindsExplicit(t *testing.T) {
+	cfg := &infra.Config{Mode: infra.ModeLocal}
+	got := resolveBinds("10.0.0.1", cfg, nil)
+	if len(got) != 1 || got[0] != "10.0.0.1" {
+		t.Errorf("explicit --bind should short-circuit, got %+v", got)
+	}
+}
+
+func TestResolveBindsLocalIncludesLoopback(t *testing.T) {
+	// docker may or may not be available in the test env; we only assert
+	// loopback is always present and the result has no duplicates.
+	cfg := &infra.Config{Mode: infra.ModeLocal}
+	got := resolveBinds("", cfg, nil)
+	if len(got) == 0 || got[0] != "127.0.0.1" {
+		t.Errorf("loopback must be first, got %+v", got)
+	}
+	seen := map[string]bool{}
+	for _, a := range got {
+		if seen[a] {
+			t.Errorf("duplicate bind %q in %+v", a, got)
+		}
+		seen[a] = true
+	}
+}
+
+func TestResolveBindsServerRecordsAddsTailnet(t *testing.T) {
 	cfg := &infra.Config{
 		Mode:                 infra.ModeServer,
 		HeadscaleRecordsPath: "/tmp/records.json",
 		AnswerIP:             "100.64.0.10",
-		BindIP:               "0.0.0.0",
 	}
-	if got := autoBind(cfg); got != "100.64.0.10" {
-		t.Errorf("autoBind server+records = %q, want 100.64.0.10", got)
+	got := resolveBinds("", cfg, nil)
+	found := false
+	for _, a := range got {
+		if a == "100.64.0.10" {
+			found = true
+		}
 	}
-}
-
-func TestAutoBindLocalMode(t *testing.T) {
-	cfg := &infra.Config{
-		Mode:     infra.ModeLocal,
-		BindIP:   "127.0.0.1",
-		AnswerIP: "127.0.0.1",
-	}
-	if got := autoBind(cfg); got != "127.0.0.1" {
-		t.Errorf("autoBind local = %q, want 127.0.0.1", got)
+	if !found {
+		t.Errorf("tailnet IP not in binds: %+v", got)
 	}
 }
 
-func TestAutoBindServerWithoutRecords(t *testing.T) {
-	// Server install without records mode (dnsmasq path) — pier doesn't
-	// know a single tailnet-reachable IP, so don't auto-expose. User can
-	// pass --bind explicitly.
-	cfg := &infra.Config{
-		Mode:     infra.ModeServer,
-		AnswerIP: "100.64.0.10",
+func TestResolveBindsServerWithoutRecordsKeepsLoopback(t *testing.T) {
+	cfg := &infra.Config{Mode: infra.ModeServer, AnswerIP: "100.64.0.10"}
+	got := resolveBinds("", cfg, nil)
+	for _, a := range got {
+		if a == "100.64.0.10" {
+			t.Errorf("server-without-records should not advertise tailnet IP, got %+v", got)
+		}
 	}
-	if got := autoBind(cfg); got != "127.0.0.1" {
-		t.Errorf("autoBind server-without-records = %q, want 127.0.0.1", got)
+}
+
+func TestPrimaryReachableBind(t *testing.T) {
+	cases := []struct {
+		in   []string
+		want string
+	}{
+		{[]string{"127.0.0.1"}, "127.0.0.1"},                     // fallback
+		{[]string{"127.0.0.1", "172.17.0.1"}, "172.17.0.1"},      // fallback last
+		{[]string{"127.0.0.1", "172.17.0.1", "100.64.0.10"}, "100.64.0.10"},
+		{[]string{"127.0.0.1", "100.64.0.10"}, "100.64.0.10"},
+	}
+	for _, c := range cases {
+		if got := primaryReachableBind(c.in); got != c.want {
+			t.Errorf("primaryReachableBind(%+v) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 

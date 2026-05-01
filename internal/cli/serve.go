@@ -208,8 +208,15 @@ type webPage struct {
 }
 
 type webProject struct {
-	Name      string
-	Workloads []webWorkload
+	Name       string
+	Path       string
+	BaseDomain string
+	// Registered is true when the project comes from the registry
+	// (state.ListProjects). False for workload-only entries — typically
+	// stale state from before the registry, or a manifest renamed
+	// without re-init.
+	Registered bool
+	Workloads  []webWorkload
 }
 
 type webWorkload struct {
@@ -233,20 +240,47 @@ func (h *webHandler) buildPage() (*webPage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list workloads: %w", err)
 	}
+	registered, err := store.ListProjects()
+	if err != nil {
+		return nil, fmt.Errorf("list projects: %w", err)
+	}
 
 	byProject := map[string][]*state.Workload{}
 	for _, w := range workloads {
 		byProject[w.Project] = append(byProject[w.Project], w)
 	}
 
+	seen := map[string]bool{}
 	var projects []webProject
-	for name, ws := range byProject {
+	for _, p := range registered {
+		seen[p.Name] = true
+		ws := byProject[p.Name]
 		sort.Slice(ws, func(i, j int) bool { return ws[i].Slug < ws[j].Slug })
-		project := webProject{Name: name}
-		for _, w := range ws {
-			project.Workloads = append(project.Workloads, h.workloadView(w))
+		view := webProject{
+			Name:       p.Name,
+			Path:       p.Path,
+			BaseDomain: p.BaseDomain,
+			Registered: true,
 		}
-		projects = append(projects, project)
+		for _, w := range ws {
+			view.Workloads = append(view.Workloads, h.workloadView(w))
+		}
+		projects = append(projects, view)
+	}
+	// Surface workloads whose project row is missing — typically state
+	// rows that predate the registry. They can't be acted on as a
+	// project (no path/domain), but hiding them would silently drop
+	// running containers from the dashboard.
+	for name, ws := range byProject {
+		if seen[name] {
+			continue
+		}
+		sort.Slice(ws, func(i, j int) bool { return ws[i].Slug < ws[j].Slug })
+		view := webProject{Name: name}
+		for _, w := range ws {
+			view.Workloads = append(view.Workloads, h.workloadView(w))
+		}
+		projects = append(projects, view)
 	}
 	sort.Slice(projects, func(i, j int) bool { return projects[i].Name < projects[j].Name })
 

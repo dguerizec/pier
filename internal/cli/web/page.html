@@ -75,6 +75,40 @@
       font-weight: 600;
       border-bottom: 1px solid var(--border);
       background: color-mix(in srgb, var(--card) 92%, var(--accent));
+      display: flex;
+      align-items: baseline;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+    }
+    .project h2 .domain {
+      color: var(--muted);
+      font-weight: 400;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+    }
+    .project h2 .tag {
+      margin-left: auto;
+      color: var(--warn);
+      font-weight: 400;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .project .path {
+      padding: 0.5rem 1rem;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      border-bottom: 1px solid var(--border);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .project .empty-workloads {
+      padding: 1.25rem 1rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+      text-align: center;
     }
     .workload {
       padding: 0.85rem 1rem;
@@ -185,18 +219,26 @@
 </head>
 <body>
   <header>
-    <h1>pier <span class="meta">— running workloads</span></h1>
+    <h1>pier <span class="meta">— projects</span></h1>
     <div class="meta">{{.Now}} · auto-refresh {{.RefreshSeconds}}s</div>
   </header>
 
   <main>
     {{if not .Projects}}
-      <div class="empty">No workloads running. Try <code>pier up</code> in a worktree.</div>
+      <div class="empty">No projects registered. Try <code>pier init</code> in a repo.</div>
     {{end}}
 
     {{range .Projects}}
     <section class="project">
-      <h2>{{.Name}}</h2>
+      <h2>
+        <span>{{.Name}}</span>
+        {{if .BaseDomain}}<span class="domain">{{.BaseDomain}}</span>{{end}}
+        {{if not .Registered}}<span class="tag">unregistered</span>{{end}}
+      </h2>
+      {{if .Path}}<div class="path">{{.Path}}</div>{{end}}
+      {{if not .Workloads}}
+        <div class="empty-workloads">no running workloads — <code>pier up</code> in a worktree</div>
+      {{end}}
       {{range .Workloads}}
       <div class="workload">
         <div class="ident">

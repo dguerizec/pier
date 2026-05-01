@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="refresh" content="{{.RefreshSeconds}}">
+  <meta name="pier-refresh" content="{{.RefreshSeconds}}">
   <title>pier — running workloads</title>
   <style>
     :root {
@@ -290,7 +290,7 @@
   <div class="layout">
   <header>
     <h1>pier <span class="meta">— projects</span></h1>
-    <div class="meta">{{.Now}} · auto-refresh {{.RefreshSeconds}}s</div>
+    <div class="meta"><span data-tick>{{.Now}}</span> · auto-refresh {{.RefreshSeconds}}s</div>
   </header>
 
   <div class="columns">
@@ -413,6 +413,36 @@
       // Restore selection on (re)load.
       const m = location.hash.match(/manifest=([^&]+)/);
       if (m) load(decodeURIComponent(m[1]));
+
+      // Background refresh: re-fetch the dashboard HTML and swap only
+      // the <main> content. The sidebar (and the user's text selection
+      // outside <main>) is preserved. Server stays the source of truth
+      // for status / uptime / URLs — no duplicated rendering logic.
+      const intervalMeta = document.querySelector('meta[name="pier-refresh"]');
+      const interval = Math.max(1, parseInt(intervalMeta?.content ?? '5', 10)) * 1000;
+      const mainEl = document.querySelector('main');
+      const tickEl = document.querySelector('[data-tick]');
+      let inflight = false;
+      async function refresh() {
+        if (inflight || document.hidden) return;
+        inflight = true;
+        try {
+          const res = await fetch('/', { headers: { 'Cache-Control': 'no-cache' } });
+          if (!res.ok) return;
+          const html = await res.text();
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          const next = doc.querySelector('main');
+          if (next) mainEl.replaceWith(next);
+          const nextTick = doc.querySelector('[data-tick]');
+          if (nextTick && tickEl) tickEl.textContent = nextTick.textContent;
+        } catch (_) {
+          // Quiet — next tick will retry. A failing refresh shouldn't
+          // surface red banners over a working sidebar.
+        } finally {
+          inflight = false;
+        }
+      }
+      setInterval(refresh, interval);
     })();
   </script>
 </body>

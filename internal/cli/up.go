@@ -71,6 +71,20 @@ func runUp(d *daily, out, errOut io.Writer) error {
 		return fmt.Errorf("persist workload: %w", err)
 	}
 
+	// Refresh the projects registry so consumers of /api/v1/projects see
+	// projects that predate the registry on first `pier up`. `pier init`
+	// is the canonical insertion point; this keeps the catalog accurate
+	// even when init never ran (e.g. checked-out manifest, manual setup).
+	if err := d.State.UpsertProject(&state.Project{
+		Name:         d.Manifest.Project.Name,
+		Path:         d.Worktree.PrimaryPath,
+		BaseDomain:   d.Manifest.Project.BaseDomain,
+		StackFile:    d.Manifest.Stack.File,
+		StackService: d.Manifest.Stack.Service,
+	}); err != nil {
+		return fmt.Errorf("persist project: %w", err)
+	}
+
 	if d.Config.HeadscaleRecordsPath != "" {
 		ip := d.Config.EffectiveAnswerIP()
 		for _, name := range adapter.RecordNames(d.Ctx) {

@@ -7,7 +7,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/LeoPartt/pier/internal/infra"
 	"github.com/LeoPartt/pier/internal/initwizard"
+	"github.com/LeoPartt/pier/internal/manifest"
+	"github.com/LeoPartt/pier/internal/state"
 	"github.com/LeoPartt/pier/internal/worktree"
 )
 
@@ -80,7 +83,42 @@ func runInit(stdout io.Writer, toplevel string, opts initOpts) error {
 		}
 	}
 
-	return initwizard.Apply(plan, stdout)
+	if err := initwizard.Apply(plan, stdout); err != nil {
+		return err
+	}
+	if err := registerProject(toplevel); err != nil {
+		// Non-fatal: the manifest is written and the workload still
+		// works. The projects registry is a convenience for API
+		// consumers; `pier up` will retry the upsert anyway.
+		fmt.Fprintf(stdout, "warning: could not record project in pier registry: %v\n", err)
+	}
+	return nil
+}
+
+// registerProject inserts the freshly-written manifest into the
+// projects registry. Errors are non-fatal — the file on disk is the
+// source of truth, the DB is just a catalog.
+func registerProject(toplevel string) error {
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		return err
+	}
+	m, err := manifest.Load(toplevel)
+	if err != nil {
+		return err
+	}
+	store, err := state.Open(paths.StateDB)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	return store.UpsertProject(&state.Project{
+		Name:         m.Project.Name,
+		Path:         toplevel,
+		BaseDomain:   m.Project.BaseDomain,
+		StackFile:    m.Stack.File,
+		StackService: m.Stack.Service,
+	})
 }
 
 func printDetection(stdout io.Writer, plan *initwizard.Plan) {

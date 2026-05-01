@@ -25,6 +25,15 @@ CREATE TABLE IF NOT EXISTS workloads (
     started_at    INTEGER NOT NULL,
     PRIMARY KEY (project, slug)
 );
+
+CREATE TABLE IF NOT EXISTS projects (
+    name          TEXT PRIMARY KEY,
+    path          TEXT NOT NULL,
+    base_domain   TEXT NOT NULL,
+    stack_file    TEXT NOT NULL,
+    stack_service TEXT,
+    last_seen     INTEGER NOT NULL
+);
 `
 
 // ErrNotFound is returned when a (project, slug) pair has no row.

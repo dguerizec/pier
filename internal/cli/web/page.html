@@ -36,24 +36,93 @@
       background: var(--bg);
       color: var(--fg);
     }
+    .layout {
+      max-width: 88rem;
+      margin: 0 auto;
+    }
     header {
       display: flex;
       justify-content: space-between;
       align-items: baseline;
       margin-bottom: 2rem;
-      max-width: 64rem;
-      margin-left: auto;
-      margin-right: auto;
     }
     h1 { margin: 0; font-size: 1.5rem; font-weight: 600; }
     .meta { color: var(--muted); font-size: 0.85rem; }
+    .columns {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 24rem);
+      gap: 1.5rem;
+      align-items: start;
+    }
+    @media (max-width: 60rem) {
+      .columns { grid-template-columns: minmax(0, 1fr); }
+      aside { position: static !important; }
+    }
     main {
-      max-width: 64rem;
-      margin: 0 auto;
       display: flex;
       flex-direction: column;
       gap: 1.25rem;
+      min-width: 0;
     }
+    aside {
+      position: sticky;
+      top: 1rem;
+      max-height: calc(100vh - 2rem);
+      display: flex;
+      flex-direction: column;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    aside header.sb {
+      display: flex;
+      align-items: baseline;
+      gap: 0.5rem;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      background: color-mix(in srgb, var(--card) 92%, var(--accent));
+      margin: 0;
+    }
+    aside header.sb h2 { margin: 0; font-size: 0.95rem; font-weight: 600; }
+    aside header.sb .name {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 0.8rem;
+    }
+    aside .placeholder {
+      padding: 2rem 1rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    aside pre.manifest {
+      margin: 0;
+      padding: 1rem;
+      overflow: auto;
+      flex: 1;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      white-space: pre;
+      color: var(--fg);
+    }
+    aside .err {
+      padding: 0.75rem 1rem;
+      color: var(--bad);
+      font-family: var(--mono);
+      font-size: 0.8rem;
+    }
+    .pick {
+      cursor: pointer;
+      background: none;
+      border: none;
+      padding: 0;
+      font: inherit;
+      color: inherit;
+      text-align: left;
+    }
+    .pick:hover { text-decoration: underline; }
+    .pick[aria-pressed="true"] { color: var(--accent); }
     .empty {
       text-align: center;
       color: var(--muted);
@@ -218,20 +287,26 @@
   </style>
 </head>
 <body>
+  <div class="layout">
   <header>
     <h1>pier <span class="meta">— projects</span></h1>
     <div class="meta">{{.Now}} · auto-refresh {{.RefreshSeconds}}s</div>
   </header>
 
+  <div class="columns">
   <main>
     {{if not .Projects}}
       <div class="empty">No projects registered. Try <code>pier init</code> in a repo.</div>
     {{end}}
 
     {{range .Projects}}
-    <section class="project">
+    <section class="project" data-project="{{.Name}}">
       <h2>
-        <span>{{.Name}}</span>
+        {{if .Registered}}
+          <button class="pick" type="button" data-pick="{{.Name}}" aria-pressed="false">{{.Name}}</button>
+        {{else}}
+          <span>{{.Name}}</span>
+        {{end}}
         {{if .BaseDomain}}<span class="domain">{{.BaseDomain}}</span>{{end}}
         {{if not .Registered}}<span class="tag">unregistered</span>{{end}}
       </h2>
@@ -277,6 +352,68 @@
     {{end}}
   </main>
 
+  <aside>
+    <header class="sb">
+      <h2>manifest</h2>
+      <span class="name" id="sb-name"></span>
+    </header>
+    <div id="sb-body" class="placeholder">Pick a project to load its <code>.pier.toml</code>.</div>
+  </aside>
+  </div>
+
   <footer>pier {{.Version}} · TLD .{{.TLD}}</footer>
+  </div>
+
+  <script>
+    (function () {
+      const body = document.getElementById('sb-body');
+      const name = document.getElementById('sb-name');
+      let current = null;
+
+      function setActive(picked) {
+        document.querySelectorAll('.pick').forEach(b => {
+          b.setAttribute('aria-pressed', String(b.dataset.pick === picked));
+        });
+      }
+
+      async function load(project) {
+        current = project;
+        setActive(project);
+        name.textContent = project;
+        body.className = 'placeholder';
+        body.textContent = 'loading…';
+        try {
+          // Same-origin fetch — pier serve mounts the API on this host.
+          const res = await fetch('/api/v1/projects/' + encodeURIComponent(project) + '/manifest');
+          if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
+          const text = await res.text();
+          body.className = '';
+          body.innerHTML = '';
+          const pre = document.createElement('pre');
+          pre.className = 'manifest';
+          pre.textContent = text;
+          body.appendChild(pre);
+        } catch (e) {
+          body.className = 'err';
+          body.textContent = String(e);
+        }
+      }
+
+      document.addEventListener('click', (e) => {
+        const t = e.target.closest('.pick');
+        if (!t) return;
+        e.preventDefault();
+        const p = t.dataset.pick;
+        // Persist the selection in the URL hash so the meta-refresh
+        // restores it instead of clobbering the sidebar.
+        location.hash = 'manifest=' + encodeURIComponent(p);
+        load(p);
+      });
+
+      // Restore selection on (re)load.
+      const m = location.hash.match(/manifest=([^&]+)/);
+      if (m) load(decodeURIComponent(m[1]));
+    })();
+  </script>
 </body>
 </html>

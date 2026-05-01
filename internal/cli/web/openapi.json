@@ -10,6 +10,7 @@
     { "url": "/", "description": "current server" }
   ],
   "tags": [
+    { "name": "projects", "description": "Pier-init'd projects (catalog independent of running state)" },
     { "name": "workloads", "description": "Per-(project, slug) workload lifecycle" },
     { "name": "worktrees", "description": "Git worktree CRUD" },
     { "name": "infra", "description": "Pier install state and health" },
@@ -144,6 +145,106 @@
         "responses": { "200": { "description": "Report", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DoctorReport" } } } } }
       }
     },
+    "/api/v1/projects": {
+      "get": {
+        "tags": ["projects"],
+        "summary": "List pier-init'd projects",
+        "description": "Returns every project that pier knows about (recorded by `pier init` and refreshed on `pier up`). Survives `pier down`, unlike /api/v1/workloads.",
+        "responses": {
+          "200": {
+            "description": "Sorted by name",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Project" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{name}": {
+      "parameters": [
+        { "name": "name", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[a-z0-9-]+$" } }
+      ],
+      "get": {
+        "tags": ["projects"],
+        "summary": "Get one project",
+        "responses": {
+          "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Project" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "delete": {
+        "tags": ["projects"],
+        "summary": "Forget a project",
+        "description": "Removes the registry row only. The manifest, compose file, worktrees and any running workloads are left alone — pier loses sight of the project until the next `pier up`.",
+        "responses": {
+          "204": { "description": "Forgotten" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/v1/projects/{name}/manifest": {
+      "parameters": [
+        { "name": "name", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[a-z0-9-]+$" } }
+      ],
+      "get": {
+        "tags": ["projects"],
+        "summary": "Read raw .pier.toml",
+        "description": "Returns the file bytes verbatim — comments and formatting are preserved.",
+        "responses": {
+          "200": { "description": "OK", "content": { "application/toml": { "schema": { "type": "string" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      },
+      "put": {
+        "tags": ["projects"],
+        "summary": "Replace .pier.toml",
+        "description": "Body is the full TOML to write. Validated by parsing into the manifest schema and running the same checks as `pier init`. Returns 400 on invalid TOML or schema. Refuses to rename `project.name`; do that via `pier init` instead. The file is written verbatim so user comments survive.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/toml": { "schema": { "type": "string" } } }
+        },
+        "responses": {
+          "204": { "description": "Replaced" },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/v1/projects/{name}/compose": {
+      "parameters": [
+        { "name": "name", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[a-z0-9-]+$" } }
+      ],
+      "get": {
+        "tags": ["projects"],
+        "summary": "Read the project's docker-compose file",
+        "description": "Read-only. Pier never writes the user's compose; edits go through the user's editor + git.",
+        "responses": {
+          "200": { "description": "OK", "content": { "application/yaml": { "schema": { "type": "string" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
+    "/api/v1/projects/{name}/overlay": {
+      "parameters": [
+        { "name": "name", "in": "path", "required": true, "schema": { "type": "string", "pattern": "^[a-z0-9-]+$" } }
+      ],
+      "get": {
+        "tags": ["projects"],
+        "summary": "Read pier's compose overlay",
+        "description": "`<project>/.pier/compose.override.yml`, regenerated at every `pier up`. Read-only by design — manual edits are clobbered on the next up. 404 if the project has never been brought up.",
+        "responses": {
+          "200": { "description": "OK", "content": { "application/yaml": { "schema": { "type": "string" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" }
+        }
+      }
+    },
     "/api/v1/events": {
       "get": {
         "tags": ["events"],
@@ -200,6 +301,19 @@
           "name": { "type": "string" },
           "image": { "type": "string" },
           "status": { "type": "string" }
+        }
+      },
+      "Project": {
+        "type": "object",
+        "required": ["name", "path", "base_domain", "stack_file", "last_seen", "workloads"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "path": { "type": "string", "description": "Primary worktree where pier init ran" },
+          "base_domain": { "type": "string" },
+          "stack_file": { "type": "string", "description": "Compose file path, relative to `path`" },
+          "stack_service": { "type": "string", "description": "Service that gets the bare-slug alias" },
+          "last_seen": { "type": "string", "format": "date-time", "description": "Last time pier init or pier up touched this project" },
+          "workloads": { "type": "integer", "description": "Count of running state rows for this project" }
         }
       },
       "Config": {

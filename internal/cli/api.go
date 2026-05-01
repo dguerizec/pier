@@ -90,6 +90,13 @@ func (h *apiHandler) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/workloads/{project}/{slug}/logs", h.streamWorkloadLogs)
 	mux.HandleFunc("POST /api/v1/worktrees", h.postWorktree)
 	mux.HandleFunc("DELETE /api/v1/worktrees/{slug}", h.deleteWorktree)
+	mux.HandleFunc("GET /api/v1/projects", h.listProjects)
+	mux.HandleFunc("GET /api/v1/projects/{name}", h.getProject)
+	mux.HandleFunc("DELETE /api/v1/projects/{name}", h.deleteProject)
+	mux.HandleFunc("GET /api/v1/projects/{name}/manifest", h.getProjectManifest)
+	mux.HandleFunc("PUT /api/v1/projects/{name}/manifest", h.putProjectManifest)
+	mux.HandleFunc("GET /api/v1/projects/{name}/compose", h.getProjectCompose)
+	mux.HandleFunc("GET /api/v1/projects/{name}/overlay", h.getProjectOverlay)
 	mux.HandleFunc("GET /api/v1/openapi.json", h.getOpenAPI)
 	mux.HandleFunc("GET /api/docs", h.getDocs)
 	if h.hub != nil {

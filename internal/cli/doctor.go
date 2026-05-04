@@ -9,6 +9,7 @@ import (
 
 	"github.com/LeoPartt/pier/internal/infra"
 	"github.com/LeoPartt/pier/internal/state"
+	"github.com/LeoPartt/pier/internal/systemd"
 )
 
 func newDoctorCmd() *cobra.Command {
@@ -24,6 +25,7 @@ drop dead workload rows).`,
 
 			report := infra.Diagnose()
 			if !fix {
+				appendServeUnitChecks(&report)
 				appendStateChecks(&report)
 				report.Print(out)
 				if report.HasFailures() {
@@ -37,6 +39,7 @@ drop dead workload rows).`,
 			fixed := infra.Fix()
 			pruned := pruneDeadWorkloads()
 			fixed.Actions = append(fixed.Actions, pruned...)
+			appendServeUnitChecks(&fixed)
 			appendStateChecks(&fixed)
 			fixed.Print(out)
 			if fixed.HasFailures() {
@@ -47,6 +50,43 @@ drop dead workload rows).`,
 	}
 	cmd.Flags().BoolVar(&fix, "fix", false, "attempt to recover from failures (restart containers, reload DNS, drop dead state rows)")
 	return cmd
+}
+
+// appendServeUnitChecks reports the pier.service systemd unit's state
+// when one is installed for either scope. Skipped silently when no
+// unit file exists — `pier serve` runs fine without one.
+func appendServeUnitChecks(r *infra.Report) {
+	for _, scope := range []systemd.Scope{systemd.ScopeUser, systemd.ScopeSystem} {
+		st := systemd.Query(scope)
+		if !st.Loaded {
+			continue
+		}
+		name := fmt.Sprintf("systemd unit pier.service (--%s)", scope)
+		switch {
+		case st.Active && st.Enabled:
+			r.Checks = append(r.Checks, infra.Check{Name: name, Status: infra.StatusPass, Detail: "active, enabled"})
+		case st.Active && !st.Enabled:
+			r.Checks = append(r.Checks, infra.Check{Name: name, Status: infra.StatusWarn, Detail: "active but not enabled — won't restart on boot"})
+		case !st.Active:
+			detail := st.Detail
+			if detail == "" {
+				detail = "inactive"
+			}
+			r.Checks = append(r.Checks, infra.Check{
+				Name:    name,
+				Status:  infra.StatusFail,
+				Detail:  detail,
+				FixHint: fmt.Sprintf("systemctl %s start pier", systemctlScopeFlag(scope)),
+			})
+		}
+	}
+}
+
+func systemctlScopeFlag(s systemd.Scope) string {
+	if s == systemd.ScopeUser {
+		return "--user"
+	}
+	return "--system"
 }
 
 // appendStateChecks adds one check per workload row, marking rows whose

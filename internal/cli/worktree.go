@@ -124,7 +124,7 @@ func createWorktreeAt(primary, target string, opts wtAddOpts, out, errOut io.Wri
 		return abs, branch, err
 	}
 
-	hc := buildHookContext(primary, abs, branch, m)
+	hc := buildHookContext(primary, abs, branch, m, errOut)
 	if err := materialize.RunHooks("post_create", m.Materialize.PostCreate, hc, out, errOut); err != nil {
 		if opts.ignoreHookErrors {
 			fmt.Fprintf(errOut, "! post_create failed (continuing because --ignore-hook-errors): %v\n", err)
@@ -172,8 +172,10 @@ func rollbackWorktreeAdd(primary, abs, branch string, branchCreated bool, errOut
 // The base_domain is best-effort: if infra config can't be loaded
 // (uninstalled pier, fresh checkout), we leave it empty rather than
 // fail — hooks that don't need it shouldn't break, and ones that do
-// can detect the empty value.
-func buildHookContext(primary, current, branch string, m *manifest.Manifest) materialize.HookContext {
+// can detect the empty value. Failures still surface to errOut so a
+// silent empty PIER_BASE_DOMAIN/PIER_SLUG isn't mistaken for a bug
+// in the script.
+func buildHookContext(primary, current, branch string, m *manifest.Manifest, errOut io.Writer) materialize.HookContext {
 	hc := materialize.HookContext{
 		WorktreePath: current,
 		PrimaryPath:  primary,
@@ -182,17 +184,29 @@ func buildHookContext(primary, current, branch string, m *manifest.Manifest) mat
 	}
 	if s, err := sluglib.FromBranch(branch); err == nil {
 		hc.Slug = s
+	} else if errOut != nil {
+		fmt.Fprintf(errOut, "! hook context: slug derivation failed for branch %q: %v (PIER_SLUG empty)\n", branch, err)
 	}
-	if paths, err := infra.DefaultPaths(); err == nil {
-		if cfg, err := infra.LoadConfig(paths); err == nil {
-			base := m.Project.BaseDomain
-			if base == "" {
-				base = m.Project.Name + "." + cfg.TLD
-				hc.BaseDomain = base
-			} else if expanded, err := adapter.ExpandPierTokens(base, cfg.TLD); err == nil {
-				hc.BaseDomain = expanded
-			}
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		if errOut != nil {
+			fmt.Fprintf(errOut, "! hook context: infra paths unavailable: %v (PIER_BASE_DOMAIN empty)\n", err)
 		}
+		return hc
+	}
+	cfg, err := infra.LoadConfig(paths)
+	if err != nil {
+		if errOut != nil {
+			fmt.Fprintf(errOut, "! hook context: infra config unavailable: %v (PIER_BASE_DOMAIN empty)\n", err)
+		}
+		return hc
+	}
+	if m.Project.BaseDomain == "" {
+		hc.BaseDomain = m.Project.Name + "." + cfg.TLD
+	} else if expanded, err := adapter.ExpandPierTokens(m.Project.BaseDomain, cfg.TLD); err == nil {
+		hc.BaseDomain = expanded
+	} else if errOut != nil {
+		fmt.Fprintf(errOut, "! hook context: base_domain expansion failed: %v (PIER_BASE_DOMAIN empty)\n", err)
 	}
 	return hc
 }
@@ -282,16 +296,25 @@ func runWorktreeRm(cmd *cobra.Command, target string, opts wtRmOpts) error {
 // worktree at abs while it is still up. Returns the hook error (so the
 // caller can abort) unless ignore is true, in which case it logs and
 // returns nil.
+//
+// A malformed manifest is fatal here for the same reason it is in
+// createWorktreeAt: silently skipping pre_remove turns "I forgot a
+// comma in .pier.toml" into "my DB backup never ran" with no warning.
 func runPreRemoveHook(primary, abs string, ignore bool, out, errOut io.Writer) error {
 	m, err := manifest.Load(primary)
-	if err != nil || len(m.Materialize.PreRemove) == 0 {
+	if err != nil {
+		return fmt.Errorf("primary manifest: %w", err)
+	}
+	if len(m.Materialize.PreRemove) == 0 {
 		return nil
 	}
 	branch := ""
 	if info, err := worktree.DetectFrom(abs); err == nil {
 		branch = info.Branch
+	} else {
+		fmt.Fprintf(errOut, "! pre_remove: could not detect branch at %s: %v (PIER_BRANCH/PIER_SLUG will be empty)\n", abs, err)
 	}
-	hc := buildHookContext(primary, abs, branch, m)
+	hc := buildHookContext(primary, abs, branch, m, errOut)
 	if err := materialize.RunHooks("pre_remove", m.Materialize.PreRemove, hc, out, errOut); err != nil {
 		if ignore {
 			fmt.Fprintf(errOut, "! pre_remove failed (continuing because --ignore-hook-errors): %v\n", err)

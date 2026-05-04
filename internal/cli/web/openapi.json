@@ -484,8 +484,10 @@
       "ManifestMaterialize": {
         "type": "object",
         "properties": {
-          "symlinks":  { "type": "array", "items": { "type": "string" } },
-          "snapshots": { "type": "array", "items": { "type": "string" } }
+          "symlinks":    { "type": "array", "items": { "type": "string" } },
+          "snapshots":   { "type": "array", "items": { "type": "string" } },
+          "post_create": { "type": "array", "items": { "type": "string" } },
+          "pre_remove":  { "type": "array", "items": { "type": "string" } }
         }
       },
       "ManifestHooks": {

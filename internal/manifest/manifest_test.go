@@ -251,8 +251,10 @@ func TestWriteRoundTrip(t *testing.T) {
 		Stack:   Stack{Kind: KindCompose, File: "docker-compose.yml", Service: "app"},
 		Expose:  []ExposeRule{{Service: "app", Port: 3000}},
 		Materialize: Materialize{
-			Symlinks:  []string{".env"},
-			Snapshots: []string{"data-dev/"},
+			Symlinks:   []string{".env"},
+			Snapshots:  []string{"data-dev/"},
+			PostCreate: []string{"./scripts/seed.sh"},
+			PreRemove:  []string{"./scripts/backup.sh"},
 		},
 	}
 	path := filepath.Join(dir, FileName)
@@ -268,6 +270,12 @@ func TestWriteRoundTrip(t *testing.T) {
 	}
 	if len(loaded.Expose) != 1 || loaded.Expose[0] != original.Expose[0] {
 		t.Errorf("expose round-trip mismatch:\noriginal=%+v\nloaded=  %+v", original.Expose, loaded.Expose)
+	}
+	if len(loaded.Materialize.PostCreate) != 1 || loaded.Materialize.PostCreate[0] != "./scripts/seed.sh" {
+		t.Errorf("post_create round-trip mismatch: %v", loaded.Materialize.PostCreate)
+	}
+	if len(loaded.Materialize.PreRemove) != 1 || loaded.Materialize.PreRemove[0] != "./scripts/backup.sh" {
+		t.Errorf("pre_remove round-trip mismatch: %v", loaded.Materialize.PreRemove)
 	}
 }
 

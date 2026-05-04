@@ -52,41 +52,32 @@ drop dead workload rows).`,
 	return cmd
 }
 
-// appendServeUnitChecks reports the pier.service systemd unit's state
-// when one is installed for either scope. Skipped silently when no
-// unit file exists — `pier serve` runs fine without one.
+// appendServeUnitChecks reports the pier.service --user unit's state
+// when one is installed. Skipped silently otherwise — `pier serve`
+// runs fine without one.
 func appendServeUnitChecks(r *infra.Report) {
-	for _, scope := range []systemd.Scope{systemd.ScopeUser, systemd.ScopeSystem} {
-		st := systemd.Query(scope)
-		if !st.Loaded {
-			continue
-		}
-		name := fmt.Sprintf("systemd unit pier.service (--%s)", scope)
-		switch {
-		case st.Active && st.Enabled:
-			r.Checks = append(r.Checks, infra.Check{Name: name, Status: infra.StatusPass, Detail: "active, enabled"})
-		case st.Active && !st.Enabled:
-			r.Checks = append(r.Checks, infra.Check{Name: name, Status: infra.StatusWarn, Detail: "active but not enabled — won't restart on boot"})
-		case !st.Active:
-			detail := st.Detail
-			if detail == "" {
-				detail = "inactive"
-			}
-			r.Checks = append(r.Checks, infra.Check{
-				Name:    name,
-				Status:  infra.StatusFail,
-				Detail:  detail,
-				FixHint: fmt.Sprintf("systemctl %s start pier", systemctlScopeFlag(scope)),
-			})
-		}
+	st := systemd.Query()
+	if !st.Loaded {
+		return
 	}
-}
-
-func systemctlScopeFlag(s systemd.Scope) string {
-	if s == systemd.ScopeUser {
-		return "--user"
+	name := "systemd unit pier.service (--user)"
+	switch {
+	case st.Active && st.Enabled:
+		r.Checks = append(r.Checks, infra.Check{Name: name, Status: infra.StatusPass, Detail: "active, enabled"})
+	case st.Active && !st.Enabled:
+		r.Checks = append(r.Checks, infra.Check{Name: name, Status: infra.StatusWarn, Detail: "active but not enabled — won't restart on boot"})
+	case !st.Active:
+		detail := st.Detail
+		if detail == "" {
+			detail = "inactive"
+		}
+		r.Checks = append(r.Checks, infra.Check{
+			Name:    name,
+			Status:  infra.StatusFail,
+			Detail:  detail,
+			FixHint: "systemctl --user start pier",
+		})
 	}
-	return "--system"
 }
 
 // appendStateChecks adds one check per workload row, marking rows whose

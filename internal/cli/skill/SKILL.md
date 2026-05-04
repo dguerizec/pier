@@ -318,6 +318,15 @@ pre_remove  = ["./scripts/backup-db.sh"]    # run BEFORE pier down (workload sti
 - `pre_remove` runs **before** `pier down` so the workload is still
   reachable (DB up, services responding). Don't rely on the workload
   being down inside a `pre_remove` script.
+- `pier worktree rm --skip-down` still runs `pre_remove`. The "workload
+  still up" guarantee then depends on whether the user actually left it
+  running. If your `pre_remove` does a `pg_dump`, document that it
+  needs the container alive — don't assume `--skip-down` means the
+  caller already dumped.
+- `pier worktree clean` runs each worktree's `pre_remove` serially. If
+  every script writes to the same path (e.g. `backups/dump.sql`),
+  later worktrees clobber earlier ones. Namespace by `$PIER_SLUG`:
+  `pg_dump > "backups/${PIER_SLUG}.sql"`.
 - `[hooks]` (top-level) is a different, currently-unwired block aimed
   at the `pier up` / `pier down` lifecycle. Don't confuse the two.
 

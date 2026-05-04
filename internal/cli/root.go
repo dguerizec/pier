@@ -7,7 +7,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "dev"
+// Populated at build time via -ldflags by goreleaser. Defaults are used for
+// `go install` / `go build` so a self-built binary still reports something.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
 
 var rootCmd = &cobra.Command{
 	Use:   "pier",
@@ -17,7 +23,7 @@ with zero per-project DNS or proxy plumbing.
 
 Bootstrap the shared infra layer once with 'pier install', then use
 'pier init' per repo and 'pier up' / 'pier down' per worktree.`,
-	Version:       version,
+	Version:       fmt.Sprintf("%s (commit %s, built %s)", version, commit, date),
 	SilenceUsage:  true,
 	SilenceErrors: true,
 }

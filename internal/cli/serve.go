@@ -117,7 +117,7 @@ func newServeCmd() *cobra.Command {
 					}
 				}
 				if routeRegistered {
-					if err := infra.RemoveDashboardRoute(paths.TraefikDynamic); err != nil {
+					if err := infra.RemoveDashboardRoute(dashboardRouteDir(cfg, paths)); err != nil {
 						fmt.Fprintf(cmd.ErrOrStderr(), "! traefik route cleanup: %v\n", err)
 					} else {
 						fmt.Fprintf(out, "✓ traefik route removed: %s\n", routeName)
@@ -261,23 +261,22 @@ func registerDashboardRecord(cfg *infra.Config, bind string, out io.Writer) (str
 }
 
 // registerDashboardRoute writes a traefik file-provider entry so
-// `http://pier.<tld>` lands on the running serve. Upstream is the pier
-// network's bridge gateway IP — pier serve listens on it (see
-// resolveBinds), and that IP is reachable from inside traefik because
-// traefik runs on the same network.
+// `http://pier.<tld>` lands on the running serve.
 //
-// Skips silently when:
-//   - no TLD configured;
-//   - pier is in BYO-traefik mode (cfg.ExternalTraefik set): the
-//     pier-managed dynamic dir isn't read by the user's traefik, so
-//     writing there would be a lie. External-dir support lands in a
-//     follow-up commit;
-//   - the bridge gateway isn't in bindAddrs (e.g. user passed
-//     --bind 127.0.0.1): traefik would 502 because pier serve doesn't
-//     listen on the gateway IP;
-//   - the bridge gateway can't be discovered (docker down, network
-//     not created yet);
-//   - paths.TraefikDynamic does not exist on disk.
+// Two modes, picked by which directory traefik watches:
+//
+//   - pier-managed (cfg.ExternalTraefikDynamicDir == ""): drop the
+//     yaml in paths.TraefikDynamic. Upstream is the pier docker
+//     network's bridge gateway — pier serve listens on it (see
+//     resolveBinds), and traefik reaches it over the same network.
+//   - BYO (cfg.ExternalTraefikDynamicDir != ""): drop the yaml in
+//     the user's traefik dir. Upstream is the first peer-reachable
+//     bind (typically the tailnet/LAN IP), falling back to the bridge
+//     gateway when the external traefik happens to share pier's net.
+//
+// Skips silently and surfaces a warning when no usable upstream IP
+// can be picked (e.g. --bind 127.0.0.1 with no bridge), since writing
+// an unreachable route would just produce 502s at request time.
 //
 // Returns (fqdn, true) when a file was written so shutdown can remove
 // it; (_, false) when we skipped (nothing to clean up).
@@ -285,30 +284,62 @@ func registerDashboardRoute(paths *infra.Paths, cfg *infra.Config, bridgeGateway
 	if cfg.TLD == "" {
 		return "", false
 	}
-	if cfg.ExternalTraefik != "" {
-		return "", false
-	}
-	if bridgeGateway == "" {
-		return "", false
-	}
-	if !slices.Contains(bindAddrs, bridgeGateway) {
-		fmt.Fprintf(out, "! traefik route skipped: pier serve is not bound on %s (would 502)\n", bridgeGateway)
-		return "", false
-	}
-	if _, err := os.Stat(paths.TraefikDynamic); err != nil {
+	dir := dashboardRouteDir(cfg, paths)
+	if _, err := os.Stat(dir); err != nil {
 		return "", false
 	}
 
-	upstream := fmt.Sprintf("http://%s:%d", bridgeGateway, port)
+	upstreamIP := dashboardUpstreamIP(cfg, bridgeGateway, bindAddrs)
+	if upstreamIP == "" {
+		fmt.Fprintln(out, "! traefik route skipped: no externally-reachable upstream IP among binds")
+		return "", false
+	}
+
+	upstream := fmt.Sprintf("http://%s:%d", upstreamIP, port)
 	host := "pier"
 	fqdn := host + "." + cfg.TLD
 
-	if _, err := infra.WriteDashboardRoute(paths.TraefikDynamic, host, cfg.TLD, upstream); err != nil {
+	if _, err := infra.WriteDashboardRoute(dir, host, cfg.TLD, upstream); err != nil {
 		fmt.Fprintf(out, "! traefik route %s: %v\n", fqdn, err)
 		return "", false
 	}
-	fmt.Fprintf(out, "✓ traefik route: %s → %s\n", fqdn, upstream)
+	fmt.Fprintf(out, "✓ traefik route: %s → %s (in %s)\n", fqdn, upstream, dir)
 	return fqdn, true
+}
+
+// dashboardRouteDir returns the file-provider directory pier serve
+// should write pier-dashboard.yml to. BYO override wins when set.
+func dashboardRouteDir(cfg *infra.Config, paths *infra.Paths) string {
+	if cfg.ExternalTraefikDynamicDir != "" {
+		return cfg.ExternalTraefikDynamicDir
+	}
+	return paths.TraefikDynamic
+}
+
+// dashboardUpstreamIP picks the IP advertised in the route file's
+// loadbalancer URL. The pick must be reachable from inside the
+// traefik instance that watches the dir; the heuristic differs
+// between pier-managed and BYO modes.
+func dashboardUpstreamIP(cfg *infra.Config, bridgeGateway string, bindAddrs []string) string {
+	if cfg.ExternalTraefikDynamicDir != "" {
+		// BYO: prefer a peer-reachable IP (tailnet/LAN), since the
+		// external traefik usually isn't on the pier docker network.
+		// Fall back to the bridge gateway only when the user wired
+		// their traefik onto NetworkName too.
+		if ip := primaryReachableBind(bindAddrs); ip != "" {
+			return ip
+		}
+		if bridgeGateway != "" && slices.Contains(bindAddrs, bridgeGateway) {
+			return bridgeGateway
+		}
+		return ""
+	}
+	// pier-managed: must reach pier serve over the pier bridge. Skip
+	// when --bind 127.0.0.1 dropped the gateway from the bind set.
+	if bridgeGateway != "" && slices.Contains(bindAddrs, bridgeGateway) {
+		return bridgeGateway
+	}
+	return ""
 }
 
 // withCORS injects Access-Control-* headers on /api/v1/* responses and

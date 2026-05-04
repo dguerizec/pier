@@ -79,6 +79,54 @@ func TestResolveBindsServerWithoutRecordsKeepsLoopback(t *testing.T) {
 	}
 }
 
+func TestDashboardRouteDir(t *testing.T) {
+	paths := &infra.Paths{TraefikDynamic: "/var/pier/dynamic"}
+
+	if got := dashboardRouteDir(&infra.Config{}, paths); got != "/var/pier/dynamic" {
+		t.Errorf("pier-managed: got %q", got)
+	}
+	cfg := &infra.Config{ExternalTraefikDynamicDir: "/etc/traefik/dynamic"}
+	if got := dashboardRouteDir(cfg, paths); got != "/etc/traefik/dynamic" {
+		t.Errorf("BYO override: got %q", got)
+	}
+}
+
+func TestDashboardUpstreamIP_PierManaged(t *testing.T) {
+	cfg := &infra.Config{}
+
+	// Bridge in binds → use it.
+	if got := dashboardUpstreamIP(cfg, "10.10.6.1", []string{"127.0.0.1", "10.10.6.1"}); got != "10.10.6.1" {
+		t.Errorf("got %q, want bridge", got)
+	}
+	// Bridge not in binds (e.g. --bind 127.0.0.1) → skip.
+	if got := dashboardUpstreamIP(cfg, "10.10.6.1", []string{"127.0.0.1"}); got != "" {
+		t.Errorf("got %q, want empty (bridge unreachable)", got)
+	}
+	// No bridge at all → skip.
+	if got := dashboardUpstreamIP(cfg, "", []string{"127.0.0.1"}); got != "" {
+		t.Errorf("got %q, want empty (no bridge)", got)
+	}
+}
+
+func TestDashboardUpstreamIP_BYO(t *testing.T) {
+	cfg := &infra.Config{ExternalTraefikDynamicDir: "/etc/traefik/dynamic"}
+
+	// Tailnet IP in binds → preferred over bridge.
+	got := dashboardUpstreamIP(cfg, "10.10.6.1", []string{"127.0.0.1", "10.10.6.1", "100.64.0.10"})
+	if got != "100.64.0.10" {
+		t.Errorf("BYO got %q, want tailnet", got)
+	}
+	// No peer-reachable IP but bridge present → fall back to bridge.
+	got = dashboardUpstreamIP(cfg, "10.10.6.1", []string{"127.0.0.1", "10.10.6.1"})
+	if got != "10.10.6.1" {
+		t.Errorf("BYO fallback got %q, want bridge", got)
+	}
+	// Loopback only → nothing reachable.
+	if got := dashboardUpstreamIP(cfg, "", []string{"127.0.0.1"}); got != "" {
+		t.Errorf("BYO loopback-only got %q, want empty", got)
+	}
+}
+
 func TestPrimaryReachableBind(t *testing.T) {
 	cases := []struct {
 		in   []string

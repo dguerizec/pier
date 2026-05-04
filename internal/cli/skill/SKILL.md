@@ -74,11 +74,17 @@ DNS records behind. pier provides commands that do both correctly.
   them as root and locking the user out).
 - Materializes symlinks (`.env`, `secrets/`) and snapshots
   (`data-dev/`) from the primary worktree.
-- `--up` chains `pier up` after materialization.
+- Runs `[materialize].post_create` shell commands (DB seed etc.).
+  Failure rolls back the worktree (and the branch, if pier created it
+  in this call) unless `--ignore-hook-errors` is set.
+- `--up` chains `pier up` after materialization + hooks.
 - `-b <branch>`, `--from <ref>` mirror the `git worktree add` flags.
 
 `pier worktree rm <name>`:
-- Runs `pier down` first (best-effort).
+- Runs `[materialize].pre_remove` first, while the workload is still
+  up (canonical use: `pg_dump` to a backup file). Failure aborts the
+  whole rm path (no down, no git rm) unless `--ignore-hook-errors`.
+- Then `pier down` (best-effort).
 - `--purge` runs `pier down --purge` to wipe per-worktree snapshots.
 - `--force` passes through to `git worktree remove --force`.
 
@@ -134,8 +140,10 @@ API_PUBLIC_URL = "{url.api}"         # → http://api.<slug>.<base> at runtime
 PUBLIC_URL     = "{url.default}"     # → http://<slug>.<base> (requires stack.service)
 
 [materialize]
-symlinks  = [".env", "secrets/"]     # shared with the primary worktree (read-only intent)
-snapshots = ["data-dev/"]            # copied per worktree (mutable, isolated)
+symlinks    = [".env", "secrets/"]   # shared with the primary worktree (read-only intent)
+snapshots   = ["data-dev/"]          # copied per worktree (mutable, isolated)
+post_create = ["./scripts/seed.sh"]  # shell cmds run after `pier worktree add` materializes
+pre_remove  = ["./scripts/dump.sh"]  # shell cmds run before `pier worktree rm` tears down
 
 [worktree]
 dir      = "./worktrees"             # `pier worktree add <name>` creates ./worktrees/<name>
@@ -254,14 +262,75 @@ with opposite semantics:
   create the path as root, locking the host user out. Recovery: `sudo
   rm -rf <path>` then `pier up`. Avoid by using `pier worktree add`.
 
+### `[materialize]` — post_create / pre_remove hooks
+
+Shell commands tied to the **worktree** lifecycle (`pier worktree add` /
+`pier worktree rm`), not to `pier up` / `pier down`. Live under
+`[materialize]` because the canonical use cases are bound to the
+per-worktree filesystem layout: seeding a freshly snapshotted DB, dumping
+it to a backup file before purge.
+
+```toml
+[materialize]
+snapshots   = ["data-dev/"]                 # the per-worktree DB dir
+post_create = ["./scripts/seed-db.sh"]      # run after symlinks/snapshots, before --up
+pre_remove  = ["./scripts/backup-db.sh"]    # run BEFORE pier down (workload still up)
+```
+
+**Execution model:**
+- Each entry is a string passed to `sh -c`. Lists are run in order; the
+  first non-zero exit aborts the sequence.
+- Cwd is the worktree being acted on (the new one for `post_create`,
+  the one being removed for `pre_remove`).
+- Stdout/stderr stream live to the user terminal — no buffering, so
+  multi-second seed/backup operations show progress as they happen.
+
+**Env exposed to scripts** (always set, possibly empty for a missing value):
+
+| Var | Meaning |
+|---|---|
+| `PIER_WORKTREE_PATH` | absolute path of the worktree the hook is acting on |
+| `PIER_PRIMARY_PATH` | absolute path of the primary worktree |
+| `PIER_SLUG` | DNS label derived from the branch |
+| `PIER_BRANCH` | raw branch name |
+| `PIER_BASE_DOMAIN` | post-template base domain (e.g. `myapp.test`); empty if pier infra not loadable |
+| `PIER_PROJECT_NAME` | `[project].name` |
+
+**Failure behaviour:**
+- `post_create` fails → pier force-removes the worktree and (only if it
+  created the branch in this same call) deletes the branch. Net effect:
+  the filesystem and git state look like the `pier worktree add` never
+  ran. Pass `--ignore-hook-errors` to keep the worktree on failure.
+- `pre_remove` fails → pier aborts before `pier down` and `git worktree
+  remove`. The worktree stays usable so you can fix the script and
+  retry. Pass `--ignore-hook-errors` to remove anyway.
+- A script can swallow its own non-fatal errors and `exit 0` to opt out
+  of the rollback for cases pier shouldn't treat as failures.
+
+**Pitfalls:**
+- The hook script must exist in the worktree's checked-out tree at the
+  point it runs. If you put scripts in `scripts/` and check out a
+  branch that pre-dates the script being committed, `post_create` will
+  fail with `not found`. Two fixes: commit the scripts on every branch
+  that uses them, or list `scripts/` in `[materialize].symlinks` so the
+  primary's copy is materialized into the new worktree before the hook
+  runs.
+- `pre_remove` runs **before** `pier down` so the workload is still
+  reachable (DB up, services responding). Don't rely on the workload
+  being down inside a `pre_remove` script.
+- `[hooks]` (top-level) is a different, currently-unwired block aimed
+  at the `pier up` / `pier down` lifecycle. Don't confuse the two.
+
 ### What `pier init` does and doesn't do
 
 - ✅ Asks which detected services to `[[expose]]` and at what port/host.
 - ✅ Picks a default service for the bare-slug alias.
 - ✅ Writes `[stack]`, `[[expose]]`, `[worktree]`, sane `base_domain`.
 - ❌ Does NOT prompt for `[env.<service>]` — too project-specific.
-- ❌ Does NOT add `[materialize]` entries — add them when the app
-  expects `.env`, secrets, or a per-worktree mutable data dir.
+- ❌ Does NOT add `[materialize]` entries (`symlinks`, `snapshots`,
+  `post_create`, `pre_remove`) — add them when the app expects `.env`,
+  secrets, a per-worktree mutable data dir, or per-worktree DB
+  seed/backup hooks.
 - ❌ Does NOT add `[hooks]`, `[watch]`, or `match_host_uid` — opt-in.
 
 ## Anti-patterns to avoid

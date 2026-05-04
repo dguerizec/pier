@@ -310,6 +310,20 @@ func Uninstall(out io.Writer, manualDNS bool) error {
 		}
 	}
 
+	// In BYO mode `pier serve` may have written pier-dashboard.yml into
+	// the user's traefik file-provider dir. The serve shutdown hook
+	// removes it, but a crash (or `pier uninstall` while serve isn't
+	// running) leaves it behind — and that yaml references config we're
+	// about to wipe. Best-effort cleanup; we don't own the dir and the
+	// user may have already deleted things.
+	if cfg != nil && cfg.ExternalTraefikDynamicDir != "" {
+		if err := RemoveDashboardRoute(cfg.ExternalTraefikDynamicDir); err != nil {
+			fmt.Fprintf(out, "! remove dashboard route from %s: %v\n", cfg.ExternalTraefikDynamicDir, err)
+		} else {
+			fmt.Fprintf(out, "✓ removed dashboard route from %s\n", cfg.ExternalTraefikDynamicDir)
+		}
+	}
+
 	if !manualDNS {
 		if err := unconfigureHostDNS(); err != nil {
 			fmt.Fprintf(out, "! unconfigure host DNS: %v\n", err)

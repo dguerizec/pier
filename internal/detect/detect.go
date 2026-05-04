@@ -28,13 +28,19 @@ type TailscaleInfo struct {
 	Tailnet string
 }
 
-// TraefikInfo describes a candidate existing traefik container pier could
+// TraefikInfo describes a candidate existing traefik instance pier could
 // register on. Only populated when exactly one likely candidate is found
 // to avoid making implicit choices on multi-traefik hosts.
 type TraefikInfo struct {
 	Found     bool
-	Container string
-	Network   string
+	Container string // docker container name; empty when detected via host process scan
+	Network   string // docker network the container is on; empty for host-process traefik
+	// DynamicDir is the host-side path of the file-provider directory
+	// the traefik instance watches. Used by `pier serve` to drop
+	// pier-dashboard.yml so http://pier.<tld> resolves through the
+	// existing traefik. Empty when discovery couldn't pin it down — the
+	// install wizard then asks the user.
+	DynamicDir string
 }
 
 // HeadscaleInfo locates a running headscale instance and where its config
@@ -103,13 +109,24 @@ func detectTailscale() TailscaleInfo {
 
 // ----- traefik -----
 
-// detectTraefik finds an existing traefik container, distinct from the one
-// pier may have spun up itself (`pier-traefik`). When more than one
-// candidate exists we return Found=false so the wizard asks the user.
+// detectTraefik finds an existing traefik instance pier could register
+// on. The docker code path is tried first (most common deployment); if
+// nothing is found there we fall back to scanning host processes so
+// systemd / package-manager installs aren't invisible.
+func detectTraefik() TraefikInfo {
+	if info := detectTraefikDocker(); info.Found {
+		return info
+	}
+	return detectTraefikProcess()
+}
+
+// detectTraefikDocker walks `docker ps` for a traefik container that
+// isn't pier's own (`pier-traefik`), excluding Found=true when more
+// than one candidate exists so the wizard asks the user.
 //
 // `docker ps --filter ancestor=traefik` doesn't match versioned tags, so
 // we list all containers and match the image string ourselves.
-func detectTraefik() TraefikInfo {
+func detectTraefikDocker() TraefikInfo {
 	out, err := exec.Command("docker", "ps", "--format", "{{.Names}}\t{{.Image}}").Output()
 	if err != nil {
 		return TraefikInfo{}
@@ -134,24 +151,127 @@ func detectTraefik() TraefikInfo {
 	if len(names) != 1 {
 		return TraefikInfo{}
 	}
+	name := names[0]
 
 	// Resolve the most likely network to register workloads on (skip
 	// docker-default ones).
 	netOut, err := exec.Command("docker", "inspect", "--format",
-		"{{range $k, $_ := .NetworkSettings.Networks}}{{$k}} {{end}}", names[0]).Output()
-	if err != nil {
-		return TraefikInfo{Found: true, Container: names[0]}
+		"{{range $k, $_ := .NetworkSettings.Networks}}{{$k}} {{end}}", name).Output()
+	info := TraefikInfo{Found: true, Container: name}
+	if err == nil {
+		for _, n := range strings.Fields(string(netOut)) {
+			switch n {
+			case "bridge", "host", "none":
+				continue
+			}
+			info.Network = n
+			break
+		}
 	}
-	var network string
-	for _, n := range strings.Fields(string(netOut)) {
-		switch n {
-		case "bridge", "host", "none":
+
+	args := containerArgs(name)
+	info.DynamicDir = extractTraefikDynamicDir(args, func(p string) string {
+		return resolveContainerPath(name, p)
+	})
+	return info
+}
+
+// detectTraefikProcess scans host processes for a traefik binary.
+// Useful for systemd / package-manager installs where there is no
+// docker container to inspect. Skipped on platforms without a
+// `ps -eo args` equivalent (silently returns Found=false).
+func detectTraefikProcess() TraefikInfo {
+	out, err := exec.Command("ps", "-eo", "args=").Output()
+	if err != nil {
+		return TraefikInfo{}
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
 			continue
 		}
-		network = n
-		break
+		// Match `traefik`, `/usr/local/bin/traefik`, etc. — but not
+		// `traefik-foo` or other tools that happen to contain the
+		// substring.
+		base := fields[0]
+		if i := strings.LastIndex(base, "/"); i >= 0 {
+			base = base[i+1:]
+		}
+		if base != "traefik" {
+			continue
+		}
+		info := TraefikInfo{Found: true}
+		info.DynamicDir = extractTraefikDynamicDir(fields[1:], func(p string) string { return p })
+		return info
 	}
-	return TraefikInfo{Found: true, Container: names[0], Network: network}
+	return TraefikInfo{}
+}
+
+// containerArgs returns the command line of a docker container as a
+// slice of strings (entrypoint + args, in argv order). Empty on any
+// error so callers can keep going with whatever they already have.
+func containerArgs(name string) []string {
+	out, err := exec.Command("docker", "inspect", "--format",
+		`{{range .Config.Entrypoint}}{{.}}{{"\n"}}{{end}}{{range .Config.Cmd}}{{.}}{{"\n"}}{{end}}{{range .Args}}{{.}}{{"\n"}}{{end}}`,
+		name).Output()
+	if err != nil {
+		return nil
+	}
+	var argv []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if line == "" {
+			continue
+		}
+		argv = append(argv, line)
+	}
+	return argv
+}
+
+// extractTraefikDynamicDir scans traefik's argv (and its static
+// configFile when referenced) for providers.file.directory, returning
+// the host-side absolute path. resolvePath maps a path as seen by the
+// traefik instance to its host-side equivalent — identity for a host
+// process, bind-mount lookup for a docker container.
+//
+// We deliberately ignore providers.file.filename: pier needs to drop
+// its own yaml as a sibling file, which is not how filename mode
+// works (single static file). Wizard prompts the user in that case.
+func extractTraefikDynamicDir(argv []string, resolvePath func(string) string) string {
+	configFile := ""
+	for i, a := range argv {
+		switch {
+		case strings.HasPrefix(a, "--providers.file.directory="):
+			return resolvePath(strings.TrimPrefix(a, "--providers.file.directory="))
+		case a == "--providers.file.directory" && i+1 < len(argv):
+			return resolvePath(argv[i+1])
+		case strings.HasPrefix(strings.ToLower(a), "--configfile="):
+			configFile = a[len("--configFile="):]
+		case strings.EqualFold(a, "--configFile") && i+1 < len(argv):
+			configFile = argv[i+1]
+		}
+	}
+	if configFile == "" {
+		return ""
+	}
+	hostCfg := resolvePath(configFile)
+	body, err := os.ReadFile(hostCfg)
+	if err != nil {
+		return ""
+	}
+	var stub struct {
+		Providers struct {
+			File struct {
+				Directory string `yaml:"directory"`
+			} `yaml:"file"`
+		} `yaml:"providers"`
+	}
+	if err := yaml.Unmarshal(body, &stub); err != nil {
+		return ""
+	}
+	if stub.Providers.File.Directory == "" {
+		return ""
+	}
+	return resolvePath(stub.Providers.File.Directory)
 }
 
 // ----- headscale -----
@@ -294,7 +414,15 @@ func (e Environment) Summary() []string {
 		lines = append(lines, fmt.Sprintf("✓ tailscale: %s on %s", e.Tailscale.IPv4, emptyAs(e.Tailscale.Tailnet, "?")))
 	}
 	if e.Traefik.Found {
-		lines = append(lines, fmt.Sprintf("✓ existing traefik: container=%s network=%s", e.Traefik.Container, emptyAs(e.Traefik.Network, "?")))
+		who := "container=" + emptyAs(e.Traefik.Container, "<host process>")
+		extra := ""
+		if e.Traefik.Network != "" {
+			extra = " network=" + e.Traefik.Network
+		}
+		if e.Traefik.DynamicDir != "" {
+			extra += " dynamic_dir=" + e.Traefik.DynamicDir
+		}
+		lines = append(lines, fmt.Sprintf("✓ existing traefik: %s%s", who, extra))
 	}
 	if e.Headscale.Found {
 		extra := ""

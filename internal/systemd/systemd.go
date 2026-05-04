@@ -52,6 +52,26 @@ func ParseScope(s string) (Scope, error) {
 	return 0, fmt.Errorf("systemd: unknown scope %q (want user|system)", s)
 }
 
+// DetectInstalledScope inspects both scopes and returns the one with a
+// unit file present. Used by `pier serve uninstall` (and similar) so
+// that running the command without --user/--system removes whatever is
+// actually installed rather than the euid-default scope. Returns
+// (_, false) when no unit is installed in either scope, and an error
+// when both have one (the user must disambiguate).
+func DetectInstalledScope() (Scope, bool, error) {
+	user := Query(ScopeUser).Loaded
+	system := Query(ScopeSystem).Loaded
+	switch {
+	case user && system:
+		return 0, false, fmt.Errorf("pier.service is installed in both --user and --system scopes; pass one explicitly")
+	case user:
+		return ScopeUser, true, nil
+	case system:
+		return ScopeSystem, true, nil
+	}
+	return 0, false, nil
+}
+
 // UnitName is the systemd unit name without extension. Kept stable so
 // install/uninstall/status all agree.
 const UnitName = "pier"
@@ -239,6 +259,10 @@ func Uninstall(scope Scope, printOnly bool, out io.Writer) error {
 		return nil
 	}
 
+	if _, statErr := os.Stat(path); statErr != nil && errors.Is(statErr, os.ErrNotExist) {
+		fmt.Fprintf(out, "✓ no user unit at %s — nothing to do\n", path)
+		return nil
+	}
 	if printOnly {
 		fmt.Fprintf(out, "  --print-only: run yourself to remove:\n")
 		fmt.Fprintf(out, "    systemctl --user disable --now %s\n", UnitName)
@@ -246,7 +270,7 @@ func Uninstall(scope Scope, printOnly bool, out io.Writer) error {
 		fmt.Fprintf(out, "    systemctl --user daemon-reload\n")
 		return nil
 	}
-	// User scope: do the work directly; ignore "no such unit" errors.
+	// disable --now exits non-zero when the unit is already stopped; not fatal.
 	_ = run(out, "systemctl", "--user", "disable", "--now", UnitName)
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err

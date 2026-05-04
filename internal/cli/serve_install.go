@@ -59,8 +59,12 @@ func newServeUninstallCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Remove the pier serve systemd unit",
+		Long: `Reverses 'pier serve install'. Without --user/--system, looks at
+which scope actually has a unit installed and picks that one — the
+euid-based default of ParseScope would otherwise miss a system unit
+when the user runs uninstall as a regular user.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			scope, err := systemd.ParseScope(scopeFlag)
+			scope, err := resolveUninstallScope(scopeFlag)
 			if err != nil {
 				return err
 			}
@@ -75,6 +79,28 @@ func newServeUninstallCmd() *cobra.Command {
 		return resolveScopeShorthand(c, &scopeFlag)
 	}
 	return cmd
+}
+
+// resolveUninstallScope picks the scope to uninstall from. When the
+// user passed --user/--system explicitly we honour it. Otherwise we
+// look at what's actually installed: this avoids the bug where a
+// --system install can't be removed without an explicit flag (since
+// the euid-default of ParseScope picks --user for non-root callers).
+func resolveUninstallScope(flag string) (systemd.Scope, error) {
+	if flag != "" {
+		return systemd.ParseScope(flag)
+	}
+	scope, found, err := systemd.DetectInstalledScope()
+	if err != nil {
+		return 0, err
+	}
+	if found {
+		return scope, nil
+	}
+	// Nothing installed in either scope: fall back to the euid default
+	// so Uninstall prints the friendly "nothing to do" message for the
+	// most likely path instead of asking the user to disambiguate.
+	return systemd.ParseScope("")
 }
 
 // resolveScopeShorthand maps the convenience --user/--system bool flags

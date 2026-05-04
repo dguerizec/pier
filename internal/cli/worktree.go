@@ -11,8 +11,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/LeoPartt/pier/internal/adapter"
+	"github.com/LeoPartt/pier/internal/infra"
 	"github.com/LeoPartt/pier/internal/manifest"
 	"github.com/LeoPartt/pier/internal/materialize"
+	sluglib "github.com/LeoPartt/pier/internal/slug"
 	"github.com/LeoPartt/pier/internal/worktree"
 )
 
@@ -26,9 +29,10 @@ func newWorktreeCmd() *cobra.Command {
 }
 
 type wtAddOpts struct {
-	branch string
-	from   string
-	up     bool
+	branch           string
+	from             string
+	up               bool
+	ignoreHookErrors bool
 }
 
 func newWorktreeAddCmd() *cobra.Command {
@@ -45,6 +49,7 @@ func newWorktreeAddCmd() *cobra.Command {
 	f.StringVarP(&opts.branch, "branch", "b", "", "create a new branch with this name (mirrors `git worktree add -b`)")
 	f.StringVar(&opts.from, "from", "", "fork the new branch from this ref (default: manifest [worktree].base_ref, then main/master)")
 	f.BoolVar(&opts.up, "up", false, "run `pier up` in the new worktree after materialization")
+	f.BoolVar(&opts.ignoreHookErrors, "ignore-hook-errors", false, "do not roll back the worktree when a [materialize].post_create command fails")
 	return cmd
 }
 
@@ -88,12 +93,14 @@ func createWorktreeAt(primary, target string, opts wtAddOpts, out, errOut io.Wri
 	}
 
 	gitArgs := []string{"worktree", "add"}
+	branchCreated := false
 	if localBranchExists(primary, branch) {
 		// Branch already exists: check it out at the new path. No -b, no
 		// base ref — git refuses both for an existing branch.
 		gitArgs = append(gitArgs, abs, branch)
 		fmt.Fprintf(out, "  checking out existing branch %s\n", branch)
 	} else {
+		branchCreated = true
 		gitArgs = append(gitArgs, "-b", branch, abs)
 		if ref := pickBaseRef(opts.from, m.Worktree.BaseRef, primary); ref != "" {
 			gitArgs = append(gitArgs, ref)
@@ -116,8 +123,78 @@ func createWorktreeAt(primary, target string, opts wtAddOpts, out, errOut io.Wri
 	if err := materialize.Apply(primary, abs, m.Materialize, out); err != nil {
 		return abs, branch, err
 	}
+
+	hc := buildHookContext(primary, abs, branch, m)
+	if err := materialize.RunHooks("post_create", m.Materialize.PostCreate, hc, out, errOut); err != nil {
+		if opts.ignoreHookErrors {
+			fmt.Fprintf(errOut, "! post_create failed (continuing because --ignore-hook-errors): %v\n", err)
+		} else {
+			fmt.Fprintf(errOut, "! post_create failed, rolling back: %v\n", err)
+			rollbackWorktreeAdd(primary, abs, branch, branchCreated, errOut)
+			return abs, branch, fmt.Errorf("post_create hook: %w", err)
+		}
+	}
+
 	fmt.Fprintf(out, "✓ worktree ready: %s\n", abs)
 	return abs, branch, nil
+}
+
+// rollbackWorktreeAdd undoes a partially completed `pier worktree add`
+// after a post_create failure: force-remove the worktree, then delete
+// the branch only when WE created it in this same call. An existing
+// branch (checked out into a fresh worktree) is left alone — the user
+// had it before us, so we don't get to delete it.
+func rollbackWorktreeAdd(primary, abs, branch string, branchCreated bool, errOut io.Writer) {
+	rm := exec.Command("git", "worktree", "remove", "--force", abs)
+	rm.Dir = primary
+	rm.Stdout = errOut
+	rm.Stderr = errOut
+	if err := rm.Run(); err != nil {
+		// Prune so git's worktree list stays consistent even if rm
+		// failed mid-way (typical: root-owned files in a snapshot dir).
+		prune := exec.Command("git", "worktree", "prune")
+		prune.Dir = primary
+		_ = prune.Run()
+		fmt.Fprintf(errOut, "  ! rollback: git worktree remove failed: %v (dir may need `sudo rm -rf %s`)\n", err, abs)
+	}
+	if branchCreated {
+		del := exec.Command("git", "branch", "-D", branch)
+		del.Dir = primary
+		del.Stdout = errOut
+		del.Stderr = errOut
+		if err := del.Run(); err != nil {
+			fmt.Fprintf(errOut, "  ! rollback: git branch -D %s failed: %v\n", branch, err)
+		}
+	}
+}
+
+// buildHookContext assembles the PIER_* env exposed to materialize hooks.
+// The base_domain is best-effort: if infra config can't be loaded
+// (uninstalled pier, fresh checkout), we leave it empty rather than
+// fail — hooks that don't need it shouldn't break, and ones that do
+// can detect the empty value.
+func buildHookContext(primary, current, branch string, m *manifest.Manifest) materialize.HookContext {
+	hc := materialize.HookContext{
+		WorktreePath: current,
+		PrimaryPath:  primary,
+		Branch:       branch,
+		ProjectName:  m.Project.Name,
+	}
+	if s, err := sluglib.FromBranch(branch); err == nil {
+		hc.Slug = s
+	}
+	if paths, err := infra.DefaultPaths(); err == nil {
+		if cfg, err := infra.LoadConfig(paths); err == nil {
+			base := m.Project.BaseDomain
+			if base == "" {
+				base = m.Project.Name + "." + cfg.TLD
+				hc.BaseDomain = base
+			} else if expanded, err := adapter.ExpandPierTokens(base, cfg.TLD); err == nil {
+				hc.BaseDomain = expanded
+			}
+		}
+	}
+	return hc
 }
 
 // preCreateSnapshotDirs makes sure every snapshot path exists in the new
@@ -145,9 +222,10 @@ func preCreateSnapshotDirs(primary, current string, snapshots []string, out io.W
 }
 
 type wtRmOpts struct {
-	skipDown bool
-	force    bool
-	purge    bool
+	skipDown         bool
+	force            bool
+	purge            bool
+	ignoreHookErrors bool
 }
 
 func newWorktreeRmCmd() *cobra.Command {
@@ -164,6 +242,7 @@ func newWorktreeRmCmd() *cobra.Command {
 	f.BoolVar(&opts.skipDown, "skip-down", false, "do not run pier down (use when the workload is already stopped)")
 	f.BoolVar(&opts.force, "force", false, "pass --force to git worktree remove")
 	f.BoolVar(&opts.purge, "purge", false, "run pier down --purge to wipe snapshot copies before removal")
+	f.BoolVar(&opts.ignoreHookErrors, "ignore-hook-errors", false, "continue removal when a [materialize].pre_remove command fails")
 	return cmd
 }
 
@@ -179,6 +258,14 @@ func runWorktreeRm(cmd *cobra.Command, target string, opts wtRmOpts) error {
 		return err
 	}
 
+	// pre_remove runs while the workload is still up: the canonical use
+	// case is dumping a DB into a backup file before pier down stops the
+	// container. Failure aborts the whole rm path (no down, no git rm)
+	// unless --ignore-hook-errors is set.
+	if err := runPreRemoveHook(primary, abs, opts.ignoreHookErrors, cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+		return err
+	}
+
 	if !opts.skipDown {
 		args := []string{"down"}
 		if opts.purge {
@@ -189,6 +276,30 @@ func runWorktreeRm(cmd *cobra.Command, target string, opts wtRmOpts) error {
 	}
 
 	return removeWorktreeAt(primary, abs, opts.force, cmd.OutOrStdout(), cmd.ErrOrStderr())
+}
+
+// runPreRemoveHook executes [materialize].pre_remove against the
+// worktree at abs while it is still up. Returns the hook error (so the
+// caller can abort) unless ignore is true, in which case it logs and
+// returns nil.
+func runPreRemoveHook(primary, abs string, ignore bool, out, errOut io.Writer) error {
+	m, err := manifest.Load(primary)
+	if err != nil || len(m.Materialize.PreRemove) == 0 {
+		return nil
+	}
+	branch := ""
+	if info, err := worktree.DetectFrom(abs); err == nil {
+		branch = info.Branch
+	}
+	hc := buildHookContext(primary, abs, branch, m)
+	if err := materialize.RunHooks("pre_remove", m.Materialize.PreRemove, hc, out, errOut); err != nil {
+		if ignore {
+			fmt.Fprintf(errOut, "! pre_remove failed (continuing because --ignore-hook-errors): %v\n", err)
+			return nil
+		}
+		return fmt.Errorf("pre_remove hook: %w (use --ignore-hook-errors to remove anyway)", err)
+	}
+	return nil
 }
 
 // resolveExistingWorktreePath resolves <target> the same way

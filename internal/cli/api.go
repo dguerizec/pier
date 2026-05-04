@@ -685,6 +685,15 @@ func (h *apiHandler) deleteWorktree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// pre_remove runs while the workload is still up (DB dump, etc.).
+	// API DELETE is non-interactive: hook failure surfaces as a 500, no
+	// auto-ignore. Callers can re-issue with the worktree already torn
+	// down by hand if they need to bypass.
+	if err := runPreRemoveHook(repo, abs, false, io.Discard, io.Discard); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
 	// Best-effort down. A `pier down` failure shouldn't block removal —
 	// the worktree might be wedged in a state where compose can't bring
 	// it down cleanly, and the user wants the dir gone anyway.

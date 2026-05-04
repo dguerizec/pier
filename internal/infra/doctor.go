@@ -185,7 +185,7 @@ func Fix() Report {
 	// content-stale. configureHostDNS is interactive (sudo); we only call
 	// it when the drop-in is actually wrong.
 	if needsResolvedRewrite(cfg.TLD, cfg.BindIP) {
-		if err := configureHostDNS(cfg.TLD, cfg.BindIP); err == nil {
+		if changed, err := configureHostDNS(cfg.TLD, cfg.BindIP); err == nil && changed {
 			report.Actions = append(report.Actions, "rewrote systemd-resolved drop-in")
 		}
 	}

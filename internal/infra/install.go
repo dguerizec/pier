@@ -1,6 +1,7 @@
 package infra
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -110,6 +111,9 @@ func Install(opts InstallOptions) error {
 	// wildcard resolver or host-side DNS routing.
 	recordsMode := opts.HeadscaleRecordsPath != ""
 
+	traefikConfChanged := false
+	dnsmasqConfChanged := false
+
 	if byo {
 		net, err := resolveBYOTraefikNetwork(d, opts.ExternalTraefik, opts.TraefikNetwork)
 		if err != nil {
@@ -122,7 +126,8 @@ func Install(opts InstallOptions) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(paths.TraefikStatic, traefikYAML, 0o644); err != nil {
+		traefikConfChanged, err = writeFileIfChanged(paths.TraefikStatic, traefikYAML, 0o644)
+		if err != nil {
 			return fmt.Errorf("write traefik.yml: %w", err)
 		}
 	}
@@ -132,7 +137,8 @@ func Install(opts InstallOptions) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(paths.DnsmasqConf, dnsmasqYAML, 0o644); err != nil {
+		dnsmasqConfChanged, err = writeFileIfChanged(paths.DnsmasqConf, dnsmasqYAML, 0o644)
+		if err != nil {
 			return fmt.Errorf("write dnsmasq.conf: %w", err)
 		}
 	}
@@ -143,56 +149,59 @@ func Install(opts InstallOptions) error {
 		}
 		fmt.Fprintf(out, "✓ docker network: %s\n", NetworkName)
 
-		fmt.Fprintf(out, "  pulling %s...\n", TraefikImage)
-		if err := d.pull(TraefikImage); err != nil {
-			return err
+		if d.imagePresent(TraefikImage) {
+			fmt.Fprintf(out, "✓ image cached: %s\n", TraefikImage)
+		} else {
+			fmt.Fprintf(out, "  pulling %s...\n", TraefikImage)
+			if err := d.pull(TraefikImage); err != nil {
+				return err
+			}
 		}
 	}
 	if !recordsMode {
-		fmt.Fprintf(out, "  pulling %s...\n", DnsmasqImage)
-		if err := d.pull(DnsmasqImage); err != nil {
-			return err
+		if d.imagePresent(DnsmasqImage) {
+			fmt.Fprintf(out, "✓ image cached: %s\n", DnsmasqImage)
+		} else {
+			fmt.Fprintf(out, "  pulling %s...\n", DnsmasqImage)
+			if err := d.pull(DnsmasqImage); err != nil {
+				return err
+			}
 		}
 	}
 
-	if !byo {
-		if err := d.removeContainer(TraefikContainer); err != nil {
-			return fmt.Errorf("clean previous traefik: %w", err)
-		}
-	} else {
+	if byo {
 		// Switching from pier-managed to BYO: stop the old pier-traefik so
 		// it doesn't shadow the user's. Same for the pier network if
 		// nothing else is using it.
 		_ = d.removeContainer(TraefikContainer)
 		_ = d.removeNetwork(NetworkName)
 	}
-	if err := d.removeContainer(DnsmasqContainer); err != nil {
-		return fmt.Errorf("clean previous dnsmasq: %w", err)
-	}
-	// In records mode the previous step removed any leftover pier-dnsmasq
-	// from a non-records install; we don't restart it.
 
 	if !byo {
-		if _, err := d.run(traefikRunArgs(paths, opts.BindIP)...); err != nil {
-			return fmt.Errorf("start traefik: %w", err)
+		if err := ensureTraefikContainer(d, paths, opts.BindIP, traefikConfChanged, out); err != nil {
+			return err
 		}
-		fmt.Fprintf(out, "✓ traefik up on %s:80\n", opts.BindIP)
 	}
 
 	if !recordsMode {
-		if _, err := d.run(dnsmasqRunArgs(paths, opts.BindIP)...); err != nil {
-			return fmt.Errorf("start dnsmasq: %w", err)
+		if err := ensureDnsmasqContainer(d, paths, opts.BindIP, dnsmasqConfChanged, out); err != nil {
+			return err
 		}
-		fmt.Fprintf(out, "✓ dnsmasq up on %s:53\n", opts.BindIP)
 	} else {
+		// Leftover dnsmasq from a previous non-records install would
+		// shadow MagicDNS — clear it.
+		_ = d.removeContainer(DnsmasqContainer)
 		fmt.Fprintf(out, "✓ records mode: per-slug A records will be written to %s\n", opts.HeadscaleRecordsPath)
 	}
 
 	if !recordsMode {
 		if !opts.ManualDNS {
-			switch err := configureHostDNS(opts.TLD, opts.BindIP); {
-			case err == nil:
+			changed, err := configureHostDNS(opts.TLD, opts.BindIP)
+			switch {
+			case err == nil && changed:
 				fmt.Fprintf(out, "✓ system DNS configured (.%s → %s)\n", opts.TLD, opts.BindIP)
+			case err == nil:
+				fmt.Fprintf(out, "✓ system DNS already configured (.%s → %s)\n", opts.TLD, opts.BindIP)
 			case errors.Is(err, ErrManualDNSNeeded):
 				fmt.Fprintf(out, "! system DNS not auto-configurable, falling back to manual:\n\n%s\n", manualDNSInstructions(opts.TLD, opts.BindIP))
 			default:
@@ -234,6 +243,20 @@ func Install(opts InstallOptions) error {
 		}
 	}
 	return nil
+}
+
+// writeFileIfChanged writes body to path with the given mode only when
+// the existing content differs (or the file is missing). The bool
+// return reports whether a write actually happened — callers use it to
+// decide whether dependent containers must be recreated.
+func writeFileIfChanged(path string, body []byte, mode os.FileMode) (bool, error) {
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, body) {
+		return false, nil
+	}
+	if err := os.WriteFile(path, body, mode); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // autoDetectTailnetIP returns the host's tailscale IPv4. Used as a default
@@ -354,6 +377,52 @@ func containsToken(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+// ensureTraefikContainer brings pier-traefik up, reusing the running
+// container when the image and bind IP already match. Recreating costs
+// a brief outage on the dev domain — skipping it on idempotent
+// re-installs is what users expect.
+func ensureTraefikContainer(d *docker, paths *Paths, bindIP string, confChanged bool, out io.Writer) error {
+	running, image := d.containerStatus(TraefikContainer)
+	if running && image == TraefikImage && !confChanged {
+		current, _ := d.run("inspect", "--format",
+			`{{(index (index .NetworkSettings.Ports "80/tcp") 0).HostIp}}`,
+			TraefikContainer)
+		if current == bindIP {
+			fmt.Fprintf(out, "✓ traefik already up on %s:80\n", bindIP)
+			return nil
+		}
+	}
+	if err := d.removeContainer(TraefikContainer); err != nil {
+		return fmt.Errorf("clean previous traefik: %w", err)
+	}
+	if _, err := d.run(traefikRunArgs(paths, bindIP)...); err != nil {
+		return fmt.Errorf("start traefik: %w", err)
+	}
+	fmt.Fprintf(out, "✓ traefik up on %s:80\n", bindIP)
+	return nil
+}
+
+// ensureDnsmasqContainer is the dnsmasq counterpart — same recycle
+// heuristic. dnsmasq runs with --network host so the bind IP is
+// inside its conf, not its docker port mapping; if the running
+// container's image matches we trust the conf write to have updated
+// the bind IP and we just skip the recreate.
+func ensureDnsmasqContainer(d *docker, paths *Paths, bindIP string, confChanged bool, out io.Writer) error {
+	running, image := d.containerStatus(DnsmasqContainer)
+	if running && image == DnsmasqImage && !confChanged {
+		fmt.Fprintf(out, "✓ dnsmasq already up on %s:53\n", bindIP)
+		return nil
+	}
+	if err := d.removeContainer(DnsmasqContainer); err != nil {
+		return fmt.Errorf("clean previous dnsmasq: %w", err)
+	}
+	if _, err := d.run(dnsmasqRunArgs(paths, bindIP)...); err != nil {
+		return fmt.Errorf("start dnsmasq: %w", err)
+	}
+	fmt.Fprintf(out, "✓ dnsmasq up on %s:53\n", bindIP)
+	return nil
 }
 
 func traefikRunArgs(paths *Paths, bindIP string) []string {

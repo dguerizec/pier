@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -355,16 +356,48 @@ func askWorktreeDirPref(cmd *cobra.Command, yes bool) {
 // promptTraefikDynamicDir asks the user to type the host path of
 // their traefik's file-provider directory. Used in BYO mode when
 // detection couldn't extract the path from the container's argv or
-// static config. Empty input means "skip" — pier serve will then no-op
-// the dashboard route registration with no surprise at runtime.
+// static config.
+//
+// Validates that the path exists and is a writable directory before
+// returning. Re-prompts on typos so a stale path doesn't persist
+// silently into config.toml only to fail at `pier serve` runtime.
+// Empty input means "skip" — pier serve no-ops the dashboard route
+// registration with no surprise.
 func promptTraefikDynamicDir(cmd *cobra.Command, container string) string {
 	out := cmd.OutOrStdout()
+	in := bufio.NewReader(cmd.InOrStdin())
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Could not auto-detect the file-provider directory of traefik container %q.\n", container)
 	fmt.Fprintln(out, "  Without it pier serve cannot expose http://pier.<tld>; everything else still works.")
-	fmt.Fprint(out, "Path to the traefik dynamic dir [skip]: ")
-	line, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
-	return strings.TrimSpace(line)
+	for {
+		fmt.Fprint(out, "Path to the traefik dynamic dir [skip]: ")
+		line, _ := in.ReadString('\n')
+		path := strings.TrimSpace(line)
+		if path == "" {
+			return ""
+		}
+		if err := validateTraefikDynamicDir(path); err != nil {
+			fmt.Fprintf(out, "  %v — try again, or hit enter to skip.\n", err)
+			continue
+		}
+		return path
+	}
+}
+
+// validateTraefikDynamicDir checks that path is an existing directory
+// pier serve will be able to drop pier-dashboard.yml into. We don't
+// actually probe write access (a touch/remove would race with
+// concurrent pier servers); a directory + sane mode is enough at
+// install time.
+func validateTraefikDynamicDir(path string) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	return nil
 }
 
 // confirm reads a yes/no answer from stdin. Default applies on empty input.

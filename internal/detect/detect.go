@@ -236,6 +236,17 @@ func processInContainer(pid string) bool {
 		strings.Contains(s, ".scope/payload")
 }
 
+// splitFlag splits a single argv entry on the first `=` so callers can
+// match the flag name case-insensitively without re-implementing the
+// boundary. Returns (flag, value, hasValue) — hasValue is false when
+// the entry has no `=`, in which case value is empty.
+func splitFlag(arg string) (flag, value string, hasValue bool) {
+	if i := strings.IndexByte(arg, '='); i >= 0 {
+		return arg[:i], arg[i+1:], true
+	}
+	return arg, "", false
+}
+
 // containerArgs returns the command line of a docker container as a
 // slice of strings (entrypoint + args, in argv order). Empty on any
 // error so callers can keep going with whatever they already have.
@@ -268,15 +279,22 @@ func containerArgs(name string) []string {
 func extractTraefikDynamicDir(argv []string, resolvePath func(string) string) string {
 	configFile := ""
 	for i, a := range argv {
-		switch {
-		case strings.HasPrefix(a, "--providers.file.directory="):
-			return resolvePath(strings.TrimPrefix(a, "--providers.file.directory="))
-		case a == "--providers.file.directory" && i+1 < len(argv):
-			return resolvePath(argv[i+1])
-		case strings.HasPrefix(strings.ToLower(a), "--configfile="):
-			configFile = a[len("--configFile="):]
-		case strings.EqualFold(a, "--configFile") && i+1 < len(argv):
-			configFile = argv[i+1]
+		flag, value, hasValue := splitFlag(a)
+		lf := strings.ToLower(flag)
+		switch lf {
+		case "--providers.file.directory":
+			if hasValue {
+				return resolvePath(value)
+			}
+			if i+1 < len(argv) {
+				return resolvePath(argv[i+1])
+			}
+		case "--configfile":
+			if hasValue {
+				configFile = value
+			} else if i+1 < len(argv) {
+				configFile = argv[i+1]
+			}
 		}
 	}
 	if configFile == "" {

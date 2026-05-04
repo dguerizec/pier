@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,6 +110,30 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 func writeAPIError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
+
+// cappedBuffer is a bytes.Buffer that silently drops writes past a
+// fixed cap. Used to capture stderr from non-interactive hook scripts
+// so the caller (API client) gets the script's diagnostic in the
+// response body without unbounded memory growth on a runaway script.
+type cappedBuffer struct {
+	buf bytes.Buffer
+	cap int
+}
+
+func newCappedBuffer(cap int) *cappedBuffer { return &cappedBuffer{cap: cap} }
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if remain := c.cap - c.buf.Len(); remain > 0 {
+		if len(p) > remain {
+			c.buf.Write(p[:remain])
+		} else {
+			c.buf.Write(p)
+		}
+	}
+	return len(p), nil
+}
+
+func (c *cappedBuffer) String() string { return c.buf.String() }
 
 func (h *apiHandler) listWorkloads(w http.ResponseWriter, r *http.Request) {
 	store, err := state.Open(h.paths.StateDB)
@@ -687,10 +712,16 @@ func (h *apiHandler) deleteWorktree(w http.ResponseWriter, r *http.Request) {
 
 	// pre_remove runs while the workload is still up (DB dump, etc.).
 	// API DELETE is non-interactive: hook failure surfaces as a 500, no
-	// auto-ignore. Callers can re-issue with the worktree already torn
-	// down by hand if they need to bypass.
-	if err := runPreRemoveHook(repo, abs, false, io.Discard, io.Discard); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, err.Error())
+	// auto-ignore. Capture stderr (capped) so the client gets the
+	// script's actual diagnostic, not just "exit status 1" — for
+	// non-interactive callers (sillage), the body is the only signal.
+	hookErr := newCappedBuffer(4 << 10)
+	if err := runPreRemoveHook(repo, abs, false, io.Discard, hookErr); err != nil {
+		body := err.Error()
+		if tail := hookErr.String(); tail != "" {
+			body += "\n--- pre_remove stderr ---\n" + tail
+		}
+		writeAPIError(w, http.StatusInternalServerError, body)
 		return
 	}
 

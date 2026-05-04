@@ -95,6 +95,7 @@ func (h *apiHandler) register(mux *http.ServeMux) {
 	if h.hub != nil {
 		mux.HandleFunc("GET /api/v1/events", h.streamEvents)
 	}
+	h.registerProjects(mux)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -206,9 +207,35 @@ func statusString(s infra.Status) string {
 	return "unknown"
 }
 
+// workloadURLs returns every public URL derived from a workload's manifest,
+// flagged with `Default` for the alias host.
+func workloadURLs(cfg *infra.Config, w *state.Workload, m *manifest.Manifest) []apiURL {
+	baseDomain := m.Project.BaseDomain
+	if baseDomain == "" {
+		baseDomain = m.Project.Name + "." + cfg.TLD
+	} else if expanded, err := adapter.ExpandPierTokens(baseDomain, cfg.TLD); err == nil {
+		baseDomain = expanded
+	}
+
+	defaultService := ""
+	if d := m.DefaultExpose(); d != nil {
+		defaultService = d.Service
+	}
+
+	var out []apiURL
+	if defaultService != "" {
+		alias := adapter.AliasHost(w.Slug, baseDomain)
+		out = append(out, apiURL{URL: "http://" + alias, Label: alias, Default: true})
+	}
+	for _, e := range m.Expose {
+		host := adapter.HostFor(e, w.Slug, baseDomain)
+		out = append(out, apiURL{URL: "http://" + host, Label: host})
+	}
+	return out
+}
+
 // buildAPIWorkload assembles the JSON view of a workload — manifest URLs
-// + live container info + uptime. Mirrors webHandler.workloadView so the
-// dashboard and the API never disagree.
+// + live container info + uptime.
 func buildAPIWorkload(cfg *infra.Config, wl *state.Workload) apiWorkload {
 	out := apiWorkload{
 		Project:       wl.Project,
@@ -224,7 +251,7 @@ func buildAPIWorkload(cfg *infra.Config, wl *state.Workload) apiWorkload {
 		Containers:    []apiContainer{},
 	}
 
-	m, err := manifest.Load(wl.WorktreePath)
+	m, err := loadManifestForWorkloadPath(wl.WorktreePath)
 	if err != nil {
 		out.Error = "manifest unreadable: " + err.Error()
 	} else {
@@ -531,18 +558,21 @@ func (l *lineFlushWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// apiWorktreeCreateRequest is the body of POST /api/v1/worktrees. `repo`
-// is the absolute path of the primary worktree (the API has no central
-// repo registry — sillage is responsible for remembering it). `slug`
-// doubles as the directory name under [worktree].dir and the workload
-// slug. `branch` defaults to slug; `from` defaults to manifest base_ref
-// then main/master then HEAD.
+// apiWorktreeCreateRequest is the body of POST /api/v1/worktrees.
+//
+// Use either `project` (resolves the repo from the registry — preferred)
+// or `repo` (absolute path of the primary worktree — legacy, useful for
+// callers that don't run `pier init` first). When both are set, `project`
+// wins. `slug` doubles as the directory name under [worktree].dir and the
+// workload slug. `branch` defaults to slug; `from` defaults to manifest
+// base_ref then main/master then HEAD.
 type apiWorktreeCreateRequest struct {
-	Repo   string `json:"repo"`
-	Slug   string `json:"slug"`
-	Branch string `json:"branch,omitempty"`
-	From   string `json:"from,omitempty"`
-	Up     bool   `json:"up,omitempty"`
+	Project string `json:"project,omitempty"`
+	Repo    string `json:"repo,omitempty"`
+	Slug    string `json:"slug"`
+	Branch  string `json:"branch,omitempty"`
+	From    string `json:"from,omitempty"`
+	Up      bool   `json:"up,omitempty"`
 }
 
 type apiWorktreeCreateResponse struct {
@@ -559,8 +589,25 @@ func (h *apiHandler) postWorktree(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	if body.Repo == "" || body.Slug == "" {
-		writeAPIError(w, http.StatusBadRequest, "repo and slug are required")
+	if body.Slug == "" {
+		writeAPIError(w, http.StatusBadRequest, "slug is required")
+		return
+	}
+	repo := body.Repo
+	if body.Project != "" {
+		resolved, rerr := h.resolveProjectRepo(body.Project)
+		if rerr != nil {
+			if errors.Is(rerr, state.ErrProjectNotFound) {
+				writeAPIError(w, http.StatusNotFound, "project "+body.Project+" not registered")
+				return
+			}
+			writeAPIError(w, http.StatusInternalServerError, "resolve project: "+rerr.Error())
+			return
+		}
+		repo = resolved
+	}
+	if repo == "" {
+		writeAPIError(w, http.StatusBadRequest, "either project or repo is required")
 		return
 	}
 
@@ -569,7 +616,7 @@ func (h *apiHandler) postWorktree(w http.ResponseWriter, r *http.Request) {
 		from:   body.From,
 		up:     false, // up handled below so we can return the apiWorkload
 	}
-	abs, branch, err := createWorktreeAt(body.Repo, body.Slug, opts, io.Discard, io.Discard)
+	abs, branch, err := createWorktreeAt(repo, body.Slug, opts, io.Discard, io.Discard)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -614,9 +661,21 @@ func (h *apiHandler) postWorktree(w http.ResponseWriter, r *http.Request) {
 func (h *apiHandler) deleteWorktree(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	repo := r.URL.Query().Get("repo")
+	if project := r.URL.Query().Get("project"); project != "" {
+		resolved, rerr := h.resolveProjectRepo(project)
+		if rerr != nil {
+			if errors.Is(rerr, state.ErrProjectNotFound) {
+				writeAPIError(w, http.StatusNotFound, "project "+project+" not registered")
+				return
+			}
+			writeAPIError(w, http.StatusInternalServerError, "resolve project: "+rerr.Error())
+			return
+		}
+		repo = resolved
+	}
 	if repo == "" {
 		writeAPIError(w, http.StatusBadRequest,
-			"?repo=<absolute primary worktree path> required")
+			"?project=<name> or ?repo=<absolute primary worktree path> required")
 		return
 	}
 

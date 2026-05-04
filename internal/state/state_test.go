@@ -125,6 +125,142 @@ func TestListOrder(t *testing.T) {
 	}
 }
 
+func TestRegisterAndGetProject(t *testing.T) {
+	s := mustOpen(t)
+	p, err := s.RegisterProject("myapp", "/home/me/dev/myapp")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if p.Name != "myapp" || p.RepoPath != "/home/me/dev/myapp" {
+		t.Errorf("got %+v", p)
+	}
+	if p.RegisteredAt.IsZero() {
+		t.Error("RegisteredAt unset")
+	}
+
+	got, err := s.GetProject("myapp")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.RepoPath != "/home/me/dev/myapp" {
+		t.Errorf("got %+v", got)
+	}
+
+	gotByRepo, err := s.GetProjectByRepo("/home/me/dev/myapp")
+	if err != nil {
+		t.Fatalf("GetProjectByRepo: %v", err)
+	}
+	if gotByRepo.Name != "myapp" {
+		t.Errorf("got %+v", gotByRepo)
+	}
+}
+
+func TestRegisterProjectIdempotentOnSameRepo(t *testing.T) {
+	// Re-registering the SAME (name, repo_path) is a no-op — `pier init`
+	// must be safe to re-run.
+	s := mustOpen(t)
+	first, err := s.RegisterProject("app", "/repo")
+	if err != nil {
+		t.Fatalf("first register: %v", err)
+	}
+	second, err := s.RegisterProject("app", "/repo")
+	if err != nil {
+		t.Fatalf("second register: %v", err)
+	}
+	if !first.RegisteredAt.Equal(second.RegisteredAt) {
+		t.Errorf("re-registration bumped RegisteredAt: %v -> %v",
+			first.RegisteredAt, second.RegisteredAt)
+	}
+}
+
+func TestRegisterProjectConflicts(t *testing.T) {
+	s := mustOpen(t)
+	if _, err := s.RegisterProject("app", "/repo"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RegisterProject("app", "/different-repo"); !errors.Is(err, ErrProjectExists) {
+		t.Errorf("name conflict: err = %v, want ErrProjectExists", err)
+	}
+	if _, err := s.RegisterProject("different-name", "/repo"); !errors.Is(err, ErrProjectExists) {
+		t.Errorf("repo conflict: err = %v, want ErrProjectExists", err)
+	}
+}
+
+func TestProjectNotFound(t *testing.T) {
+	s := mustOpen(t)
+	if _, err := s.GetProject("nope"); !errors.Is(err, ErrProjectNotFound) {
+		t.Errorf("GetProject: err = %v, want ErrProjectNotFound", err)
+	}
+	if _, err := s.GetProjectByRepo("/nope"); !errors.Is(err, ErrProjectNotFound) {
+		t.Errorf("GetProjectByRepo: err = %v, want ErrProjectNotFound", err)
+	}
+}
+
+func TestListProjectsOrder(t *testing.T) {
+	s := mustOpen(t)
+	for _, p := range []struct{ name, repo string }{
+		{"charlie", "/c"},
+		{"alpha", "/a"},
+		{"bravo", "/b"},
+	} {
+		if _, err := s.RegisterProject(p.name, p.repo); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.ListProjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"alpha", "bravo", "charlie"}
+	if len(got) != len(want) {
+		t.Fatalf("len = %d, want %d", len(got), len(want))
+	}
+	for i, p := range got {
+		if p.Name != want[i] {
+			t.Errorf("row %d = %s, want %s", i, p.Name, want[i])
+		}
+	}
+}
+
+func TestUnregisterProject(t *testing.T) {
+	s := mustOpen(t)
+	if _, err := s.RegisterProject("app", "/repo"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UnregisterProject("app"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetProject("app"); !errors.Is(err, ErrProjectNotFound) {
+		t.Errorf("after unregister: err = %v, want ErrProjectNotFound", err)
+	}
+	// idempotent
+	if err := s.UnregisterProject("app"); err != nil {
+		t.Errorf("unregister on missing row should be no-op, got %v", err)
+	}
+}
+
+func TestUnregisterProjectKeepsWorkloads(t *testing.T) {
+	// Unregistering a project must NOT cascade to workloads — the user's
+	// running envs survive the registry forgetting where the repo lives.
+	s := mustOpen(t)
+	if _, err := s.RegisterProject("app", "/repo"); err != nil {
+		t.Fatal(err)
+	}
+	w := &Workload{
+		Project: "app", Slug: "feat", Branch: "feat", Kind: "compose",
+		WorktreePath: "/repo/.pier/worktrees/feat",
+	}
+	if err := s.Upsert(w); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UnregisterProject("app"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get("app", "feat"); err != nil {
+		t.Errorf("workload disappeared after unregister: %v", err)
+	}
+}
+
 func TestDelete(t *testing.T) {
 	s := mustOpen(t)
 	w := &Workload{Project: "p", Slug: "s", Branch: "main", Kind: "compose", WorktreePath: "/p/s"}

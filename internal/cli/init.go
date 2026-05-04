@@ -1,13 +1,16 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"github.com/LeoPartt/pier/internal/infra"
 	"github.com/LeoPartt/pier/internal/initwizard"
+	"github.com/LeoPartt/pier/internal/state"
 	"github.com/LeoPartt/pier/internal/worktree"
 )
 
@@ -80,7 +83,42 @@ func runInit(stdout io.Writer, toplevel string, opts initOpts) error {
 		}
 	}
 
-	return initwizard.Apply(plan, stdout)
+	if err := initwizard.Apply(plan, stdout); err != nil {
+		return err
+	}
+	registerProjectAfterInit(stdout, plan.Name, plan.Toplevel)
+	return nil
+}
+
+// registerProjectAfterInit records the (project name, repo path) pair in
+// the state DB so the API surface and other tooling can look up the repo
+// from the project name without the user having to remember it. Best
+// effort: registry failures are logged but do not bubble up — the
+// manifest is already written, that's the user-visible win.
+func registerProjectAfterInit(stdout io.Writer, name, toplevel string) {
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		fmt.Fprintf(stdout, "! registry: skipped (%v)\n", err)
+		return
+	}
+	store, err := state.Open(paths.StateDB)
+	if err != nil {
+		fmt.Fprintf(stdout, "! registry: open %s: %v\n", paths.StateDB, err)
+		return
+	}
+	defer store.Close()
+	if _, err := store.RegisterProject(name, toplevel); err != nil {
+		if errors.Is(err, state.ErrProjectExists) {
+			// Conflict on either name or repo with a DIFFERENT mapping —
+			// surface so the user can resolve manually. We don't auto-
+			// overwrite: a stale registry entry might come from a moved
+			// or renamed project.
+			fmt.Fprintf(stdout, "! registry: %v\n", err)
+			return
+		}
+		fmt.Fprintf(stdout, "! registry: %v\n", err)
+		return
+	}
 }
 
 func printDetection(stdout io.Writer, plan *initwizard.Plan) {

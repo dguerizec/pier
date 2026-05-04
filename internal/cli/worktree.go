@@ -388,6 +388,7 @@ func newWorktreeCleanCmd() *cobra.Command {
 	f.BoolVar(&opts.skipDown, "skip-down", false, "do not run pier down on each worktree first")
 	f.BoolVar(&opts.force, "force", false, "pass --force to git worktree remove")
 	f.BoolVar(&opts.purge, "purge", false, "run pier down --purge to wipe snapshot copies")
+	f.BoolVar(&opts.ignoreHookErrors, "ignore-hook-errors", false, "continue removing each worktree when a [materialize].pre_remove command fails")
 	return cmd
 }
 

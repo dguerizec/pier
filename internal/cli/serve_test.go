@@ -11,26 +11,43 @@ import (
 
 func TestResolveBindsExplicit(t *testing.T) {
 	cfg := &infra.Config{Mode: infra.ModeLocal}
-	got := resolveBinds("10.0.0.1", cfg, nil)
+	got := resolveBinds("10.0.0.1", cfg, "10.10.6.1")
 	if len(got) != 1 || got[0] != "10.0.0.1" {
-		t.Errorf("explicit --bind should short-circuit, got %+v", got)
+		t.Errorf("explicit --bind should short-circuit (ignore bridge), got %+v", got)
 	}
 }
 
 func TestResolveBindsLocalIncludesLoopback(t *testing.T) {
-	// docker may or may not be available in the test env; we only assert
-	// loopback is always present and the result has no duplicates.
 	cfg := &infra.Config{Mode: infra.ModeLocal}
-	got := resolveBinds("", cfg, nil)
-	if len(got) == 0 || got[0] != "127.0.0.1" {
-		t.Errorf("loopback must be first, got %+v", got)
+	got := resolveBinds("", cfg, "")
+	if len(got) != 1 || got[0] != "127.0.0.1" {
+		t.Errorf("loopback-only when bridge absent, got %+v", got)
 	}
-	seen := map[string]bool{}
+}
+
+func TestResolveBindsAppendsBridgeGateway(t *testing.T) {
+	cfg := &infra.Config{Mode: infra.ModeLocal}
+	got := resolveBinds("", cfg, "10.10.6.1")
+	if len(got) != 2 || got[0] != "127.0.0.1" || got[1] != "10.10.6.1" {
+		t.Errorf("expected [127.0.0.1 10.10.6.1], got %+v", got)
+	}
+}
+
+func TestResolveBindsDeduplicates(t *testing.T) {
+	cfg := &infra.Config{
+		Mode:                 infra.ModeServer,
+		HeadscaleRecordsPath: "/tmp/records.json",
+		AnswerIP:             "10.10.6.1", // coincides with bridge
+	}
+	got := resolveBinds("", cfg, "10.10.6.1")
+	seen := map[string]int{}
 	for _, a := range got {
-		if seen[a] {
-			t.Errorf("duplicate bind %q in %+v", a, got)
+		seen[a]++
+	}
+	for a, n := range seen {
+		if n > 1 {
+			t.Errorf("duplicate bind %q (%d) in %+v", a, n, got)
 		}
-		seen[a] = true
 	}
 }
 
@@ -40,7 +57,7 @@ func TestResolveBindsServerRecordsAddsTailnet(t *testing.T) {
 		HeadscaleRecordsPath: "/tmp/records.json",
 		AnswerIP:             "100.64.0.10",
 	}
-	got := resolveBinds("", cfg, nil)
+	got := resolveBinds("", cfg, "")
 	found := false
 	for _, a := range got {
 		if a == "100.64.0.10" {
@@ -54,7 +71,7 @@ func TestResolveBindsServerRecordsAddsTailnet(t *testing.T) {
 
 func TestResolveBindsServerWithoutRecordsKeepsLoopback(t *testing.T) {
 	cfg := &infra.Config{Mode: infra.ModeServer, AnswerIP: "100.64.0.10"}
-	got := resolveBinds("", cfg, nil)
+	got := resolveBinds("", cfg, "")
 	for _, a := range got {
 		if a == "100.64.0.10" {
 			t.Errorf("server-without-records should not advertise tailnet IP, got %+v", got)
@@ -67,8 +84,10 @@ func TestPrimaryReachableBind(t *testing.T) {
 		in   []string
 		want string
 	}{
-		{[]string{"127.0.0.1"}, "127.0.0.1"},                     // fallback
-		{[]string{"127.0.0.1", "172.17.0.1"}, "172.17.0.1"},      // fallback last
+		{[]string{}, ""},
+		{[]string{"127.0.0.1"}, ""},
+		{[]string{"127.0.0.1", "172.17.0.1"}, ""},
+		{[]string{"127.0.0.1", "10.10.6.1", "192.168.1.5"}, ""},
 		{[]string{"127.0.0.1", "172.17.0.1", "100.64.0.10"}, "100.64.0.10"},
 		{[]string{"127.0.0.1", "100.64.0.10"}, "100.64.0.10"},
 	}

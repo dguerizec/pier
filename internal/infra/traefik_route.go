@@ -16,14 +16,15 @@ const DashboardRouteFile = "pier-dashboard.yml"
 // WriteDashboardRoute (re)writes the traefik file-provider yaml that
 // routes `host.<tld>` to a service running on the host. host is the
 // sub-domain label (e.g. "pier"); upstream is the URL traefik proxies
-// to from inside its container, typically
-// `http://host.docker.internal:<port>` for a host-loopback `pier serve`.
+// to from inside its container. dir is the file-provider directory
+// traefik watches — pier-managed (paths.TraefikDynamic) by default,
+// or an external directory in BYO-traefik mode.
 //
 // Returns the absolute path of the written file so the caller can hand
-// it back to RemoveDashboardRoute on shutdown. No-op-friendly: writes
-// are atomic via a sibling .tmp + rename so traefik's filesystem watch
-// never sees a half-written file.
-func WriteDashboardRoute(paths *Paths, host, tld, upstream string) (string, error) {
+// it back to RemoveDashboardRoute on shutdown. Writes are atomic via a
+// sibling .tmp + rename so traefik's filesystem watch never sees a
+// half-written file.
+func WriteDashboardRoute(dir, host, tld, upstream string) (string, error) {
 	if tld == "" {
 		return "", errors.New("traefik route: tld is required")
 	}
@@ -33,11 +34,11 @@ func WriteDashboardRoute(paths *Paths, host, tld, upstream string) (string, erro
 	if upstream == "" {
 		return "", errors.New("traefik route: upstream URL is required")
 	}
-	if err := os.MkdirAll(paths.TraefikDynamic, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	body := renderDashboardRoute(host, tld, upstream)
-	path := filepath.Join(paths.TraefikDynamic, DashboardRouteFile)
+	path := filepath.Join(dir, DashboardRouteFile)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
 		return "", err
@@ -49,11 +50,12 @@ func WriteDashboardRoute(paths *Paths, host, tld, upstream string) (string, erro
 	return path, nil
 }
 
-// RemoveDashboardRoute deletes the file-provider entry. Missing file
-// is not an error — pier serve may run without ever having written one
-// (no TLD configured, conflict with another writer, etc.).
-func RemoveDashboardRoute(paths *Paths) error {
-	path := filepath.Join(paths.TraefikDynamic, DashboardRouteFile)
+// RemoveDashboardRoute deletes the file-provider entry from dir.
+// Missing file is not an error — pier serve may run without ever
+// having written one (no TLD configured, conflict with another
+// writer, etc.).
+func RemoveDashboardRoute(dir string) error {
+	path := filepath.Join(dir, DashboardRouteFile)
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

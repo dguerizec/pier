@@ -8,10 +8,9 @@ import (
 )
 
 func TestWriteDashboardRoute_RoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	paths := &Paths{TraefikDynamic: filepath.Join(dir, "dynamic")}
+	dir := filepath.Join(t.TempDir(), "dynamic")
 
-	path, err := WriteDashboardRoute(paths, "pier", "test", "http://host.docker.internal:60080")
+	path, err := WriteDashboardRoute(dir, "pier", "test", "http://10.10.6.1:60080")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +21,7 @@ func TestWriteDashboardRoute_RoundTrip(t *testing.T) {
 	got := string(body)
 	for _, want := range []string{
 		"Host(`pier.test`)",
-		"http://host.docker.internal:60080",
+		"http://10.10.6.1:60080",
 		"pier-dashboard",
 		"web",
 	} {
@@ -32,11 +31,11 @@ func TestWriteDashboardRoute_RoundTrip(t *testing.T) {
 	}
 
 	// Re-write with a different upstream → file overwritten in place.
-	if _, err := WriteDashboardRoute(paths, "pier", "test", "http://10.0.0.1:60080"); err != nil {
+	if _, err := WriteDashboardRoute(dir, "pier", "test", "http://10.0.0.1:60080"); err != nil {
 		t.Fatal(err)
 	}
 	body, _ = os.ReadFile(path)
-	if strings.Contains(string(body), "host.docker.internal") {
+	if strings.Contains(string(body), "10.10.6.1") {
 		t.Error("re-write left old upstream")
 	}
 	if !strings.Contains(string(body), "10.0.0.1") {
@@ -45,36 +44,33 @@ func TestWriteDashboardRoute_RoundTrip(t *testing.T) {
 }
 
 func TestWriteDashboardRoute_RejectsEmpty(t *testing.T) {
-	dir := t.TempDir()
-	paths := &Paths{TraefikDynamic: filepath.Join(dir, "dynamic")}
+	dir := filepath.Join(t.TempDir(), "dynamic")
 	cases := []struct{ host, tld, upstream string }{
 		{"", "test", "http://x:1"},
 		{"pier", "", "http://x:1"},
 		{"pier", "test", ""},
 	}
 	for _, c := range cases {
-		if _, err := WriteDashboardRoute(paths, c.host, c.tld, c.upstream); err == nil {
+		if _, err := WriteDashboardRoute(dir, c.host, c.tld, c.upstream); err == nil {
 			t.Errorf("expected error for %+v", c)
 		}
 	}
 }
 
 func TestRemoveDashboardRoute_MissingIsNoop(t *testing.T) {
-	dir := t.TempDir()
-	paths := &Paths{TraefikDynamic: filepath.Join(dir, "dynamic")}
-	if err := RemoveDashboardRoute(paths); err != nil {
+	dir := filepath.Join(t.TempDir(), "dynamic")
+	if err := RemoveDashboardRoute(dir); err != nil {
 		t.Errorf("removing missing route should be a no-op: %v", err)
 	}
 }
 
 func TestRemoveDashboardRoute_DeletesFile(t *testing.T) {
-	dir := t.TempDir()
-	paths := &Paths{TraefikDynamic: filepath.Join(dir, "dynamic")}
-	path, err := WriteDashboardRoute(paths, "pier", "test", "http://x:1")
+	dir := filepath.Join(t.TempDir(), "dynamic")
+	path, err := WriteDashboardRoute(dir, "pier", "test", "http://x:1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := RemoveDashboardRoute(paths); err != nil {
+	if err := RemoveDashboardRoute(dir); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {

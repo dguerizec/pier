@@ -180,31 +180,60 @@ func detectTraefikDocker() TraefikInfo {
 // Useful for systemd / package-manager installs where there is no
 // docker container to inspect. Skipped on platforms without a
 // `ps -eo args` equivalent (silently returns Found=false).
+//
+// On Linux the host PID namespace also surfaces processes living
+// inside docker containers, so a pier-managed traefik would look
+// like a host process. We filter those out by inspecting
+// /proc/<pid>/cgroup — anything cgroup-attached to docker /
+// containerd is somebody else's problem.
 func detectTraefikProcess() TraefikInfo {
-	out, err := exec.Command("ps", "-eo", "args=").Output()
+	out, err := exec.Command("ps", "-eo", "pid=,args=").Output()
 	if err != nil {
 		return TraefikInfo{}
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) == 0 {
+		if len(fields) < 2 {
 			continue
 		}
+		pid, args := fields[0], fields[1:]
 		// Match `traefik`, `/usr/local/bin/traefik`, etc. — but not
 		// `traefik-foo` or other tools that happen to contain the
 		// substring.
-		base := fields[0]
+		base := args[0]
 		if i := strings.LastIndex(base, "/"); i >= 0 {
 			base = base[i+1:]
 		}
 		if base != "traefik" {
 			continue
 		}
+		if processInContainer(pid) {
+			continue
+		}
 		info := TraefikInfo{Found: true}
-		info.DynamicDir = extractTraefikDynamicDir(fields[1:], func(p string) string { return p })
+		info.DynamicDir = extractTraefikDynamicDir(args[1:], func(p string) string { return p })
 		return info
 	}
 	return TraefikInfo{}
+}
+
+// processInContainer reports whether the pid lives in a docker /
+// containerd / podman cgroup, by reading /proc/<pid>/cgroup. Returns
+// false on any read error so the host-process detection still works
+// on systems without procfs (non-Linux, restricted environments) —
+// the false positive there is a smaller failure mode than missing a
+// real host traefik.
+func processInContainer(pid string) bool {
+	body, err := os.ReadFile("/proc/" + pid + "/cgroup")
+	if err != nil {
+		return false
+	}
+	s := string(body)
+	return strings.Contains(s, "/docker/") ||
+		strings.Contains(s, "/docker-") ||
+		strings.Contains(s, "/containerd/") ||
+		strings.Contains(s, "/libpod-") ||
+		strings.Contains(s, ".scope/payload")
 }
 
 // containerArgs returns the command line of a docker container as a

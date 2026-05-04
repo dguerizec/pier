@@ -98,6 +98,16 @@ func (e ExposeRule) Hostname() string {
 type Materialize struct {
 	Symlinks  []string `toml:"symlinks,omitempty"  json:"symlinks,omitempty"`
 	Snapshots []string `toml:"snapshots,omitempty" json:"snapshots,omitempty"`
+	// PostCreate is a list of shell commands run after symlinks/snapshots
+	// have been laid down by `pier worktree add`. Cwd is the new worktree.
+	// Each command runs via `sh -c` with PIER_* env vars exposed (see
+	// materialize.HookEnv). The first failing command aborts the
+	// sequence; the caller decides whether to roll back.
+	PostCreate []string `toml:"post_create,omitempty" json:"post_create,omitempty"`
+	// PreRemove is a list of shell commands run before `pier worktree rm`
+	// hands off to `git worktree remove`. Cwd is the worktree being
+	// removed. Same env + sequencing semantics as PostCreate.
+	PreRemove []string `toml:"pre_remove,omitempty" json:"pre_remove,omitempty"`
 }
 
 type Hooks struct {

@@ -117,10 +117,21 @@ func createWorktreeAt(primary, target string, opts wtAddOpts, out, errOut io.Wri
 		return "", "", fmt.Errorf("git worktree add: %w", err)
 	}
 
+	// Every step from here on is part of "build the worktree". A failure
+	// in any of them leaves the user with a half-built worktree they
+	// didn't ask for; roll back so re-running `pier worktree add` can
+	// retry from a clean slate. --ignore-hook-errors only covers the
+	// post_create hook — pre-hook failures (snapshot pre-create,
+	// materialize symlinks/snapshots) are infra mistakes the user
+	// should fix before retrying, not script-level glitches to skip.
 	if err := preCreateSnapshotDirs(primary, abs, m.Materialize.Snapshots, out); err != nil {
+		fmt.Fprintf(errOut, "! snapshot pre-create failed, rolling back: %v\n", err)
+		rollbackWorktreeAdd(primary, abs, branch, branchCreated, errOut)
 		return abs, branch, err
 	}
 	if err := materialize.Apply(primary, abs, m.Materialize, out); err != nil {
+		fmt.Fprintf(errOut, "! materialize failed, rolling back: %v\n", err)
+		rollbackWorktreeAdd(primary, abs, branch, branchCreated, errOut)
 		return abs, branch, err
 	}
 

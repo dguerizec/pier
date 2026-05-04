@@ -89,10 +89,28 @@ type Status struct {
 	Detail  string // raw `is-active` output for the human (e.g. "activating", "failed")
 }
 
+// Owner identifies the unix account a system unit should run under.
+// Required for ScopeSystem (caller fills it from user.Current() at
+// install time); ignored for ScopeUser, where systemd already runs the
+// service as the calling user with a populated $HOME.
+//
+// Both fields must be set together: User= without HOME means the
+// daemon panics on os.UserHomeDir() the first time it touches
+// ~/.config/pier.
+type Owner struct {
+	User string
+	Home string
+}
+
 // Render builds the unit file body. Caller passes the absolute path to
 // the pier binary because os.Executable() resolves symlinks differently
 // across hosts; the install command is the right place to capture it.
-func Render(scope Scope, binary string) string {
+//
+// owner is honoured only for ScopeSystem. The system unit emits
+// User=<owner.User> and Environment=HOME=<owner.Home> so the daemon
+// resolves ~/.config/pier to the same place `pier install` did,
+// instead of the empty $HOME systemd hands to root services.
+func Render(scope Scope, binary string, owner Owner) string {
 	var sb strings.Builder
 	sb.WriteString("[Unit]\n")
 	sb.WriteString("Description=pier — local dev domain orchestrator\n")
@@ -109,6 +127,14 @@ func Render(scope Scope, binary string) string {
 	}
 	sb.WriteString("\n[Service]\n")
 	sb.WriteString("Type=simple\n")
+	if scope == ScopeSystem && owner.User != "" {
+		fmt.Fprintf(&sb, "User=%s\n", owner.User)
+		// HOME is what os.UserHomeDir() consults; without it the
+		// daemon exits 1 with "$HOME is not defined" on first use.
+		// systemd --system services don't inherit the invoker's
+		// environment, so we bake it into the unit.
+		fmt.Fprintf(&sb, "Environment=HOME=%s\n", owner.Home)
+	}
 	fmt.Fprintf(&sb, "ExecStart=%s serve\n", binary)
 	// SIGUSR2 is the binary-swap signal (see internal/cli/serve_upgrade);
 	// systemd must not interpret it as anything else. KillSignal stays
@@ -156,7 +182,14 @@ type InstallResult struct {
 // password on a tty. Set printOnly to skip the exec and print the
 // commands instead.
 func Install(scope Scope, binary string, printOnly bool, out io.Writer) (*InstallResult, error) {
-	body := Render(scope, binary)
+	owner, err := currentOwner()
+	if err != nil {
+		return nil, fmt.Errorf("resolve invoking user: %w", err)
+	}
+	body := Render(scope, binary, owner)
+	if scope == ScopeSystem {
+		fmt.Fprintf(out, "  unit will run as User=%s with HOME=%s\n", owner.User, owner.Home)
+	}
 
 	if scope == ScopeSystem {
 		stage, err := os.CreateTemp("", "pier-*.service")
@@ -280,6 +313,26 @@ func Uninstall(scope Scope, printOnly bool, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "✓ removed %s\n", path)
 	return nil
+}
+
+// currentOwner resolves the unix account a system unit should run as.
+// When the binary is invoked via sudo, SUDO_USER points back at the
+// real human; otherwise user.Current() is the right answer (typical
+// 'pier serve install --system' invocation, where pier sudoes itself
+// internally for the systemctl steps but Install() runs pre-sudo).
+func currentOwner() (Owner, error) {
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		u, err := user.Lookup(sudoUser)
+		if err != nil {
+			return Owner{}, fmt.Errorf("lookup SUDO_USER %q: %w", sudoUser, err)
+		}
+		return Owner{User: u.Username, Home: u.HomeDir}, nil
+	}
+	u, err := user.Current()
+	if err != nil {
+		return Owner{}, err
+	}
+	return Owner{User: u.Username, Home: u.HomeDir}, nil
 }
 
 // printSudoSteps formats a list of sudo-prefixed commands for the

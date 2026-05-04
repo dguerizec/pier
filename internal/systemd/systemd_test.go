@@ -6,19 +6,28 @@ import (
 )
 
 func TestRender_UserUnit(t *testing.T) {
-	body := Render(ScopeUser, "/usr/local/bin/pier")
+	body := Render(ScopeUser, "/usr/local/bin/pier", Owner{})
 	mustContain(t, body, "ExecStart=/usr/local/bin/pier serve")
 	mustContain(t, body, "WantedBy=default.target")
 	mustNotContain(t, body, "After=docker.service")
 	mustContain(t, body, "After=default.target")
 	mustContain(t, body, "Restart=on-failure")
+	// User scope inherits HOME from the systemd --user manager — must
+	// not bake an explicit HOME or User= or systemd rejects it.
+	mustNotContain(t, body, "User=")
+	mustNotContain(t, body, "Environment=HOME=")
 }
 
 func TestRender_SystemUnit(t *testing.T) {
-	body := Render(ScopeSystem, "/usr/bin/pier")
+	body := Render(ScopeSystem, "/usr/bin/pier", Owner{User: "alice", Home: "/home/alice"})
 	mustContain(t, body, "ExecStart=/usr/bin/pier serve")
 	mustContain(t, body, "After=docker.service network-online.target")
 	mustContain(t, body, "WantedBy=multi-user.target")
+	// Without User= + Environment=HOME= the daemon exits 1 with
+	// "$HOME is not defined" because systemd --system services
+	// inherit no HOME.
+	mustContain(t, body, "User=alice")
+	mustContain(t, body, "Environment=HOME=/home/alice")
 }
 
 func TestParseScope(t *testing.T) {

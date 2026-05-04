@@ -45,110 +45,194 @@ func newServeCmd() *cobra.Command {
 		Aliases: []string{"web"},
 		Short:   "Serve the pier HTTP surface (dashboard at /, REST API at /api/v1/)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths, err := infra.DefaultPaths()
-			if err != nil {
-				return err
-			}
-			cfg, err := infra.LoadConfig(paths)
-			if err != nil {
-				return err
-			}
-
-			out := cmd.OutOrStdout()
-			// Discover the pier docker network gateway once; both
-			// resolveBinds (to widen the listen set so traefik can reach
-			// us) and registerDashboardRoute (to know the upstream IP)
-			// need it. Empty when docker is unavailable, the network
-			// hasn't been created yet, or pier is BYO-traefik.
-			bridgeGateway, _ := discoverBridgeGatewayIP(infra.NetworkName)
-			bindAddrs := resolveBinds(bind, cfg, bridgeGateway)
-			if len(bindAddrs) == 0 {
-				return errors.New("no bind address available; pass --bind explicitly")
-			}
-
-			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-			defer stop()
-
-			hub := newEventHub(paths, cfg)
-			hub.start(ctx)
-
-			mux := http.NewServeMux()
-			mux.HandleFunc("GET /{$}", serveAsset("text/html; charset=utf-8", webIndexHTML))
-			mux.HandleFunc("GET /app.css", serveAsset("text/css; charset=utf-8", webAppCSS))
-			mux.HandleFunc("GET /app.js", serveAsset("application/javascript; charset=utf-8", webAppJS))
-			(&apiHandler{paths: paths, cfg: cfg, hub: hub}).register(mux)
-
-			handler := withCORS(mux, corsOrigins)
-
-			recordName, recordRegistered := registerDashboardRecord(cfg, primaryReachableBind(bindAddrs), out)
-			routeName, routeRegistered := registerDashboardRoute(paths, cfg, bridgeGateway, bindAddrs, port, out)
-
-			srv := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
-
-			listeners := make([]net.Listener, 0, len(bindAddrs))
-			for _, addr := range bindAddrs {
-				full := net.JoinHostPort(addr, fmt.Sprintf("%d", port))
-				ln, err := net.Listen("tcp", full)
-				if err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "! listen %s: %v (skipped)\n", full, err)
-					continue
-				}
-				listeners = append(listeners, ln)
-				fmt.Fprintf(out, "→ http://%s\n", full)
-			}
-			if len(listeners) == 0 {
-				return errors.New("no listener could be opened")
-			}
-			if recordRegistered {
-				fmt.Fprintf(out, "→ http://%s:%d\n", recordName, port)
-			}
-			if routeRegistered {
-				fmt.Fprintf(out, "→ http://%s (via traefik)\n", routeName)
-			}
-			fmt.Fprintln(out, "  ctrl-c to stop")
-
-			go func() {
-				<-ctx.Done()
-				if recordRegistered {
-					if removed, err := headscale.Remove(cfg.HeadscaleRecordsPath, recordName); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "! headscale record cleanup %s: %v\n", recordName, err)
-					} else if removed {
-						fmt.Fprintf(out, "✓ headscale record removed: %s\n", recordName)
-					}
-				}
-				if routeRegistered {
-					if err := infra.RemoveDashboardRoute(dashboardRouteDir(cfg, paths)); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "! traefik route cleanup: %v\n", err)
-					} else {
-						fmt.Fprintf(out, "✓ traefik route removed: %s\n", routeName)
-					}
-				}
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				_ = srv.Shutdown(shutdownCtx)
-			}()
-
-			errCh := make(chan error, len(listeners))
-			for _, ln := range listeners {
-				go func(l net.Listener) {
-					errCh <- srv.Serve(l)
-				}(ln)
-			}
-			// Block until any listener errors out (typically all of them
-			// once Shutdown has fired). ErrServerClosed is the clean exit.
-			for i := 0; i < len(listeners); i++ {
-				if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
-					return err
-				}
-			}
-			return nil
+			return runServe(cmd, bind, port, corsOrigins)
 		},
 	}
 	f := cmd.Flags()
 	f.StringVar(&bind, "bind", "", "interface to bind on (default: 127.0.0.1 + pier network gateway + tailnet IP in server+records mode)")
 	f.IntVar(&port, "port", 60080, "TCP port to listen on")
 	f.StringSliceVar(&corsOrigins, "cors-origin", []string{"*"}, "comma-separated CORS origins for /api/v1/* (default: any)")
+
+	cmd.AddCommand(
+		newServeInstallCmd(),
+		newServeUninstallCmd(),
+		newServeUpgradeCmd(),
+	)
 	return cmd
+}
+
+// runServe is the foreground daemon body. Extracted so cobra wiring
+// stays a thin dispatch layer and so SIGUSR2 re-exec lands back in
+// the same code path on restart.
+func runServe(cmd *cobra.Command, bind string, port int, corsOrigins []string) error {
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		return err
+	}
+	cfg, err := infra.LoadConfig(paths)
+	if err != nil {
+		return err
+	}
+
+	out := cmd.OutOrStdout()
+
+	// SIGINT / SIGTERM = stop. SIGUSR2 = swap binary in place; handled
+	// separately below so it doesn't cancel the request-serving context.
+	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	hub := newEventHub(paths, cfg)
+	hub.start(ctx)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", serveAsset("text/html; charset=utf-8", webIndexHTML))
+	mux.HandleFunc("GET /app.css", serveAsset("text/css; charset=utf-8", webAppCSS))
+	mux.HandleFunc("GET /app.js", serveAsset("application/javascript; charset=utf-8", webAppJS))
+	(&apiHandler{paths: paths, cfg: cfg, hub: hub}).register(mux)
+
+	handler := withCORS(mux, corsOrigins)
+
+	// bridgeGateway is needed both for resolveBinds (so traefik can
+	// reach pier serve over the bridge) and registerDashboardRoute
+	// (upstream IP). Empty when docker is unavailable / pre-install /
+	// BYO mode.
+	bridgeGateway, _ := discoverBridgeGatewayIP(infra.NetworkName)
+
+	listeners, addrs, inherited, err := openListeners(bind, port, cfg, bridgeGateway, out, cmd.ErrOrStderr())
+	if err != nil {
+		return err
+	}
+	if len(listeners) == 0 {
+		return errors.New("no listener could be opened")
+	}
+
+	recordName, recordRegistered := registerDashboardRecord(cfg, primaryReachableBind(addrsToHosts(addrs)), out)
+	routeName, routeRegistered := registerDashboardRoute(paths, cfg, bridgeGateway, addrsToHosts(addrs), port, out)
+
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+
+	if recordRegistered {
+		fmt.Fprintf(out, "→ http://%s:%d\n", recordName, port)
+	}
+	if routeRegistered {
+		fmt.Fprintf(out, "→ http://%s (via traefik)\n", routeName)
+	}
+	if inherited {
+		fmt.Fprintln(out, "  (inherited listeners from previous binary)")
+	}
+	fmt.Fprintln(out, "  ctrl-c to stop · SIGUSR2 to swap binary")
+
+	if err := writePidfile(paths); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "! pidfile: %v (upgrade signal won't work)\n", err)
+	}
+	defer removePidfile(paths)
+
+	upgradeCh := make(chan os.Signal, 1)
+	signal.Notify(upgradeCh, syscall.SIGUSR2)
+	defer signal.Stop(upgradeCh)
+
+	go func() {
+		select {
+		case <-ctx.Done():
+			if recordRegistered {
+				if removed, err := headscale.Remove(cfg.HeadscaleRecordsPath, recordName); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "! headscale record cleanup %s: %v\n", recordName, err)
+				} else if removed {
+					fmt.Fprintf(out, "✓ headscale record removed: %s\n", recordName)
+				}
+			}
+			if routeRegistered {
+				if err := infra.RemoveDashboardRoute(dashboardRouteDir(cfg, paths)); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "! traefik route cleanup: %v\n", err)
+				} else {
+					fmt.Fprintf(out, "✓ traefik route removed: %s\n", routeName)
+				}
+			}
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(shutdownCtx)
+		case <-upgradeCh:
+			fmt.Fprintln(out, "↻ SIGUSR2 received — re-execing on new binary")
+			// We deliberately don't srv.Shutdown() before exec: the
+			// listener fds must stay open so the child inherits bound
+			// sockets. The execve replaces this process image
+			// entirely; in-flight HTTP requests die. SSE clients
+			// reconnect within seconds, so the visible gap is small.
+			// Records and traefik routes are NOT torn down — the new
+			// image rewrites them on start (registerDashboardRecord
+			// and WriteDashboardRoute are idempotent).
+			if err := reexecSelf(listeners, addrs); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "! re-exec failed: %v\n", err)
+				stop() // fall back to clean shutdown → systemd Restart=on-failure picks up the new binary
+			}
+		}
+	}()
+
+	errCh := make(chan error, len(listeners))
+	for _, ln := range listeners {
+		go func(l net.Listener) {
+			errCh <- srv.Serve(l)
+		}(ln)
+	}
+	// Block until any listener errors out (typically all of them
+	// once Shutdown has fired). ErrServerClosed is the clean exit.
+	for i := 0; i < len(listeners); i++ {
+		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+	}
+	return nil
+}
+
+// openListeners returns the set of bound sockets the serve runs on,
+// along with their host:port addresses. On a re-exec PIER_LISTENER_FDS
+// is set: we adopt the inherited fds and skip net.Listen entirely.
+// Otherwise resolveBinds picks the bind set and we open one socket
+// per address.
+func openListeners(bind string, port int, cfg *infra.Config, bridgeGateway string, out, errOut io.Writer) ([]net.Listener, []string, bool, error) {
+	if listeners, addrs, err := inheritedListeners(); err != nil {
+		return nil, nil, false, err
+	} else if len(listeners) > 0 {
+		for _, a := range addrs {
+			fmt.Fprintf(out, "→ http://%s (inherited)\n", a)
+		}
+		return listeners, addrs, true, nil
+	}
+
+	bindAddrs := resolveBinds(bind, cfg, bridgeGateway)
+	if len(bindAddrs) == 0 {
+		return nil, nil, false, errors.New("no bind address available; pass --bind explicitly")
+	}
+	listeners := make([]net.Listener, 0, len(bindAddrs))
+	addrs := make([]string, 0, len(bindAddrs))
+	for _, addr := range bindAddrs {
+		full := net.JoinHostPort(addr, fmt.Sprintf("%d", port))
+		ln, err := net.Listen("tcp", full)
+		if err != nil {
+			fmt.Fprintf(errOut, "! listen %s: %v (skipped)\n", full, err)
+			continue
+		}
+		listeners = append(listeners, ln)
+		addrs = append(addrs, full)
+		fmt.Fprintf(out, "→ http://%s\n", full)
+	}
+	return listeners, addrs, false, nil
+}
+
+// addrsToHosts strips the :port suffix from each entry. The host-only
+// form is what registerDashboardRecord and registerDashboardRoute
+// expect (they pick a single primary IP from the list).
+func addrsToHosts(addrs []string) []string {
+	out := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		host, _, err := net.SplitHostPort(a)
+		if err != nil {
+			out = append(out, a)
+			continue
+		}
+		out = append(out, host)
+	}
+	return out
 }
 
 // serveAsset writes a fixed byte slice with no caching. Disabling the cache

@@ -41,6 +41,13 @@ type InstallOptions struct {
 	// When ExternalTraefik is set and this is empty, pier auto-picks the
 	// first non-default network attached to the external traefik.
 	TraefikNetwork string
+	// ExternalTraefikDynamicDir is the host-side file-provider directory
+	// of the user's traefik. Persisted to Config so `pier serve` can
+	// drop pier-dashboard.yml in the right place to expose
+	// http://pier.<tld>. Empty in pier-managed mode (paths.TraefikDynamic
+	// is used) and in BYO mode when discovery + the wizard prompt both
+	// returned no path.
+	ExternalTraefikDynamicDir string
 
 	// HeadscaleContainer + HeadscaleRecordsPath activate the records
 	// adapter — see Config docs.
@@ -197,14 +204,15 @@ func Install(opts InstallOptions) error {
 	}
 
 	cfg := &Config{
-		Mode:                 opts.Mode,
-		TLD:                  opts.TLD,
-		BindIP:               opts.BindIP,
-		AnswerIP:             opts.AnswerIP,
-		TraefikNetwork:       traefikNet,
-		ExternalTraefik:      opts.ExternalTraefik,
-		HeadscaleContainer:   opts.HeadscaleContainer,
-		HeadscaleRecordsPath: opts.HeadscaleRecordsPath,
+		Mode:                      opts.Mode,
+		TLD:                       opts.TLD,
+		BindIP:                    opts.BindIP,
+		AnswerIP:                  opts.AnswerIP,
+		TraefikNetwork:            traefikNet,
+		ExternalTraefik:           opts.ExternalTraefik,
+		ExternalTraefikDynamicDir: opts.ExternalTraefikDynamicDir,
+		HeadscaleContainer:        opts.HeadscaleContainer,
+		HeadscaleRecordsPath:      opts.HeadscaleRecordsPath,
 	}
 	if err := cfg.Save(paths); err != nil {
 		return fmt.Errorf("save config: %w", err)

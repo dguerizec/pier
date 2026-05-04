@@ -15,15 +15,16 @@ import (
 )
 
 type installOpts struct {
-	mode            string
-	tld             string
-	manualDNS       bool
-	noSudo          bool
-	bindIP          string
-	answerIP        string
-	externalTraefik string
-	traefikNetwork  string
-	yes             bool
+	mode                      string
+	tld                       string
+	manualDNS                 bool
+	noSudo                    bool
+	bindIP                    string
+	answerIP                  string
+	externalTraefik           string
+	traefikNetwork            string
+	externalTraefikDynamicDir string
+	yes                       bool
 }
 
 func newInstallCmd() *cobra.Command {
@@ -46,14 +47,15 @@ func newInstallCmd() *cobra.Command {
 				mode = infra.ModeLocal
 			}
 			if err := infra.Install(infra.InstallOptions{
-				Mode:            mode,
-				TLD:             opts.tld,
-				BindIP:          opts.bindIP,
-				AnswerIP:        opts.answerIP,
-				ManualDNS:       opts.manualDNS,
-				Out:             cmd.OutOrStdout(),
-				ExternalTraefik: opts.externalTraefik,
-				TraefikNetwork:  opts.traefikNetwork,
+				Mode:                      mode,
+				TLD:                       opts.tld,
+				BindIP:                    opts.bindIP,
+				AnswerIP:                  opts.answerIP,
+				ManualDNS:                 opts.manualDNS,
+				Out:                       cmd.OutOrStdout(),
+				ExternalTraefik:           opts.externalTraefik,
+				TraefikNetwork:            opts.traefikNetwork,
+				ExternalTraefikDynamicDir: opts.externalTraefikDynamicDir,
 			}); err != nil {
 				return err
 			}
@@ -70,6 +72,7 @@ func newInstallCmd() *cobra.Command {
 	f.StringVar(&opts.answerIP, "answer-ip", "", "IP dnsmasq returns for *.<tld> (server mode; auto-detected from tailscale when omitted)")
 	f.StringVar(&opts.externalTraefik, "use-existing-traefik", "", "BYO mode: name of an existing traefik container to register workloads on")
 	f.StringVar(&opts.traefikNetwork, "traefik-network", "", "BYO mode: docker network for label discovery (auto-detected from the existing traefik when omitted)")
+	f.StringVar(&opts.externalTraefikDynamicDir, "traefik-dynamic-dir", "", "BYO mode: host path of the existing traefik's file-provider directory (auto-detected when omitted; required to expose http://pier.<tld>)")
 	f.BoolVarP(&opts.yes, "yes", "y", false, "accept the detected wizard plan without prompting")
 	return cmd
 }
@@ -79,7 +82,7 @@ func newInstallCmd() *cobra.Command {
 // expects pier to figure things out — and explicit configuration takes
 // precedence whenever any of those flags is set.
 func shouldRunWizard(cmd *cobra.Command) bool {
-	for _, name := range []string{"mode", "bind-ip", "answer-ip", "use-existing-traefik", "traefik-network"} {
+	for _, name := range []string{"mode", "bind-ip", "answer-ip", "use-existing-traefik", "traefik-network", "traefik-dynamic-dir"} {
 		if cmd.Flags().Changed(name) {
 			return false
 		}
@@ -195,13 +198,14 @@ func tldIsUnder(tld, base string) bool {
 // concrete InstallOptions. Explicit flags always win over detected values.
 func composeInstallPlan(env detect.Environment, base installOpts) infra.InstallOptions {
 	plan := infra.InstallOptions{
-		Mode:            base.mode,
-		TLD:             base.tld,
-		BindIP:          base.bindIP,
-		AnswerIP:        base.answerIP,
-		ManualDNS:       base.manualDNS,
-		ExternalTraefik: base.externalTraefik,
-		TraefikNetwork:  base.traefikNetwork,
+		Mode:                      base.mode,
+		TLD:                       base.tld,
+		BindIP:                    base.bindIP,
+		AnswerIP:                  base.answerIP,
+		ManualDNS:                 base.manualDNS,
+		ExternalTraefik:           base.externalTraefik,
+		TraefikNetwork:            base.traefikNetwork,
+		ExternalTraefikDynamicDir: base.externalTraefikDynamicDir,
 	}
 	if plan.TLD == "" {
 		// When extra_records is available, pier can publish per-slug records
@@ -262,6 +266,9 @@ func planSummary(p infra.InstallOptions) string {
 	}
 	if p.TraefikNetwork != "" {
 		parts = append(parts, "--traefik-network "+p.TraefikNetwork)
+	}
+	if p.ExternalTraefikDynamicDir != "" {
+		parts = append(parts, "--traefik-dynamic-dir "+p.ExternalTraefikDynamicDir)
 	}
 	if p.HeadscaleRecordsPath != "" {
 		parts = append(parts, "(records mode: "+p.HeadscaleRecordsPath+")")

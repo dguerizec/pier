@@ -9,39 +9,140 @@ import (
 	"github.com/LeoPartt/pier/internal/infra"
 )
 
-func TestAutoBindServerRecordsMode(t *testing.T) {
+func TestResolveBindsExplicit(t *testing.T) {
+	cfg := &infra.Config{Mode: infra.ModeLocal}
+	got := resolveBinds("10.0.0.1", cfg, "10.10.6.1")
+	if len(got) != 1 || got[0] != "10.0.0.1" {
+		t.Errorf("explicit --bind should short-circuit (ignore bridge), got %+v", got)
+	}
+}
+
+func TestResolveBindsLocalIncludesLoopback(t *testing.T) {
+	cfg := &infra.Config{Mode: infra.ModeLocal}
+	got := resolveBinds("", cfg, "")
+	if len(got) != 1 || got[0] != "127.0.0.1" {
+		t.Errorf("loopback-only when bridge absent, got %+v", got)
+	}
+}
+
+func TestResolveBindsAppendsBridgeGateway(t *testing.T) {
+	cfg := &infra.Config{Mode: infra.ModeLocal}
+	got := resolveBinds("", cfg, "10.10.6.1")
+	if len(got) != 2 || got[0] != "127.0.0.1" || got[1] != "10.10.6.1" {
+		t.Errorf("expected [127.0.0.1 10.10.6.1], got %+v", got)
+	}
+}
+
+func TestResolveBindsDeduplicates(t *testing.T) {
+	cfg := &infra.Config{
+		Mode:                 infra.ModeServer,
+		HeadscaleRecordsPath: "/tmp/records.json",
+		AnswerIP:             "10.10.6.1", // coincides with bridge
+	}
+	got := resolveBinds("", cfg, "10.10.6.1")
+	seen := map[string]int{}
+	for _, a := range got {
+		seen[a]++
+	}
+	for a, n := range seen {
+		if n > 1 {
+			t.Errorf("duplicate bind %q (%d) in %+v", a, n, got)
+		}
+	}
+}
+
+func TestResolveBindsServerRecordsAddsTailnet(t *testing.T) {
 	cfg := &infra.Config{
 		Mode:                 infra.ModeServer,
 		HeadscaleRecordsPath: "/tmp/records.json",
 		AnswerIP:             "100.64.0.10",
-		BindIP:               "0.0.0.0",
 	}
-	if got := autoBind(cfg); got != "100.64.0.10" {
-		t.Errorf("autoBind server+records = %q, want 100.64.0.10", got)
+	got := resolveBinds("", cfg, "")
+	found := false
+	for _, a := range got {
+		if a == "100.64.0.10" {
+			found = true
+		}
 	}
-}
-
-func TestAutoBindLocalMode(t *testing.T) {
-	cfg := &infra.Config{
-		Mode:     infra.ModeLocal,
-		BindIP:   "127.0.0.1",
-		AnswerIP: "127.0.0.1",
-	}
-	if got := autoBind(cfg); got != "127.0.0.1" {
-		t.Errorf("autoBind local = %q, want 127.0.0.1", got)
+	if !found {
+		t.Errorf("tailnet IP not in binds: %+v", got)
 	}
 }
 
-func TestAutoBindServerWithoutRecords(t *testing.T) {
-	// Server install without records mode (dnsmasq path) — pier doesn't
-	// know a single tailnet-reachable IP, so don't auto-expose. User can
-	// pass --bind explicitly.
-	cfg := &infra.Config{
-		Mode:     infra.ModeServer,
-		AnswerIP: "100.64.0.10",
+func TestResolveBindsServerWithoutRecordsKeepsLoopback(t *testing.T) {
+	cfg := &infra.Config{Mode: infra.ModeServer, AnswerIP: "100.64.0.10"}
+	got := resolveBinds("", cfg, "")
+	for _, a := range got {
+		if a == "100.64.0.10" {
+			t.Errorf("server-without-records should not advertise tailnet IP, got %+v", got)
+		}
 	}
-	if got := autoBind(cfg); got != "127.0.0.1" {
-		t.Errorf("autoBind server-without-records = %q, want 127.0.0.1", got)
+}
+
+func TestDashboardRouteDir(t *testing.T) {
+	paths := &infra.Paths{TraefikDynamic: "/var/pier/dynamic"}
+
+	if got := dashboardRouteDir(&infra.Config{}, paths); got != "/var/pier/dynamic" {
+		t.Errorf("pier-managed: got %q", got)
+	}
+	cfg := &infra.Config{ExternalTraefikDynamicDir: "/etc/traefik/dynamic"}
+	if got := dashboardRouteDir(cfg, paths); got != "/etc/traefik/dynamic" {
+		t.Errorf("BYO override: got %q", got)
+	}
+}
+
+func TestDashboardUpstreamIP_PierManaged(t *testing.T) {
+	cfg := &infra.Config{}
+
+	// Bridge in binds → use it.
+	if got := dashboardUpstreamIP(cfg, "10.10.6.1", []string{"127.0.0.1", "10.10.6.1"}); got != "10.10.6.1" {
+		t.Errorf("got %q, want bridge", got)
+	}
+	// Bridge not in binds (e.g. --bind 127.0.0.1) → skip.
+	if got := dashboardUpstreamIP(cfg, "10.10.6.1", []string{"127.0.0.1"}); got != "" {
+		t.Errorf("got %q, want empty (bridge unreachable)", got)
+	}
+	// No bridge at all → skip.
+	if got := dashboardUpstreamIP(cfg, "", []string{"127.0.0.1"}); got != "" {
+		t.Errorf("got %q, want empty (no bridge)", got)
+	}
+}
+
+func TestDashboardUpstreamIP_BYO(t *testing.T) {
+	cfg := &infra.Config{ExternalTraefikDynamicDir: "/etc/traefik/dynamic"}
+
+	// Tailnet IP in binds → preferred over bridge.
+	got := dashboardUpstreamIP(cfg, "10.10.6.1", []string{"127.0.0.1", "10.10.6.1", "100.64.0.10"})
+	if got != "100.64.0.10" {
+		t.Errorf("BYO got %q, want tailnet", got)
+	}
+	// No peer-reachable IP but bridge present → fall back to bridge.
+	got = dashboardUpstreamIP(cfg, "10.10.6.1", []string{"127.0.0.1", "10.10.6.1"})
+	if got != "10.10.6.1" {
+		t.Errorf("BYO fallback got %q, want bridge", got)
+	}
+	// Loopback only → nothing reachable.
+	if got := dashboardUpstreamIP(cfg, "", []string{"127.0.0.1"}); got != "" {
+		t.Errorf("BYO loopback-only got %q, want empty", got)
+	}
+}
+
+func TestPrimaryReachableBind(t *testing.T) {
+	cases := []struct {
+		in   []string
+		want string
+	}{
+		{[]string{}, ""},
+		{[]string{"127.0.0.1"}, ""},
+		{[]string{"127.0.0.1", "172.17.0.1"}, ""},
+		{[]string{"127.0.0.1", "10.10.6.1", "192.168.1.5"}, ""},
+		{[]string{"127.0.0.1", "172.17.0.1", "100.64.0.10"}, "100.64.0.10"},
+		{[]string{"127.0.0.1", "100.64.0.10"}, "100.64.0.10"},
+	}
+	for _, c := range cases {
+		if got := primaryReachableBind(c.in); got != c.want {
+			t.Errorf("primaryReachableBind(%+v) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 

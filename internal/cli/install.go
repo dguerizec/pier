@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -15,15 +16,16 @@ import (
 )
 
 type installOpts struct {
-	mode            string
-	tld             string
-	manualDNS       bool
-	noSudo          bool
-	bindIP          string
-	answerIP        string
-	externalTraefik string
-	traefikNetwork  string
-	yes             bool
+	mode                      string
+	tld                       string
+	manualDNS                 bool
+	noSudo                    bool
+	bindIP                    string
+	answerIP                  string
+	externalTraefik           string
+	traefikNetwork            string
+	externalTraefikDynamicDir string
+	yes                       bool
 }
 
 func newInstallCmd() *cobra.Command {
@@ -46,14 +48,15 @@ func newInstallCmd() *cobra.Command {
 				mode = infra.ModeLocal
 			}
 			if err := infra.Install(infra.InstallOptions{
-				Mode:            mode,
-				TLD:             opts.tld,
-				BindIP:          opts.bindIP,
-				AnswerIP:        opts.answerIP,
-				ManualDNS:       opts.manualDNS,
-				Out:             cmd.OutOrStdout(),
-				ExternalTraefik: opts.externalTraefik,
-				TraefikNetwork:  opts.traefikNetwork,
+				Mode:                      mode,
+				TLD:                       opts.tld,
+				BindIP:                    opts.bindIP,
+				AnswerIP:                  opts.answerIP,
+				ManualDNS:                 opts.manualDNS,
+				Out:                       cmd.OutOrStdout(),
+				ExternalTraefik:           opts.externalTraefik,
+				TraefikNetwork:            opts.traefikNetwork,
+				ExternalTraefikDynamicDir: opts.externalTraefikDynamicDir,
 			}); err != nil {
 				return err
 			}
@@ -70,6 +73,7 @@ func newInstallCmd() *cobra.Command {
 	f.StringVar(&opts.answerIP, "answer-ip", "", "IP dnsmasq returns for *.<tld> (server mode; auto-detected from tailscale when omitted)")
 	f.StringVar(&opts.externalTraefik, "use-existing-traefik", "", "BYO mode: name of an existing traefik container to register workloads on")
 	f.StringVar(&opts.traefikNetwork, "traefik-network", "", "BYO mode: docker network for label discovery (auto-detected from the existing traefik when omitted)")
+	f.StringVar(&opts.externalTraefikDynamicDir, "traefik-dynamic-dir", "", "BYO mode: host path of the existing traefik's file-provider directory (auto-detected when omitted; required to expose http://pier.<tld>)")
 	f.BoolVarP(&opts.yes, "yes", "y", false, "accept the detected wizard plan without prompting")
 	return cmd
 }
@@ -79,7 +83,7 @@ func newInstallCmd() *cobra.Command {
 // expects pier to figure things out — and explicit configuration takes
 // precedence whenever any of those flags is set.
 func shouldRunWizard(cmd *cobra.Command) bool {
-	for _, name := range []string{"mode", "bind-ip", "answer-ip", "use-existing-traefik", "traefik-network"} {
+	for _, name := range []string{"mode", "bind-ip", "answer-ip", "use-existing-traefik", "traefik-network", "traefik-dynamic-dir"} {
 		if cmd.Flags().Changed(name) {
 			return false
 		}
@@ -107,6 +111,29 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 	}
 
 	plan := composeInstallPlan(env, base)
+
+	// Host-process traefik can't drive pier workloads (no docker
+	// labels) and will fight pier-traefik for port 80. Surface the
+	// conflict before we plan a port-80 spawn.
+	if env.Traefik.Found && env.Traefik.Container == "" {
+		fmt.Fprintf(out, "! detected a host-process traefik")
+		if env.Traefik.DynamicDir != "" {
+			fmt.Fprintf(out, " (dynamic_dir=%s)", env.Traefik.DynamicDir)
+		}
+		fmt.Fprintln(out, ".")
+		fmt.Fprintln(out, "  pier-traefik will conflict on port 80. Stop the host traefik first,")
+		fmt.Fprintln(out, "  or move it into docker and re-run `pier install` for auto-BYO.")
+		fmt.Fprintln(out)
+	}
+
+	// In BYO mode pier serve drops pier-dashboard.yml in the user's
+	// file-provider dir so http://pier.<tld> resolves through their
+	// traefik. If detection couldn't pin it down, ask before applying
+	// — better one extra prompt than a silent no-op at runtime.
+	if plan.ExternalTraefik != "" && plan.ExternalTraefikDynamicDir == "" && !base.yes {
+		plan.ExternalTraefikDynamicDir = promptTraefikDynamicDir(cmd, plan.ExternalTraefik)
+	}
+
 	fmt.Fprintln(out, "Plan:")
 	fmt.Fprintln(out, "  "+planSummary(plan))
 	fmt.Fprintln(out)
@@ -195,13 +222,14 @@ func tldIsUnder(tld, base string) bool {
 // concrete InstallOptions. Explicit flags always win over detected values.
 func composeInstallPlan(env detect.Environment, base installOpts) infra.InstallOptions {
 	plan := infra.InstallOptions{
-		Mode:            base.mode,
-		TLD:             base.tld,
-		BindIP:          base.bindIP,
-		AnswerIP:        base.answerIP,
-		ManualDNS:       base.manualDNS,
-		ExternalTraefik: base.externalTraefik,
-		TraefikNetwork:  base.traefikNetwork,
+		Mode:                      base.mode,
+		TLD:                       base.tld,
+		BindIP:                    base.bindIP,
+		AnswerIP:                  base.answerIP,
+		ManualDNS:                 base.manualDNS,
+		ExternalTraefik:           base.externalTraefik,
+		TraefikNetwork:            base.traefikNetwork,
+		ExternalTraefikDynamicDir: base.externalTraefikDynamicDir,
 	}
 	if plan.TLD == "" {
 		// When extra_records is available, pier can publish per-slug records
@@ -230,12 +258,19 @@ func composeInstallPlan(env detect.Environment, base installOpts) infra.InstallO
 			plan.Mode = infra.ModeLocal
 		}
 	}
-	if env.Traefik.Found {
+	if env.Traefik.Found && env.Traefik.Container != "" {
+		// Only auto-trigger BYO when we found a docker container — pier
+		// registers workloads with docker labels, so a host-process
+		// traefik can't drive them. When that's the case the wizard
+		// surfaces a warning but otherwise leaves the install alone.
 		if plan.ExternalTraefik == "" {
 			plan.ExternalTraefik = env.Traefik.Container
 		}
 		if plan.TraefikNetwork == "" {
 			plan.TraefikNetwork = env.Traefik.Network
+		}
+		if plan.ExternalTraefikDynamicDir == "" {
+			plan.ExternalTraefikDynamicDir = env.Traefik.DynamicDir
 		}
 	}
 	// Records mode kicks in only when the chosen TLD is a sub-domain of (or
@@ -262,6 +297,9 @@ func planSummary(p infra.InstallOptions) string {
 	}
 	if p.TraefikNetwork != "" {
 		parts = append(parts, "--traefik-network "+p.TraefikNetwork)
+	}
+	if p.ExternalTraefikDynamicDir != "" {
+		parts = append(parts, "--traefik-dynamic-dir "+p.ExternalTraefikDynamicDir)
 	}
 	if p.HeadscaleRecordsPath != "" {
 		parts = append(parts, "(records mode: "+p.HeadscaleRecordsPath+")")
@@ -313,6 +351,53 @@ func askWorktreeDirPref(cmd *cobra.Command, yes bool) {
 		return
 	}
 	fmt.Fprintf(out, "✓ saved worktree dir to %s\n", infra.PrefsPath(paths))
+}
+
+// promptTraefikDynamicDir asks the user to type the host path of
+// their traefik's file-provider directory. Used in BYO mode when
+// detection couldn't extract the path from the container's argv or
+// static config.
+//
+// Validates that the path exists and is a writable directory before
+// returning. Re-prompts on typos so a stale path doesn't persist
+// silently into config.toml only to fail at `pier serve` runtime.
+// Empty input means "skip" — pier serve no-ops the dashboard route
+// registration with no surprise.
+func promptTraefikDynamicDir(cmd *cobra.Command, container string) string {
+	out := cmd.OutOrStdout()
+	in := bufio.NewReader(cmd.InOrStdin())
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "Could not auto-detect the file-provider directory of traefik container %q.\n", container)
+	fmt.Fprintln(out, "  Without it pier serve cannot expose http://pier.<tld>; everything else still works.")
+	for {
+		fmt.Fprint(out, "Path to the traefik dynamic dir [skip]: ")
+		line, _ := in.ReadString('\n')
+		path := strings.TrimSpace(line)
+		if path == "" {
+			return ""
+		}
+		if err := validateTraefikDynamicDir(path); err != nil {
+			fmt.Fprintf(out, "  %v — try again, or hit enter to skip.\n", err)
+			continue
+		}
+		return path
+	}
+}
+
+// validateTraefikDynamicDir checks that path is an existing directory
+// pier serve will be able to drop pier-dashboard.yml into. We don't
+// actually probe write access (a touch/remove would race with
+// concurrent pier servers); a directory + sane mode is enough at
+// install time.
+func validateTraefikDynamicDir(path string) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("%s is not a directory", path)
+	}
+	return nil
 }
 
 // confirm reads a yes/no answer from stdin. Default applies on empty input.

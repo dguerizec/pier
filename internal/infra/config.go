@@ -26,6 +26,12 @@ type Config struct {
 	// ExternalTraefik names the user-managed traefik container in BYO mode.
 	// Empty means pier owns its own pier-traefik container.
 	ExternalTraefik string `toml:"external_traefik,omitempty"`
+	// ExternalTraefikDynamicDir is the host-side directory the user's
+	// traefik watches as a file provider, where pier serve drops
+	// pier-dashboard.yml so http://pier.<tld> resolves through the
+	// existing traefik. Empty when not detected and not provided —
+	// pier serve then skips the dashboard route in BYO mode.
+	ExternalTraefikDynamicDir string `toml:"external_traefik_dynamic_dir,omitempty"`
 
 	// HeadscaleContainer + HeadscaleRecordsPath enable the records adapter:
 	// when set, every pier up/down appends/removes an A record in the

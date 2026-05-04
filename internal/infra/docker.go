@@ -70,3 +70,30 @@ func (d *docker) pull(image string) error {
 	}
 	return nil
 }
+
+// imagePresent reports whether the named image (with tag) is already in
+// the local image store. Used to skip a redundant network round-trip
+// when re-running `pier install`.
+func (d *docker) imagePresent(image string) bool {
+	out, err := d.run("image", "inspect", "--format", "{{.Id}}", image)
+	if err != nil {
+		return false
+	}
+	return out != ""
+}
+
+// containerStatus returns (running, image) for the named container, or
+// ("", "") when the container does not exist. Used to decide whether
+// `pier install` can reuse the running container instead of recreating
+// it (which causes a brief outage).
+func (d *docker) containerStatus(name string) (running bool, image string) {
+	out, err := d.run("inspect", "--format", "{{.State.Running}}|{{.Config.Image}}", name)
+	if err != nil {
+		return false, ""
+	}
+	parts := strings.SplitN(out, "|", 2)
+	if len(parts) != 2 {
+		return false, ""
+	}
+	return strings.TrimSpace(parts[0]) == "true", strings.TrimSpace(parts[1])
+}

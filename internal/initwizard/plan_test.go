@@ -173,6 +173,77 @@ func TestDerive_MatchHostUIDOptsPinningSilencesPrompt(t *testing.T) {
 	}
 }
 
+func TestDerive_ReinitLegacyManifestDefaultsMatchHostUIDTrue(t *testing.T) {
+	dir := t.TempDir()
+	writeCompose(t, dir, `services:
+  app:
+    image: x
+    ports: ["3000:3000"]
+`)
+	// Legacy manifest that pre-dates match_host_uid: the key is absent,
+	// not explicitly false. The wizard must NOT inherit the parsed zero
+	// value — it should fall through to the safe default (true) so the
+	// re-init prompt has the right pre-selection.
+	legacy := `[project]
+name = "legacy"
+
+[stack]
+kind = "compose"
+file = "docker-compose.dev.yml"
+service = "app"
+
+[[expose]]
+service = "app"
+port = 3000
+`
+	if err := os.WriteFile(filepath.Join(dir, ".pier.toml"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p, _, err := Derive(dir, Opts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.MatchHostUID {
+		t.Error("legacy manifest (no match_host_uid key) must default to true, not the parsed zero value")
+	}
+}
+
+func TestDerive_ReinitExplicitFalseSurvives(t *testing.T) {
+	dir := t.TempDir()
+	writeCompose(t, dir, `services:
+  app:
+    image: x
+    ports: ["3000:3000"]
+`)
+	// Manifest with the key present and explicitly false: re-init must
+	// preserve the user's choice rather than silently flip back to true.
+	body := `[project]
+name = "pin"
+
+[stack]
+kind = "compose"
+file = "docker-compose.dev.yml"
+service = "app"
+match_host_uid = false
+
+[[expose]]
+service = "app"
+port = 3000
+`
+	if err := os.WriteFile(filepath.Join(dir, ".pier.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p, _, err := Derive(dir, Opts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.MatchHostUID {
+		t.Error("explicit match_host_uid = false must survive re-init")
+	}
+}
+
 func TestDerive_ReinitLoadsExisting(t *testing.T) {
 	dir := t.TempDir()
 	writeCompose(t, dir, `services:

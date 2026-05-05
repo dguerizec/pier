@@ -127,12 +127,18 @@ func Derive(toplevel string, opts Opts) (*Plan, []Ambiguity, error) {
 	// Re-init: load the existing manifest as the new defaults source. We
 	// decode .pier.toml directly (not via manifest.Load) so we don't bake
 	// .pier.local.toml overrides into the shared file when we rewrite it.
+	// The MetaData captures which keys were physically present so we can
+	// tell "user wrote false" from "key absent" — the latter falls back
+	// to the wizard default rather than perpetuating a legacy zero value.
 	var existing *manifest.Manifest
+	var existingMeta toml.MetaData
 	if _, err := os.Stat(manifestPath); err == nil {
 		existing = &manifest.Manifest{}
-		if _, err := toml.DecodeFile(manifestPath, existing); err != nil {
+		md, err := toml.DecodeFile(manifestPath, existing)
+		if err != nil {
 			return nil, nil, fmt.Errorf("re-init: parse %s: %w", manifestPath, err)
 		}
+		existingMeta = md
 	}
 
 	// File: --file > existing stack.file > auto-detect.
@@ -221,14 +227,15 @@ func Derive(toplevel string, opts Opts) (*Plan, []Ambiguity, error) {
 	}
 
 	// match_host_uid resolution: explicit flag wins, then the existing
-	// manifest's value on re-init, then the safe default (true). The
-	// ambiguity fires only when the user didn't pin a value via flag —
-	// re-init users get prompted with their previous choice as the
-	// default so a confirm-through still preserves it.
+	// manifest's value when the key was actually present, then the safe
+	// default (true). Legacy manifests written before the key existed
+	// parse to false (Go zero value), which would silently flip the
+	// prompt default to false on re-init — IsDefined distinguishes
+	// "user wrote false" from "key absent".
 	matchHostUID := true
 	if opts.MatchHostUID != nil {
 		matchHostUID = *opts.MatchHostUID
-	} else if existing != nil {
+	} else if existing != nil && existingMeta.IsDefined("stack", "match_host_uid") {
 		matchHostUID = existing.Stack.MatchHostUID
 	}
 	if opts.MatchHostUID == nil {

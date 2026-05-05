@@ -115,11 +115,27 @@ type Materialize struct {
 	PreRemove []string `toml:"pre_remove,omitempty" json:"pre_remove,omitempty"`
 }
 
+// Hooks wraps the up/down lifecycle shell commands. Each field is a
+// list of `sh -c` commands run sequentially with cwd set to the worktree
+// being acted on; the first non-zero exit aborts the chain. PIER_* env
+// vars (see materialize.HookContext) are exposed identically to
+// [materialize].post_create / pre_remove — the same script can be reused
+// across the four phases.
 type Hooks struct {
-	PreUp    string `toml:"pre_up,omitempty"    json:"pre_up,omitempty"`
-	PostUp   string `toml:"post_up,omitempty"   json:"post_up,omitempty"`
-	PreDown  string `toml:"pre_down,omitempty"  json:"pre_down,omitempty"`
-	PostDown string `toml:"post_down,omitempty" json:"post_down,omitempty"`
+	// PreUp runs before materialize.Apply at `pier up`. A failure
+	// aborts before any container is touched.
+	PreUp []string `toml:"pre_up,omitempty"    json:"pre_up,omitempty"`
+	// PostUp runs after the adapter has started the workload and
+	// state/headscale have been updated. The workload is left running
+	// even if the hook fails — the user can `pier down` manually.
+	PostUp []string `toml:"post_up,omitempty"   json:"post_up,omitempty"`
+	// PreDown runs before the adapter stops the workload, while it is
+	// still up (DB dump etc.). Failure aborts unless --ignore-hook-errors.
+	PreDown []string `toml:"pre_down,omitempty"  json:"pre_down,omitempty"`
+	// PostDown runs after the workload has been stopped and state has
+	// been cleaned. Failures are surfaced but don't roll anything back —
+	// the workload is already down.
+	PostDown []string `toml:"post_down,omitempty" json:"post_down,omitempty"`
 }
 
 type Watch struct {

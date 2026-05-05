@@ -416,7 +416,7 @@ func (h *apiHandler) postWorkloadUp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := runUp(d, io.Discard, io.Discard); err != nil {
+	if err := runUp(d, false, io.Discard, io.Discard); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "up failed: "+err.Error())
 		return
 	}
@@ -476,7 +476,7 @@ func (h *apiHandler) postWorkloadDown(w http.ResponseWriter, r *http.Request) {
 	}
 	defer d.State.Close()
 
-	if err := runDown(d, false, io.Discard, io.Discard); err != nil {
+	if err := runDown(d, false, false, io.Discard, io.Discard); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "down failed: "+err.Error())
 		return
 	}
@@ -669,7 +669,7 @@ func (h *apiHandler) postWorktree(w http.ResponseWriter, r *http.Request) {
 		}
 		defer d.State.Close()
 
-		if err := runUp(d, io.Discard, io.Discard); err != nil {
+		if err := runUp(d, false, io.Discard, io.Discard); err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "post-create up: "+err.Error())
 			return
 		}
@@ -730,7 +730,7 @@ func (h *apiHandler) deleteWorktree(w http.ResponseWriter, r *http.Request) {
 	// it down cleanly, and the user wants the dir gone anyway.
 	if info, err := worktree.DetectFrom(abs); err == nil {
 		if d, err := dailyForWorktree(info, slug, io.Discard, io.Discard); err == nil {
-			_ = runDown(d, false, io.Discard, io.Discard)
+			_ = runDown(d, false, false, io.Discard, io.Discard)
 			d.State.Close()
 		}
 	}

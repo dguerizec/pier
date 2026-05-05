@@ -493,10 +493,10 @@
       "ManifestHooks": {
         "type": "object",
         "properties": {
-          "pre_up":    { "type": "string" },
-          "post_up":   { "type": "string" },
-          "pre_down":  { "type": "string" },
-          "post_down": { "type": "string" }
+          "pre_up":    { "type": "array", "items": { "type": "string" } },
+          "post_up":   { "type": "array", "items": { "type": "string" } },
+          "pre_down":  { "type": "array", "items": { "type": "string" } },
+          "post_down": { "type": "array", "items": { "type": "string" } }
         }
       },
       "ManifestWatch": {

@@ -9,7 +9,7 @@ func configureHostDNS(tld, dnsIP string) (bool, error) {
 	return false, errors.New("infra: host DNS configuration only supported on Linux for MVP (use --manual-dns elsewhere)")
 }
 
-func unconfigureHostDNS() error { return nil }
+func unconfigureHostDNS() (bool, error) { return false, nil }
 
 func manualDNSInstructions(tld, dnsIP string) string {
 	return "macOS/Windows host DNS instructions: see DESIGN §5.7 (post-MVP)."

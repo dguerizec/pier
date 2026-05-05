@@ -54,12 +54,15 @@ func WriteDashboardRoute(dir, host, tld, upstream string) (string, error) {
 // Missing file is not an error — pier serve may run without ever
 // having written one (no TLD configured, conflict with another
 // writer, etc.).
-func RemoveDashboardRoute(dir string) error {
+func RemoveDashboardRoute(dir string) (bool, error) {
 	path := filepath.Join(dir, DashboardRouteFile)
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
 	}
-	return nil
+	return true, nil
 }
 
 // renderDashboardRoute builds the static traefik dynamic yaml. We use

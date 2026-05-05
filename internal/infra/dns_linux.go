@@ -53,14 +53,17 @@ func configureHostDNS(tld, dnsIP string) (changed bool, err error) {
 	return true, nil
 }
 
-func unconfigureHostDNS() error {
+func unconfigureHostDNS() (bool, error) {
 	if _, err := os.Stat(resolvedDropinPath); errors.Is(err, os.ErrNotExist) {
-		return nil
+		return false, nil
 	}
 	if err := runSudo("rm", "-f", resolvedDropinPath); err != nil {
-		return err
+		return false, err
 	}
-	return runSudo("systemctl", "reload-or-restart", "systemd-resolved")
+	if err := runSudo("systemctl", "reload-or-restart", "systemd-resolved"); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // manualDNSInstructions returns the shell commands the user should run when

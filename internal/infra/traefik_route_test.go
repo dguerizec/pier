@@ -59,8 +59,12 @@ func TestWriteDashboardRoute_RejectsEmpty(t *testing.T) {
 
 func TestRemoveDashboardRoute_MissingIsNoop(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "dynamic")
-	if err := RemoveDashboardRoute(dir); err != nil {
+	removed, err := RemoveDashboardRoute(dir)
+	if err != nil {
 		t.Errorf("removing missing route should be a no-op: %v", err)
+	}
+	if removed {
+		t.Errorf("expected removed=false when route file is absent")
 	}
 }
 
@@ -70,8 +74,12 @@ func TestRemoveDashboardRoute_DeletesFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := RemoveDashboardRoute(dir); err != nil {
+	removed, err := RemoveDashboardRoute(dir)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !removed {
+		t.Errorf("expected removed=true after deleting an existing route")
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("file still exists: %v", err)

@@ -121,4 +121,9 @@ pre_remove  = ["./scripts/backup-db.sh"]    # run BEFORE pier down (workload sti
   later worktrees clobber earlier ones. Namespace by `$PIER_SLUG`:
   `pg_dump > "backups/${PIER_SLUG}.sql"`.
 - `[hooks]` (top-level) is a different block aimed at the `pier up` /
-  `pier down` lifecycle. Don't confuse the two.
+  `pier down` lifecycle. **It is currently defined in the manifest
+  schema but NOT wired up** — pier ignores `[hooks].pre_up`,
+  `post_up`, `pre_down`, `post_down` at runtime today. Don't suggest
+  adding entries there until wiring lands. Use `[materialize].
+  post_create` / `pre_remove` for worktree-lifecycle hooks (those ARE
+  wired).

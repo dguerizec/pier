@@ -43,7 +43,7 @@ the common case — pier resolves project + slug from the cwd).
 | Task | pier command | Do NOT use |
 |---|---|---|
 | Start the workload | `pier up` | `docker compose up`, `make run` |
-| Stop the workload | `pier down` | `docker compose down`, `docker stop` |
+| Stop the workload | `pier down` (`--purge` to also wipe snapshots) | `docker compose down`, `docker stop` |
 | Print the workload's URL | `pier url` (`--all` for every URL) | grep the manifest |
 | Tail logs | `pier logs [-f] [--tail N]` | `docker compose logs` |
 | Inspect containers | `pier ps` (passes through to compose) | `docker ps` (less scoped) |
@@ -84,7 +84,8 @@ DNS records behind. pier provides commands that do both correctly.
 - Runs `[materialize].pre_remove` first, while the workload is still up
   (canonical use: `pg_dump`). Failure aborts the whole rm path unless
   `--ignore-hook-errors`.
-- Then `pier down` (best-effort).
+- Then `pier down` (best-effort), unless `--skip-down` is set (use when
+  the workload is already stopped — `pre_remove` still runs).
 - `--purge` runs `pier down --purge` to wipe per-worktree snapshots.
 - `--force` passes through to `git worktree remove --force`.
 

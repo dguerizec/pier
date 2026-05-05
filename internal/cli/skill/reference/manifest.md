@@ -135,3 +135,17 @@ API_URL = "{url.api}"
   secrets, a per-worktree mutable data dir, or per-worktree DB
   seed/backup hooks. See [materialize.md](materialize.md).
 - ❌ Does NOT add `[hooks]`, `[watch]`, or `match_host_uid` — opt-in.
+
+## Schema-only fields (not yet wired)
+
+The manifest schema accepts a few blocks that pier doesn't act on at
+runtime today. Don't recommend them until wiring lands:
+
+- `[hooks].pre_up / post_up / pre_down / post_down` — defined in
+  `internal/manifest/manifest.go`, but `pier up` / `pier down` ignore
+  them on main. Wiring is in flight on a feature branch. For
+  worktree-lifecycle hooks today, use
+  `[materialize].post_create` / `pre_remove` (see
+  [materialize.md](materialize.md)).
+- `[watch].paths / on_change` — `pier watch` returns "not implemented
+  yet". Don't suggest a `[watch]` block.

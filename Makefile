@@ -15,6 +15,7 @@ install:
 	@echo "installed: $(BIN)"
 
 uninstall:
+	@if [ -x "$(BIN)" ]; then "$(BIN)" uninstall || true; fi
 	rm -f $(BIN)
 
 test:

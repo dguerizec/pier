@@ -76,7 +76,7 @@ Apply this plan? [Y/n]
 
 Pass `-y` to accept silently (CI / agent-friendly). Pass any explicit infra flag (`--mode`, `--tld`, ...) to skip the wizard.
 
-`pier uninstall` reverses everything (containers, network, host DNS drop-in, config dir). BYO mode leaves the user's traefik + network alone.
+`pier uninstall` reverses everything (containers, network, host DNS drop-in, config dir). BYO mode leaves the user's traefik + network alone. The pier binary itself stays in place — pass `--purge` to also delete it (`pier uninstall --purge`). `--purge` declines when the binary lives under a brew prefix or system path; let the package manager remove it in that case.
 
 ## Per-repo setup (once per project)
 

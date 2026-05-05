@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -420,7 +421,10 @@ func confirm(stdin interface{ Read([]byte) (int, error) }, out interface{ Write(
 }
 
 func newUninstallCmd() *cobra.Command {
-	var manualDNS bool
+	var (
+		manualDNS bool
+		purge     bool
+	)
 	cmd := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Stop infra containers, remove resolver files, clear config dir",
@@ -436,9 +440,65 @@ func newUninstallCmd() *cobra.Command {
 					fmt.Fprintf(out, "✓ AI skill removed: %s\n", dir)
 				}
 			}
+			if purge {
+				if err := purgeBinary(out); err != nil {
+					fmt.Fprintf(out, "! remove binary: %v\n", err)
+				}
+			}
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&manualDNS, "manual-dns", false, "do not touch host DNS, print revert instructions instead")
+	cmd.Flags().BoolVar(&purge, "purge", false, "also remove the pier binary itself (skipped when installed by a package manager)")
 	return cmd
+}
+
+// purgeBinary deletes the pier executable that's running this very call.
+// Linux and macOS keep the running inode alive until the process exits, so
+// unlinking the file we're executing from is safe — the kernel reaps it
+// once the command returns.
+//
+// Refuses when the binary lives under a path commonly owned by a package
+// manager (brew prefix, system /usr) so we don't leave stale metadata in
+// the manager's database. The expected install paths from install.sh
+// (~/.local/bin, /usr/local/bin) and the from-source Makefile target both
+// fall outside that list and are removed normally.
+func purgeBinary(out io.Writer) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return err
+	}
+	if mgr := managedBy(resolved); mgr != "" {
+		fmt.Fprintf(out, "! skipping binary removal: %s looks managed by %s\n", resolved, mgr)
+		fmt.Fprintf(out, "  use the package manager to uninstall (e.g. `brew uninstall pier`)\n")
+		return nil
+	}
+	if err := os.Remove(resolved); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "✓ removed binary %s\n", resolved)
+	return nil
+}
+
+// managedBy returns a short label of the package manager that likely owns
+// path, or "" when pier looks free-standing. Conservative on purpose: when
+// in doubt, return "" so --purge removes the file. The skip exists mainly
+// to protect brew/apt metadata.
+func managedBy(path string) string {
+	switch {
+	case strings.HasPrefix(path, "/opt/homebrew/"),
+		strings.HasPrefix(path, "/usr/local/Cellar/"),
+		strings.HasPrefix(path, "/home/linuxbrew/.linuxbrew/"):
+		return "homebrew"
+	case strings.HasPrefix(path, "/usr/bin/"),
+		strings.HasPrefix(path, "/usr/sbin/"),
+		strings.HasPrefix(path, "/bin/"),
+		strings.HasPrefix(path, "/sbin/"):
+		return "the system package manager"
+	}
+	return ""
 }

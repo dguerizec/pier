@@ -16,9 +16,13 @@ func (d *docker) run(args ...string) (string, error) {
 	cmd := exec.Command("docker", args...)
 	out, err := cmd.Output()
 	if err != nil {
+		// Wrap with %w on both branches so callers can errors.As back
+		// to *exec.ExitError. The ExitError branch additionally inlines
+		// the captured stderr — that text is what the user actually
+		// wants to read; the wrapped chain is for programmatic checks.
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
-			return "", fmt.Errorf("docker %s: %s", strings.Join(args, " "), strings.TrimSpace(string(ee.Stderr)))
+			return "", fmt.Errorf("docker %s: %s: %w", strings.Join(args, " "), strings.TrimSpace(string(ee.Stderr)), err)
 		}
 		return "", fmt.Errorf("docker %s: %w", strings.Join(args, " "), err)
 	}
@@ -73,7 +77,9 @@ func (d *docker) pull(image string) error {
 	cmd.Stderr = nil
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("docker pull %s: %s", image, strings.TrimSpace(string(out)))
+		// Same wrap rationale as (*docker).run: stderr text for the
+		// human, %w'd cause for errors.As-style introspection.
+		return fmt.Errorf("docker pull %s: %s: %w", image, strings.TrimSpace(string(out)), err)
 	}
 	return nil
 }

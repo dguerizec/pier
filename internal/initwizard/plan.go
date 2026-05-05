@@ -24,6 +24,12 @@ type Opts struct {
 	Yes         bool
 	WorktreeDir string
 	BaseRef     string
+	// MatchHostUID is a tri-state: nil means "fall back to existing
+	// manifest, then the wizard default (true)"; non-nil pins the
+	// value and suppresses the prompt. CLI exposes this through
+	// --match-host-uid / --no-match-host-uid; only a Changed() flag
+	// produces a non-nil value here.
+	MatchHostUID *bool
 }
 
 // Plan is a fully populated proposal for a new .pier.toml. Derive fills
@@ -46,6 +52,11 @@ type Plan struct {
 	WorktreeDir    string
 	BaseRef        string
 	Share          bool
+	// MatchHostUID is the value Apply will write into [stack]. Defaults
+	// to true on a fresh init (safe for distroless/nonroot images, no-op
+	// for images that already run as root). Re-init inherits the
+	// existing manifest's value.
+	MatchHostUID bool
 
 	// Existing is the previous manifest when re-running pier init on a
 	// project that already has a .pier.toml. Apply uses it as the base for
@@ -93,6 +104,10 @@ const (
 	// AmbEnvSuggestions is set when the compose file contains environment
 	// values that look like cross-service URLs we can templatise.
 	AmbEnvSuggestions
+	// AmbMatchHostUID is set when the user did not pin
+	// --match-host-uid / --no-match-host-uid and we want to confirm the
+	// default before writing it.
+	AmbMatchHostUID
 )
 
 // Ambiguity flags a Plan field that took a default but a human might
@@ -205,6 +220,24 @@ func Derive(toplevel string, opts Opts) (*Plan, []Ambiguity, error) {
 		})
 	}
 
+	// match_host_uid resolution: explicit flag wins, then the existing
+	// manifest's value on re-init, then the safe default (true). The
+	// ambiguity fires only when the user didn't pin a value via flag —
+	// re-init users get prompted with their previous choice as the
+	// default so a confirm-through still preserves it.
+	matchHostUID := true
+	if opts.MatchHostUID != nil {
+		matchHostUID = *opts.MatchHostUID
+	} else if existing != nil {
+		matchHostUID = existing.Stack.MatchHostUID
+	}
+	if opts.MatchHostUID == nil {
+		ambig = append(ambig, Ambiguity{
+			Kind:    AmbMatchHostUID,
+			Message: "run containers as your host UID:GID (avoids root-owned files in bind mounts)?",
+		})
+	}
+
 	return &Plan{
 		Toplevel:       toplevel,
 		ManifestPath:   manifestPath,
@@ -217,6 +250,7 @@ func Derive(toplevel string, opts Opts) (*Plan, []Ambiguity, error) {
 		WorktreeDir:    worktreeDir,
 		BaseRef:        baseRef,
 		Share:               !opts.Private,
+		MatchHostUID:        matchHostUID,
 		Existing:            existing,
 		WorktreeDirExplicit: opts.WorktreeDir != "",
 		EnvSuggestions:      envSuggestions,

@@ -50,8 +50,14 @@ func TestDerive_SingleService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ambig) != 0 {
-		t.Errorf("ambig = %+v, want none for single-service", ambig)
+	// AmbMatchHostUID always fires when --[no-]match-host-uid wasn't passed;
+	// the wizard wants to confirm the default with the user. Pin it via
+	// Opts to silence in non-prompt scenarios — tested separately below.
+	if len(ambig) != 1 || ambig[0].Kind != AmbMatchHostUID {
+		t.Errorf("ambig = %+v, want only AmbMatchHostUID for single-service", ambig)
+	}
+	if !p.MatchHostUID {
+		t.Error("MatchHostUID defaults to true on fresh init")
 	}
 	if p.Name != filepath.Base(dir) {
 		// dir name may include random suffix but should be valid
@@ -128,6 +134,45 @@ func TestDerive_MultiService_ServiceFlagSilencesDefault(t *testing.T) {
 	}
 }
 
+func TestDerive_MatchHostUIDOptsPinningSilencesPrompt(t *testing.T) {
+	dir := t.TempDir()
+	writeCompose(t, dir, `services:
+  app:
+    image: x
+    ports: ["3000:3000"]
+`)
+
+	// nil Opts.MatchHostUID → ambiguity fires, default true.
+	_, ambig, err := Derive(dir, Opts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAmb := false
+	for _, a := range ambig {
+		if a.Kind == AmbMatchHostUID {
+			wantAmb = true
+		}
+	}
+	if !wantAmb {
+		t.Error("nil Opts.MatchHostUID should fire AmbMatchHostUID")
+	}
+
+	// Pinned false → no ambiguity, value forced.
+	no := false
+	p, ambig, err := Derive(dir, Opts{MatchHostUID: &no})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range ambig {
+		if a.Kind == AmbMatchHostUID {
+			t.Error("pinned Opts.MatchHostUID must silence AmbMatchHostUID")
+		}
+	}
+	if p.MatchHostUID {
+		t.Error("Opts.MatchHostUID=&false should pin Plan.MatchHostUID to false")
+	}
+}
+
 func TestDerive_ReinitLoadsExisting(t *testing.T) {
 	dir := t.TempDir()
 	writeCompose(t, dir, `services:
@@ -201,6 +246,10 @@ API_URL = "{url.api}"
 	// match_host_uid kept on Existing.
 	if !p.Existing.Stack.MatchHostUID {
 		t.Error("match_host_uid should survive on Existing")
+	}
+	// Plan.MatchHostUID inherits the existing value when no flag is passed.
+	if !p.MatchHostUID {
+		t.Error("Plan.MatchHostUID should inherit existing manifest value on re-init")
 	}
 	// env.web kept on Existing.
 	if v := p.Existing.Env["web"]["API_URL"]; v != "{url.api}" {

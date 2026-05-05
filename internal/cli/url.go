@@ -17,7 +17,7 @@ func newURLCmd() *cobra.Command {
 		Use:   "url",
 		Short: "Print the URL(s) of the current worktree's workload",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			d, err := resolveDaily(slug)
+			d, err := resolveDaily(cmd, slug)
 			if err != nil {
 				return err
 			}

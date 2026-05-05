@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/spf13/cobra"
+
 	"github.com/LeoPartt/pier/internal/adapter"
 	"github.com/LeoPartt/pier/internal/infra"
 	"github.com/LeoPartt/pier/internal/manifest"
@@ -145,7 +147,13 @@ func loadManifestForWorkloadPath(worktreePath string) (*manifest.Manifest, error
 // the state DB. When --slug points at a different worktree than cwd, the
 // returned context targets that worktree's filesystem too — bind mounts
 // and materialization need it. Caller MUST defer d.State.Close() on success.
-func resolveDaily(slugOverride string) (*daily, error) {
+//
+// The *cobra.Command supplies the writers that end up in d.Ctx.Out and
+// d.Ctx.Err — i.e. where the compose adapter streams `docker compose
+// up/down/logs` output. Tests can SetOut/SetErr a buffer on the command
+// and capture everything the worktree-scoped flow prints, including
+// subprocess output.
+func resolveDaily(cmd *cobra.Command, slugOverride string) (*daily, error) {
 	current, err := worktree.Detect()
 	if err != nil {
 		return nil, err
@@ -159,7 +167,7 @@ func resolveDaily(slugOverride string) (*daily, error) {
 	if err != nil {
 		return nil, err
 	}
-	return dailyForWorktree(info, slug, os.Stdout, os.Stderr)
+	return dailyForWorktree(info, slug, cmd.OutOrStdout(), cmd.ErrOrStderr())
 }
 
 // dailyForWorktree builds a daily for a pre-resolved worktree info. Used

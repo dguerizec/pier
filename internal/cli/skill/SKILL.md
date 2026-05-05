@@ -1,6 +1,6 @@
 ---
 name: pier
-description: Use this skill in any repository that has a `.pier.toml` file at its root. pier is a CLI that gives every git worktree a stable URL on a local dev domain via traefik + dnsmasq. When .pier.toml is present, prefer pier commands over their docker / git equivalents for workload and worktree lifecycle, and respect pier's manifest conventions described below.
+description: Use this skill in any repository that has a `.pier.toml` file at its root, OR when the user wants to add pier to a project that has a docker-compose file (run `pier init` — never hand-write the manifest). pier is a CLI that gives every git worktree a stable URL on a local dev domain via traefik + dnsmasq. When .pier.toml is present, prefer pier commands over their docker / git equivalents for workload and worktree lifecycle, and respect pier's manifest conventions described below.
 ---
 
 # pier — workflow for AI coding assistants
@@ -16,6 +16,9 @@ one URL per git worktree.
 - The user asks anything about running, building, deploying, or stopping
   this project locally.
 - The user asks to create or remove a git worktree in this project.
+- The repository has a `docker-compose*.yml` but no `.pier.toml`, and
+  the user wants to add pier — run `pier init`, don't hand-write the
+  manifest.
 
 ## Core mental model
 
@@ -34,6 +37,40 @@ one URL per git worktree.
 - **State lives in three places**: git (worktrees), docker (containers),
   the pier state DB (`~/.config/pier/state.db`). pier orchestrates the
   three. Don't manipulate them directly when a pier command exists.
+
+## Bootstrapping (`pier init`)
+
+When a repository has a docker-compose file but no `.pier.toml`:
+
+```bash
+pier init --yes
+```
+
+`--yes` is the agent default — there's no TTY for the wizard's
+prompts. The wizard inspects the compose file, fills in
+`[project] / [stack] / [[expose]] / [worktree].base_ref`, sets
+`match_host_uid = true` (safe for distroless / nonroot images), and
+gitignores `.pier.local.toml` + `.pier/`. Re-running on an existing
+manifest is safe: user-curated sections (`[env]`, `[materialize]`,
+`[hooks]`, `[watch]`) pass through untouched.
+
+**Don't hand-write `.pier.toml`** — typos in `base_domain`, missing
+`match_host_uid`, slug collisions are common bugs the wizard avoids
+by construction.
+
+Common one-off flags for the agent:
+
+- `--name <label>` — repo dir name doesn't match the desired DNS label.
+- `--file path/to/compose.yml` — disambiguate when multiple compose
+  files exist.
+- `--service <name>` — pick which exposed service answers at
+  `<slug>.<base>` (the bare alias).
+- `--no-match-host-uid` — for images that hard-code their own user
+  (postgres, mysql).
+- `--private` — gitignore `.pier.toml` (closed-source overlay).
+
+Full flag reference and post-init checklist (env tokens, materialize)
+in [reference/init.md](reference/init.md).
 
 ## Daily commands
 
@@ -163,10 +200,17 @@ Don't write it into `.pier.toml` proactively. See
 7. **Adding `[worktree].dir` to `.pier.toml` without being asked.**
    It's a per-user preference. See
    [reference/worktree-dir.md](reference/worktree-dir.md).
+8. **Hand-writing `.pier.toml` from scratch.** Run `pier init --yes`
+   instead. Typos in `base_domain`, missing `match_host_uid`, slug
+   collisions are common bugs the wizard avoids by construction. See
+   [reference/init.md](reference/init.md).
 
 ## Common one-liners
 
 ```bash
+# Bootstrap pier in a fresh project (compose file present, no .pier.toml)
+pier init --yes
+
 # Spin up a feature branch in its own worktree, ready to demo
 pier worktree add feat-x --up
 pier url --slug feat-x       # → http://feat-x.myapp.test (or .dev, etc.)
@@ -193,12 +237,16 @@ pier ps --slug feat-x
 
 ## Deeper references
 
+- [reference/init.md](reference/init.md) — `pier init` flag reference,
+  unattended invocation, re-init semantics, post-init checklist (env
+  tokens, materialize entries to add by hand).
 - [reference/manifest.md](reference/manifest.md) — full annotated
-  manifest, all templating tokens, `[env.<service>]` patterns, what
-  `pier init` does and doesn't do.
+  manifest, all templating tokens, `[env.<service>]` patterns,
+  `match_host_uid` decision tree, schema-only fields.
 - [reference/materialize.md](reference/materialize.md) — symlinks vs
-  snapshots semantics, `post_create` / `pre_remove` execution model,
-  failure behaviour, env vars, pitfalls.
+  snapshots semantics, `[materialize].post_create` / `pre_remove` and
+  `[hooks].pre_up / post_up / pre_down / post_down` execution model,
+  env vars, pitfalls.
 - [reference/worktree-dir.md](reference/worktree-dir.md) — how the
   worktree dir is resolved across local override / manifest / prefs /
   fallback, and when (not) to commit it.

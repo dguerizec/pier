@@ -128,10 +128,18 @@ API_URL = "{url.api}"                # → http://api.<slug>.<base> at runtime
 `{host.default}`, `{url.default}`. Full reference + examples in
 [reference/manifest.md](reference/manifest.md).
 
-**`[materialize]`** governs how secondary worktrees inherit state from
-the primary (symlinks vs snapshots) and runs lifecycle hooks
-(`post_create`, `pre_remove`). See
+**`[materialize]` and `[hooks]`** govern how secondary worktrees inherit
+state from the primary (symlinks vs snapshots) and run shell hooks
+across the worktree lifecycle (`post_create`, `pre_remove`) and the
+workload lifecycle (`pre_up`, `post_up`, `pre_down`, `post_down`). All
+six phases share the same `sh -c` execution model and `PIER_*` env. See
 [reference/materialize.md](reference/materialize.md).
+
+**`[stack].match_host_uid`** controls whether containers run as the
+host UID. `pier init` prompts for this; default is `true` (safe for
+distroless / nonroot images). See
+[reference/manifest.md](reference/manifest.md) "when to set true vs
+false".
 
 **`[worktree].dir`** is a per-user preference, not a project setting.
 Don't write it into `.pier.toml` proactively. See

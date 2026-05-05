@@ -283,10 +283,10 @@ symlinks  = [".env", "secrets/"]
 snapshots = ["data-dev/"]
 
 [hooks]
-pre_up    = "cargo build --release"   # optional shell hook
-post_up   = ""
-pre_down  = ""
-post_down = ""
+pre_up    = ["cargo build --release"]   # optional shell hook chain
+post_up   = []
+pre_down  = []
+post_down = []
 
 [watch]
 paths     = ["src/", "Cargo.toml"]

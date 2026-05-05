@@ -233,7 +233,7 @@ symlinks = [".env"]
 snapshots = ["data/"]
 
 [hooks]
-pre_up = "echo hi"
+pre_up = ["echo hi"]
 
 [env.api]
 SECRET = "shh"
@@ -262,7 +262,7 @@ SECRET = "shh"
 	if len(roundtrip.Materialize.Snapshots) != 1 {
 		t.Errorf("snapshots lost: %+v", roundtrip.Materialize)
 	}
-	if roundtrip.Hooks.PreUp != "echo hi" {
+	if len(roundtrip.Hooks.PreUp) != 1 || roundtrip.Hooks.PreUp[0] != "echo hi" {
 		t.Errorf("hooks lost: %+v", roundtrip.Hooks)
 	}
 	if roundtrip.Env["api"]["SECRET"] != "shh" {

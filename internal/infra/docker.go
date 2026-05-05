@@ -38,24 +38,31 @@ func (d *docker) ensureNetwork(name string) error {
 	return err
 }
 
-// removeNetwork removes the named network. Returns nil if absent.
-func (d *docker) removeNetwork(name string) error {
+// removeNetwork removes the named network. The bool reports whether a
+// network was actually removed; (false, nil) means absent (a no-op).
+func (d *docker) removeNetwork(name string) (bool, error) {
 	out, _ := d.run("network", "ls", "--filter", "name=^"+name+"$", "--format", "{{.Name}}")
 	if out != name {
-		return nil
+		return false, nil
 	}
-	_, err := d.run("network", "rm", name)
-	return err
+	if _, err := d.run("network", "rm", name); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
-// removeContainer force-removes the named container. Returns nil if absent.
-func (d *docker) removeContainer(name string) error {
+// removeContainer force-removes the named container. The bool reports
+// whether a container was actually removed; (false, nil) means absent
+// (a no-op).
+func (d *docker) removeContainer(name string) (bool, error) {
 	out, _ := d.run("ps", "-a", "--filter", "name=^"+name+"$", "--format", "{{.Names}}")
 	if out != name {
-		return nil
+		return false, nil
 	}
-	_, err := d.run("rm", "-f", name)
-	return err
+	if _, err := d.run("rm", "-f", name); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // pull retrieves an image. Streams progress to stderr by inheriting the

@@ -164,7 +164,7 @@ func Fix() Report {
 
 	for _, c := range containers {
 		if !containerIsRunning(c.name) {
-			_ = d.removeContainer(c.name)
+			_, _ = d.removeContainer(c.name)
 			if _, err := d.run(c.args(paths, cfg.BindIP)...); err == nil {
 				report.Actions = append(report.Actions, "restarted container "+c.name)
 			}

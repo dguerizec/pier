@@ -142,9 +142,9 @@ func runServe(cmd *cobra.Command, bind string, port int, corsOrigins []string) e
 				}
 			}
 			if routeRegistered {
-				if err := infra.RemoveDashboardRoute(dashboardRouteDir(cfg, paths)); err != nil {
+				if removed, err := infra.RemoveDashboardRoute(dashboardRouteDir(cfg, paths)); err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "! traefik route cleanup: %v\n", err)
-				} else {
+				} else if removed {
 					fmt.Fprintf(out, "✓ traefik route removed: %s\n", routeName)
 				}
 			}

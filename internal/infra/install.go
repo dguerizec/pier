@@ -173,8 +173,8 @@ func Install(opts InstallOptions) error {
 		// Switching from pier-managed to BYO: stop the old pier-traefik so
 		// it doesn't shadow the user's. Same for the pier network if
 		// nothing else is using it.
-		_ = d.removeContainer(TraefikContainer)
-		_ = d.removeNetwork(NetworkName)
+		_, _ = d.removeContainer(TraefikContainer)
+		_, _ = d.removeNetwork(NetworkName)
 	}
 
 	if !byo {
@@ -190,7 +190,7 @@ func Install(opts InstallOptions) error {
 	} else {
 		// Leftover dnsmasq from a previous non-records install would
 		// shadow MagicDNS — clear it.
-		_ = d.removeContainer(DnsmasqContainer)
+		_, _ = d.removeContainer(DnsmasqContainer)
 		fmt.Fprintf(out, "✓ records mode: per-slug A records will be written to %s\n", opts.HeadscaleRecordsPath)
 	}
 
@@ -289,23 +289,26 @@ func Uninstall(out io.Writer, manualDNS bool) error {
 	d := newDocker()
 
 	// pier-traefik / pier network only ours to remove when we managed them.
+	// Helpers return (removed, err): we suppress the ✓ line when nothing
+	// was there so a second `pier uninstall` doesn't lie about deleting
+	// resources that are already gone.
 	pierManaged := cfg == nil || cfg.ExternalTraefik == ""
 	if pierManaged {
-		if err := d.removeContainer(TraefikContainer); err != nil {
+		if removed, err := d.removeContainer(TraefikContainer); err != nil {
 			fmt.Fprintf(out, "! remove %s: %v\n", TraefikContainer, err)
-		} else {
+		} else if removed {
 			fmt.Fprintf(out, "✓ removed container %s\n", TraefikContainer)
 		}
 	}
-	if err := d.removeContainer(DnsmasqContainer); err != nil {
+	if removed, err := d.removeContainer(DnsmasqContainer); err != nil {
 		fmt.Fprintf(out, "! remove %s: %v\n", DnsmasqContainer, err)
-	} else {
+	} else if removed {
 		fmt.Fprintf(out, "✓ removed container %s\n", DnsmasqContainer)
 	}
 	if pierManaged {
-		if err := d.removeNetwork(NetworkName); err != nil {
+		if removed, err := d.removeNetwork(NetworkName); err != nil {
 			fmt.Fprintf(out, "! remove network %s: %v\n", NetworkName, err)
-		} else {
+		} else if removed {
 			fmt.Fprintf(out, "✓ removed network %s\n", NetworkName)
 		}
 	}
@@ -317,25 +320,27 @@ func Uninstall(out io.Writer, manualDNS bool) error {
 	// about to wipe. Best-effort cleanup; we don't own the dir and the
 	// user may have already deleted things.
 	if cfg != nil && cfg.ExternalTraefikDynamicDir != "" {
-		if err := RemoveDashboardRoute(cfg.ExternalTraefikDynamicDir); err != nil {
+		if removed, err := RemoveDashboardRoute(cfg.ExternalTraefikDynamicDir); err != nil {
 			fmt.Fprintf(out, "! remove dashboard route from %s: %v\n", cfg.ExternalTraefikDynamicDir, err)
-		} else {
+		} else if removed {
 			fmt.Fprintf(out, "✓ removed dashboard route from %s\n", cfg.ExternalTraefikDynamicDir)
 		}
 	}
 
 	if !manualDNS {
-		if err := unconfigureHostDNS(); err != nil {
+		if removed, err := unconfigureHostDNS(); err != nil {
 			fmt.Fprintf(out, "! unconfigure host DNS: %v\n", err)
-		} else {
+		} else if removed {
 			fmt.Fprintf(out, "✓ host DNS reverted\n")
 		}
 	}
 
-	if err := os.RemoveAll(paths.Root); err != nil {
-		fmt.Fprintf(out, "! remove %s: %v\n", paths.Root, err)
-	} else {
-		fmt.Fprintf(out, "✓ removed %s\n", paths.Root)
+	if _, err := os.Stat(paths.Root); err == nil {
+		if err := os.RemoveAll(paths.Root); err != nil {
+			fmt.Fprintf(out, "! remove %s: %v\n", paths.Root, err)
+		} else {
+			fmt.Fprintf(out, "✓ removed %s\n", paths.Root)
+		}
 	}
 	return nil
 }
@@ -408,7 +413,7 @@ func ensureTraefikContainer(d *docker, paths *Paths, bindIP string, confChanged 
 			return nil
 		}
 	}
-	if err := d.removeContainer(TraefikContainer); err != nil {
+	if _, err := d.removeContainer(TraefikContainer); err != nil {
 		return fmt.Errorf("clean previous traefik: %w", err)
 	}
 	if _, err := d.run(traefikRunArgs(paths, bindIP)...); err != nil {
@@ -429,7 +434,7 @@ func ensureDnsmasqContainer(d *docker, paths *Paths, bindIP string, confChanged 
 		fmt.Fprintf(out, "✓ dnsmasq already up on %s:53\n", bindIP)
 		return nil
 	}
-	if err := d.removeContainer(DnsmasqContainer); err != nil {
+	if _, err := d.removeContainer(DnsmasqContainer); err != nil {
 		return fmt.Errorf("clean previous dnsmasq: %w", err)
 	}
 	if _, err := d.run(dnsmasqRunArgs(paths, bindIP)...); err != nil {

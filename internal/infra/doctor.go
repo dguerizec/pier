@@ -1,7 +1,6 @@
 package infra
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -276,37 +275,3 @@ func dnsProbeIP(bindIP string) string {
 	return bindIP
 }
 
-func checkResolvedDropin(tld string) Check {
-	body, err := os.ReadFile(resolvedDropinPath)
-	if errors.Is(err, os.ErrNotExist) {
-		return Check{
-			Name:    "systemd-resolved drop-in",
-			Status:  StatusFail,
-			Detail:  resolvedDropinPath + " missing",
-			FixHint: "pier doctor --fix  (re-runs the sudo install step)",
-		}
-	}
-	if err != nil {
-		return Check{Name: "systemd-resolved drop-in", Status: StatusWarn, Detail: err.Error()}
-	}
-	if !strings.Contains(string(body), "Domains=~"+tld) {
-		return Check{
-			Name:    "systemd-resolved drop-in",
-			Status:  StatusFail,
-			Detail:  "Domains=~" + tld + " not found",
-			FixHint: "pier doctor --fix",
-		}
-	}
-	return Check{Name: "systemd-resolved drop-in", Status: StatusPass}
-}
-
-// needsResolvedRewrite returns true when the on-disk drop-in is missing or
-// references a different (TLD, bindIP) than the active config.
-func needsResolvedRewrite(tld, bindIP string) bool {
-	body, err := os.ReadFile(resolvedDropinPath)
-	if err != nil {
-		return true
-	}
-	want := string(renderResolvedDropin(tld, bindIP))
-	return string(body) != want
-}

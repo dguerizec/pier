@@ -14,3 +14,13 @@ func unconfigureHostDNS() error { return nil }
 func manualDNSInstructions(tld, dnsIP string) string {
 	return "macOS/Windows host DNS instructions: see DESIGN §5.7 (post-MVP)."
 }
+
+func checkResolvedDropin(tld string) Check {
+	return Check{
+		Name:   "systemd-resolved drop-in",
+		Status: StatusWarn,
+		Detail: "skipped: only applicable on Linux",
+	}
+}
+
+func needsResolvedRewrite(tld, bindIP string) bool { return false }

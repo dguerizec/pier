@@ -21,7 +21,21 @@ Pier is intentionally **docker-coupled** — even projects that aren't otherwise
 
 ## Install
 
-Build from source — pier is a single static binary.
+### One-liner (Linux, macOS — amd64 or arm64)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LeoPartt/pier/main/install.sh | sh
+```
+
+The script picks the right archive from the latest GitHub release, verifies its
+sha256 against the published `checksums.txt`, and installs into `~/.local/bin`
+(or falls back to `/usr/local/bin` via sudo). Set `PIER_VERSION=v0.x.y` to pin a
+specific release, or `PIER_INSTALL_DIR=/some/path` to override the destination.
+
+Audit the script before piping it to a shell — it's a plain POSIX shell script
+in this repo at [`install.sh`](install.sh).
+
+### From source
 
 ```bash
 git clone https://github.com/LeoPartt/pier.git
@@ -30,7 +44,7 @@ go build -o ~/.local/bin/pier ./cmd/pier
 pier --version
 ```
 
-Go 1.23+ recommended. `goreleaser` cross-platform builds + homebrew tap will follow once Phase 2 is fully merged to main.
+Go 1.26+ required. Homebrew tap (`brew install LeoPartt/pier/pier`) will follow.
 
 ## Bootstrap (once per machine)
 

@@ -327,8 +327,40 @@ pre_remove  = ["./scripts/backup-db.sh"]    # run BEFORE pier down (workload sti
   every script writes to the same path (e.g. `backups/dump.sql`),
   later worktrees clobber earlier ones. Namespace by `$PIER_SLUG`:
   `pg_dump > "backups/${PIER_SLUG}.sql"`.
-- `[hooks]` (top-level) is a different, currently-unwired block aimed
-  at the `pier up` / `pier down` lifecycle. Don't confuse the two.
+- `[hooks]` (top-level) is a different block aimed at the `pier up` /
+  `pier down` lifecycle. See the next section.
+
+### `[hooks]` — pre_up / post_up / pre_down / post_down
+
+Shell commands tied to the **workload** lifecycle (`pier up` / `pier down`),
+not to worktree creation/removal. Top-level (not under `[materialize]`)
+because they are about runtime, not filesystem materialization.
+
+```toml
+[hooks]
+pre_up    = ["cargo build --release"]   # before materialize.Apply / adapter.Up
+post_up   = ["./scripts/smoke.sh"]      # after URLs are printed, workload running
+pre_down  = ["./scripts/dump.sh"]       # before adapter.Down (workload still up)
+post_down = ["./scripts/notify.sh"]     # after stop + state cleanup
+```
+
+**Execution model and env vars are identical to `[materialize]`** — same
+`sh -c`, same `PIER_*` env (`PIER_WORKTREE_PATH`, `PIER_PRIMARY_PATH`,
+`PIER_SLUG`, `PIER_BRANCH`, `PIER_BASE_DOMAIN`, `PIER_PROJECT_NAME`),
+same first-non-zero-aborts sequencing, cwd = current worktree. A single
+script can be reused as `post_create` and `post_up` if both phases
+expect the same env.
+
+**Failure behaviour (per phase):**
+- `pre_up` fails → `pier up` aborts before `materialize.Apply`. Nothing
+  is started. Pass `--ignore-hook-errors` to start anyway.
+- `post_up` fails → workload is **left running** (URLs already printed).
+  `pier up` exits non-zero so CI notices. Pass `--ignore-hook-errors` to
+  silence. Roll back manually with `pier down`.
+- `pre_down` fails → `pier down` aborts before the adapter stops. Same
+  flag to stop anyway.
+- `post_down` fails → workload is already down; the error is surfaced
+  but cannot un-stop it. Same flag to silence.
 
 ### What `pier init` does and doesn't do
 

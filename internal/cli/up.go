@@ -14,8 +14,9 @@ import (
 )
 
 type upOpts struct {
-	slug  string
-	fresh bool
+	slug             string
+	fresh            bool
+	ignoreHookErrors bool
 }
 
 func newUpCmd() *cobra.Command {
@@ -29,12 +30,13 @@ func newUpCmd() *cobra.Command {
 				return err
 			}
 			defer d.State.Close()
-			return runUp(d, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return runUp(d, opts.ignoreHookErrors, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	f := cmd.Flags()
 	f.StringVar(&opts.slug, "slug", "", "override derived slug")
 	f.BoolVar(&opts.fresh, "fresh", false, "skip snapshot copy, mkdir empty dirs instead (post-MVP)")
+	f.BoolVar(&opts.ignoreHookErrors, "ignore-hook-errors", false, "continue when a [hooks].pre_up / post_up command fails")
 	registerSlugCompletion(cmd)
 	return cmd
 }
@@ -44,7 +46,16 @@ func newUpCmd() *cobra.Command {
 // Shared between the cobra command and the REST POST /up handler — keep
 // it pure so the API can call it with io.Discard writers without
 // surprising the CLI flow.
-func runUp(d *daily, out, errOut io.Writer) error {
+func runUp(d *daily, ignoreHookErrors bool, out, errOut io.Writer) error {
+	hc := buildHookContext(d.Worktree.PrimaryPath, d.Worktree.Toplevel, d.Worktree.Branch, d.Manifest, errOut)
+	if err := materialize.RunHooks("pre_up", d.Manifest.Hooks.PreUp, hc, out, errOut); err != nil {
+		if ignoreHookErrors {
+			fmt.Fprintf(errOut, "! pre_up failed (continuing because --ignore-hook-errors): %v\n", err)
+		} else {
+			return fmt.Errorf("pre_up hook: %w (use --ignore-hook-errors to start anyway)", err)
+		}
+	}
+
 	if err := materialize.Apply(d.Worktree.PrimaryPath, d.Worktree.Toplevel, d.Manifest.Materialize, out); err != nil {
 		return err
 	}
@@ -87,6 +98,14 @@ func runUp(d *daily, out, errOut io.Writer) error {
 
 	for _, u := range adapter.URLs(d.Ctx) {
 		fmt.Fprintf(out, "→ %s\n", u)
+	}
+
+	if err := materialize.RunHooks("post_up", d.Manifest.Hooks.PostUp, hc, out, errOut); err != nil {
+		if ignoreHookErrors {
+			fmt.Fprintf(errOut, "! post_up failed (continuing because --ignore-hook-errors): %v\n", err)
+		} else {
+			return fmt.Errorf("post_up hook: %w (workload is up; use --ignore-hook-errors to silence)", err)
+		}
 	}
 	return nil
 }

@@ -275,19 +275,23 @@ func autoDetectTailnetIP() (string, error) {
 
 // Uninstall reverses Install. Best-effort: keeps going on individual errors
 // so the user is left with a clean state even if one step fails. In BYO
-// mode, leaves the user's traefik + network alone.
-func Uninstall(out io.Writer, manualDNS bool) error {
+// mode, leaves the user's traefik + network alone. The bool reports
+// whether any pier-owned resource was actually removed; the CLI uses it
+// (combined with the AI-skill outcome) to print a "nothing to uninstall"
+// hint on a second invocation.
+func Uninstall(out io.Writer, manualDNS bool) (bool, error) {
 	if out == nil {
 		out = os.Stdout
 	}
 	paths, err := DefaultPaths()
 	if err != nil {
-		return err
+		return false, err
 	}
 	cfg, _ := LoadConfig(paths) // tolerate missing config: act conservatively
 
 	d := newDocker()
 
+	touched := false
 	// pier-traefik / pier network only ours to remove when we managed them.
 	// Helpers return (removed, err): we suppress the ✓ line when nothing
 	// was there so a second `pier uninstall` doesn't lie about deleting
@@ -297,18 +301,21 @@ func Uninstall(out io.Writer, manualDNS bool) error {
 		if removed, err := d.removeContainer(TraefikContainer); err != nil {
 			fmt.Fprintf(out, "! remove %s: %v\n", TraefikContainer, err)
 		} else if removed {
+			touched = true
 			fmt.Fprintf(out, "✓ removed container %s\n", TraefikContainer)
 		}
 	}
 	if removed, err := d.removeContainer(DnsmasqContainer); err != nil {
 		fmt.Fprintf(out, "! remove %s: %v\n", DnsmasqContainer, err)
 	} else if removed {
+		touched = true
 		fmt.Fprintf(out, "✓ removed container %s\n", DnsmasqContainer)
 	}
 	if pierManaged {
 		if removed, err := d.removeNetwork(NetworkName); err != nil {
 			fmt.Fprintf(out, "! remove network %s: %v\n", NetworkName, err)
 		} else if removed {
+			touched = true
 			fmt.Fprintf(out, "✓ removed network %s\n", NetworkName)
 		}
 	}
@@ -323,6 +330,7 @@ func Uninstall(out io.Writer, manualDNS bool) error {
 		if removed, err := RemoveDashboardRoute(cfg.ExternalTraefikDynamicDir); err != nil {
 			fmt.Fprintf(out, "! remove dashboard route from %s: %v\n", cfg.ExternalTraefikDynamicDir, err)
 		} else if removed {
+			touched = true
 			fmt.Fprintf(out, "✓ removed dashboard route from %s\n", cfg.ExternalTraefikDynamicDir)
 		}
 	}
@@ -331,6 +339,7 @@ func Uninstall(out io.Writer, manualDNS bool) error {
 		if removed, err := unconfigureHostDNS(); err != nil {
 			fmt.Fprintf(out, "! unconfigure host DNS: %v\n", err)
 		} else if removed {
+			touched = true
 			fmt.Fprintf(out, "✓ host DNS reverted\n")
 		}
 	}
@@ -339,10 +348,11 @@ func Uninstall(out io.Writer, manualDNS bool) error {
 		if err := os.RemoveAll(paths.Root); err != nil {
 			fmt.Fprintf(out, "! remove %s: %v\n", paths.Root, err)
 		} else {
+			touched = true
 			fmt.Fprintf(out, "✓ removed %s\n", paths.Root)
 		}
 	}
-	return nil
+	return touched, nil
 }
 
 // resolveBYOTraefikNetwork validates the user-supplied container exists and

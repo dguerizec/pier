@@ -430,15 +430,25 @@ func newUninstallCmd() *cobra.Command {
 		Short: "Stop infra containers, remove resolver files, clear config dir",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()
-			if err := infra.Uninstall(out, manualDNS); err != nil {
+			infraTouched, err := infra.Uninstall(out, manualDNS)
+			if err != nil {
 				return err
 			}
+			skillRemoved := false
 			if dir, err := skill.UserDir(); err == nil {
 				if removed, err := skill.Uninstall(dir); err != nil {
 					fmt.Fprintf(out, "! skill removal failed: %v\n", err)
 				} else if removed {
+					skillRemoved = true
 					fmt.Fprintf(out, "✓ AI skill removed: %s\n", dir)
 				}
+			}
+			// Hint when there was nothing left to undo. Helps the user
+			// distinguish a successful no-op (re-running uninstall) from
+			// a silently broken command. Suppressed when --purge has work
+			// to do — that path prints its own ✓ removed binary line.
+			if !infraTouched && !skillRemoved && !purge {
+				fmt.Fprintln(out, "Nothing to uninstall — pier is already clean.")
 			}
 			if purge {
 				if err := purgeBinary(out); err != nil {

@@ -193,22 +193,22 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 	return nil
 }
 
-// installUserSkill drops the embedded SKILL.md at ~/.claude/skills/pier/.
-// Best-effort: a failure here doesn't block the install — the user may
-// not run Claude Code, or may be on a machine where $HOME isn't writable.
-// pier install is idempotent; we always overwrite to keep the skill in
-// sync with the installed binary version.
+// installUserSkill drops the embedded skill tree under
+// ~/.claude/skills/pier/. Best-effort: a failure here doesn't block the
+// install — the user may not run Claude Code, or may be on a machine
+// where $HOME isn't writable. pier install is idempotent; we always
+// overwrite to keep the skill in sync with the installed binary version.
 func installUserSkill(out io.Writer) {
-	dst, err := skill.UserPath()
+	dir, err := skill.UserDir()
 	if err != nil {
 		fmt.Fprintf(out, "! skill: %v (skipped)\n", err)
 		return
 	}
-	if err := skill.Install(dst); err != nil {
+	if err := skill.Install(dir); err != nil {
 		fmt.Fprintf(out, "! skill install failed: %v (skipped)\n", err)
 		return
 	}
-	fmt.Fprintf(out, "✓ AI skill installed: %s\n", dst)
+	fmt.Fprintf(out, "✓ AI skill installed: %s\n", dir)
 }
 
 // tldIsUnder reports whether tld is the same as base or a sub-domain of it.
@@ -429,11 +429,11 @@ func newUninstallCmd() *cobra.Command {
 			if err := infra.Uninstall(out, manualDNS); err != nil {
 				return err
 			}
-			if dst, err := skill.UserPath(); err == nil {
-				if removed, err := skill.Uninstall(dst); err != nil {
+			if dir, err := skill.UserDir(); err == nil {
+				if removed, err := skill.Uninstall(dir); err != nil {
 					fmt.Fprintf(out, "! skill removal failed: %v\n", err)
 				} else if removed {
-					fmt.Fprintf(out, "✓ AI skill removed: %s\n", dst)
+					fmt.Fprintf(out, "✓ AI skill removed: %s\n", dir)
 				}
 			}
 			return nil

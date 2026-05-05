@@ -15,9 +15,9 @@ import (
 // expose multi-select, and huh groups don't recompute their options
 // across runs cleanly.
 func PromptHuh(p *Plan, ambig []Ambiguity) error {
-	wantName, wantExpose, wantDefault, wantEnv := classify(ambig)
+	wantName, wantExpose, wantDefault, wantEnv, wantUID := classify(ambig)
 
-	if wantName || wantExpose {
+	if wantName || wantExpose || wantUID {
 		fields := []huh.Field{}
 		if wantName {
 			fields = append(fields, huh.NewInput().
@@ -48,6 +48,15 @@ func PromptHuh(p *Plan, ambig []Ambiguity) error {
 					}
 					return nil
 				}))
+		}
+
+		if wantUID {
+			fields = append(fields, huh.NewConfirm().
+				Title("Run containers as your host UID:GID?").
+				Description("Recommended: distroless / nonroot images can't write to bind-mounted host paths otherwise. Pier injects user: \"<uid>:<gid>\" into the compose override at up time.").
+				Affirmative("Yes (match_host_uid = true)").
+				Negative("No (use the image's default user)").
+				Value(&p.MatchHostUID))
 		}
 
 		if err := huh.NewForm(huh.NewGroup(fields...)).Run(); err != nil {
@@ -145,7 +154,7 @@ func PromptHuh(p *Plan, ambig []Ambiguity) error {
 	return nil
 }
 
-func classify(ambig []Ambiguity) (name, expose, def, env bool) {
+func classify(ambig []Ambiguity) (name, expose, def, env, uid bool) {
 	for _, a := range ambig {
 		switch a.Kind {
 		case AmbInvalidName:
@@ -156,6 +165,8 @@ func classify(ambig []Ambiguity) (name, expose, def, env bool) {
 			def = true
 		case AmbEnvSuggestions:
 			env = true
+		case AmbMatchHostUID:
+			uid = true
 		}
 	}
 	return

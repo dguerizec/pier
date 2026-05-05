@@ -15,18 +15,20 @@ import (
 )
 
 type initOpts struct {
-	name        string
-	domain      string
-	service     string
-	file        string
-	private     bool
-	yes         bool
-	worktreeDir string
-	baseRef     string
+	name                 string
+	domain               string
+	service              string
+	file                 string
+	private              bool
+	yes                  bool
+	worktreeDir          string
+	baseRef              string
+	matchHostUID         bool
+	matchHostUIDExplicit bool
 }
 
 func (o initOpts) toWizard() initwizard.Opts {
-	return initwizard.Opts{
+	w := initwizard.Opts{
 		Name:        o.name,
 		Domain:      o.domain,
 		Service:     o.service,
@@ -36,6 +38,11 @@ func (o initOpts) toWizard() initwizard.Opts {
 		WorktreeDir: o.worktreeDir,
 		BaseRef:     o.baseRef,
 	}
+	if o.matchHostUIDExplicit {
+		v := o.matchHostUID
+		w.MatchHostUID = &v
+	}
+	return w
 }
 
 func newInitCmd() *cobra.Command {
@@ -51,6 +58,15 @@ func newInitCmd() *cobra.Command {
 			if !info.IsPrimary {
 				fmt.Fprintln(cmd.ErrOrStderr(), "note: running pier init on a secondary worktree; the manifest will live there only")
 			}
+			// cobra has no first-class --no-X negation, so we read the
+			// Changed() bit on a single flag whose value can be set
+			// either way (`--match-host-uid=false` or `--no-match-host-uid`
+			// alias). Without an explicit flag the wizard prompts.
+			opts.matchHostUIDExplicit = cmd.Flags().Changed("match-host-uid") ||
+				cmd.Flags().Changed("no-match-host-uid")
+			if cmd.Flags().Changed("no-match-host-uid") {
+				opts.matchHostUID = false
+			}
 			return runInit(cmd.OutOrStdout(), info.Toplevel, opts)
 		},
 	}
@@ -63,6 +79,11 @@ func newInitCmd() *cobra.Command {
 	f.BoolVarP(&opts.yes, "yes", "y", false, "accept all defaults, no prompts")
 	f.StringVar(&opts.worktreeDir, "worktree-dir", "", "where `pier worktree add <name>` places trees (default: .pier/worktrees)")
 	f.StringVar(&opts.baseRef, "base-ref", "", "ref new worktree branches fork from (default: detected main/master)")
+	f.BoolVar(&opts.matchHostUID, "match-host-uid", true, "run containers as your host UID:GID (avoids root-owned files in bind mounts; safe default for distroless/nonroot images)")
+	// Boolean flags don't auto-generate --no-X in cobra/pflag, so we
+	// register an explicit alias. The handler distinguishes the two via
+	// Flags().Changed() to populate the wizard's tri-state Opts.
+	f.Bool("no-match-host-uid", false, "shorthand for --match-host-uid=false")
 	return cmd
 }
 

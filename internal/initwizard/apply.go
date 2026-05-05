@@ -35,11 +35,14 @@ func ProposeManifest(p *Plan) (*manifest.Manifest, error) {
 		m = &manifest.Manifest{}
 	}
 	m.Project = manifest.Project{Name: p.Name, BaseDomain: p.Domain}
-	// Preserve stack.match_host_uid; only rewrite the wizard-owned fields.
 	m.Stack.Kind = manifest.KindCompose
 	m.Stack.File = relTo(p.Toplevel, p.ComposeFile)
 	m.Stack.Dockerfile = ""
 	m.Stack.Service = p.DefaultService
+	// match_host_uid is wizard-owned now: Plan.MatchHostUID was either
+	// pinned by --[no-]match-host-uid, inherited from the existing
+	// manifest, or confirmed through PromptHuh. Apply just persists.
+	m.Stack.MatchHostUID = p.MatchHostUID
 	m.Expose = exposes
 	// worktree.dir is a per-user preference, not a project setting; see
 	// Apply for the resolution chain.
@@ -72,10 +75,11 @@ func ProposeManifest(p *Plan) (*manifest.Manifest, error) {
 // Apply validates the Plan and writes .pier.toml + .gitignore entries.
 //
 // On re-init (Plan.Existing != nil) the existing manifest is used as the
-// base so user-curated sections — env, materialize, hooks, watch and
-// stack.match_host_uid — pass through untouched. Apply only rewrites the
-// sections the wizard owns: project, expose, worktree and the wizard
-// fields of stack (kind, file, service).
+// base so user-curated sections — env, materialize, hooks, watch — pass
+// through untouched. Apply rewrites the sections the wizard owns:
+// project, expose, worktree, and the full stack block (kind, file,
+// service, match_host_uid — the last one inherited from Existing in
+// Derive when no explicit flag was passed).
 //
 // Status messages are printed to stdout so the CLI doesn't have to know
 // about the file layout.

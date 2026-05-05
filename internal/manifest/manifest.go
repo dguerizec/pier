@@ -72,7 +72,12 @@ type Stack struct {
 	// into the compose override so the container runs as the host user.
 	// Resolves the EACCES class on bind-mounted host paths when the image
 	// uses a non-matching default user (typical for distroless/nonroot).
-	MatchHostUID bool `toml:"match_host_uid,omitempty" json:"match_host_uid,omitempty"`
+	//
+	// Always serialized — `pier init` writes an explicit value so re-reads
+	// see the user's choice rather than silently defaulting to false.
+	// Hand-edited manifests that omit the field still parse to false (Go
+	// zero value), matching the historical behaviour.
+	MatchHostUID bool `toml:"match_host_uid" json:"match_host_uid"`
 }
 
 // ExposeRule is one service that pier should publish behind traefik.

@@ -107,14 +107,14 @@ name        = "myapp"                # DNS label; becomes the workload sub-domai
 base_domain = "myapp.{pier.tld}"     # KEEP {pier.tld} — never inline a literal TLD
 
 [stack]
-kind    = "compose"                  # only `compose` supported today
-file    = "docker-compose.dev.yml"   # path relative to the worktree toplevel
-service = "front"                    # the service that ALSO answers at the bare <slug>.<base>;
+kind           = "compose"           # only `compose` supported today
+file           = "docker-compose.dev.yml"  # path relative to the worktree toplevel
+service        = "front"             # the service that ALSO answers at the bare <slug>.<base>;
                                      # if empty, no alias is emitted
-
-# match_host_uid = true              # optional; injects user: "<uid>:<gid>" into every
-                                     # exposed service so bind-mounted host paths stay
-                                     # writable when the image's default UID differs.
+match_host_uid = true                # injects user: "<uid>:<gid>" into every exposed service so
+                                     # bind-mounted host paths stay writable when the image's
+                                     # default UID differs (distroless/nonroot). `pier init`
+                                     # prompts and writes an explicit value.
 
 # Each [[expose]] entry tells pier to publish one compose service behind
 # traefik. The container-side port is what traefik forwards to over the
@@ -330,17 +330,52 @@ pre_remove  = ["./scripts/backup-db.sh"]    # run BEFORE pier down (workload sti
 - `[hooks]` (top-level) is a different, currently-unwired block aimed
   at the `pier up` / `pier down` lifecycle. Don't confuse the two.
 
+### `[stack].match_host_uid` — when to set true vs false
+
+`pier init` prompts for this and writes an explicit value. Default is
+`true`. Decide which way the project leans like this:
+
+- **`true` (recommended)** — pier injects `user: "<UID>:<GID>"` into
+  every exposed service in the compose override. Containers run as the
+  host user, bind-mounted host paths (snapshots, source code, secrets/)
+  stay writable. **Required for distroless / nonroot images** (default
+  UID 65532 can't write to host paths owned by uid 1000). **No-op for
+  images that already start as root**, so leaving it on costs nothing.
+- **`false`** — containers run as whatever user the image declares. Pick
+  this when (a) the image hard-codes a user that the app code depends on
+  (e.g. `postgres` runs as the `postgres` user, expects its data dir
+  owned by that user), or (b) the image's entrypoint does its own
+  `chown`/`gosu` dance and would be confused by a forced uid swap.
+
+**Symptom that says "you should have set true"**: container starts but
+fails with `Permission denied` writing to a path that's bind-mounted
+from the host. The host directory is owned by your user; the container
+process is running as a different uid. Set `match_host_uid = true` and
+`pier up` again.
+
+**Symptom that says "you should have set false"**: container fails on
+startup with errors like "could not create directory /var/lib/postgres"
+or "operation not permitted" on a path that lives _inside_ the image
+(not on a bind mount). The image expects to own that path as its built-
+in user, and forcing your host uid breaks its assumptions.
+
+CLI: `--match-host-uid=false` or `--no-match-host-uid` for the unattended
+case (`--yes`). Without a flag, the wizard prompts.
+
 ### What `pier init` does and doesn't do
 
 - ✅ Asks which detected services to `[[expose]]` and at what port/host.
 - ✅ Picks a default service for the bare-slug alias.
+- ✅ Prompts for `match_host_uid` (default true) and writes an explicit
+  value. `--match-host-uid` / `--no-match-host-uid` pin the choice for
+  unattended `--yes` runs.
 - ✅ Writes `[stack]`, `[[expose]]`, `[worktree]`, sane `base_domain`.
 - ❌ Does NOT prompt for `[env.<service>]` — too project-specific.
 - ❌ Does NOT add `[materialize]` entries (`symlinks`, `snapshots`,
   `post_create`, `pre_remove`) — add them when the app expects `.env`,
   secrets, a per-worktree mutable data dir, or per-worktree DB
   seed/backup hooks.
-- ❌ Does NOT add `[hooks]`, `[watch]`, or `match_host_uid` — opt-in.
+- ❌ Does NOT add `[hooks]` or `[watch]` — opt-in.
 
 ## Anti-patterns to avoid
 

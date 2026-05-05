@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"os"
 	"os/exec"
 
 	"github.com/spf13/cobra"
@@ -31,15 +30,15 @@ cd-ing into it).
 
 Pass extra args through after ` + "`--`" + `, e.g. ` + "`pier ps -- -a --format json`" + `.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			project, err := resolveProjectName(opts)
+			project, err := resolveProjectName(cmd, opts)
 			if err != nil {
 				return err
 			}
 			full := append([]string{"compose", "-p", project, "ps"}, args...)
 			c := exec.Command("docker", full...)
-			c.Stdout = os.Stdout
-			c.Stderr = os.Stderr
-			c.Stdin = os.Stdin
+			c.Stdout = cmd.OutOrStdout()
+			c.Stderr = cmd.ErrOrStderr()
+			c.Stdin = cmd.InOrStdin()
 			return c.Run()
 		},
 	}
@@ -60,11 +59,11 @@ Pass extra args through after ` + "`--`" + `, e.g. ` + "`pier ps -- -a --format 
 //  3. No manifest fallback: --slug treated as a full <project>-<slug>
 //     string and looked up in the state DB. Lets `pier ps --slug X` work
 //     from anywhere as long as X is currently running.
-func resolveProjectName(opts psOpts) (string, error) {
+func resolveProjectName(cmd *cobra.Command, opts psOpts) (string, error) {
 	if opts.project != "" {
 		return opts.project, nil
 	}
-	d, err := resolveDaily(opts.slug)
+	d, err := resolveDaily(cmd, opts.slug)
 	if err == nil {
 		defer d.State.Close()
 		return adapter.Name(d.Manifest.Project.Name, d.Slug), nil

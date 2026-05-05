@@ -18,7 +18,7 @@ func newLogsCmd() *cobra.Command {
 		Use:   "logs",
 		Short: "Tail container/process logs for the current worktree",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			d, err := resolveDaily(opts.slug)
+			d, err := resolveDaily(cmd, opts.slug)
 			if err != nil {
 				return err
 			}

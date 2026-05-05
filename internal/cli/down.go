@@ -23,7 +23,7 @@ func newDownCmd() *cobra.Command {
 		Use:   "down",
 		Short: "Stop workload, free the slot, keep data by default",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			d, err := resolveDaily(opts.slug)
+			d, err := resolveDaily(cmd, opts.slug)
 			if err != nil {
 				return err
 			}

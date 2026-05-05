@@ -95,8 +95,10 @@ func (compose) Logs(c Ctx, follow bool, tail int) error {
 	// No service argument → compose streams logs from every service in the
 	// project. Multi-expose makes this the right default; users who want a
 	// single service can `docker compose -p <name> logs <svc>` directly.
-	_, err := composeRun(c, args, overridePath, true)
-	return err
+	if _, err := composeRun(c, args, overridePath, true); err != nil {
+		return fmt.Errorf("compose logs: %w", err)
+	}
+	return nil
 }
 
 // composeRun shells out to `docker compose -f <stack> -f <override> -p <name> <args...>`.

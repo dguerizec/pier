@@ -42,7 +42,7 @@ type Handle struct {
 type Adapter interface {
 	Up(c Ctx) (*Handle, error)
 	Down(c Ctx) error
-	Logs(c Ctx, follow bool, tail int) error
+	Logs(c Ctx, follow bool, tail int, services []string) error
 }
 
 // ErrUnsupportedKind signals a manifest with a stack.kind we cannot run yet.

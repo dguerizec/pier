@@ -15,8 +15,11 @@ type logsOpts struct {
 func newLogsCmd() *cobra.Command {
 	var opts logsOpts
 	cmd := &cobra.Command{
-		Use:   "logs",
+		Use:   "logs [SERVICE...]",
 		Short: "Tail container/process logs for the current worktree",
+		Long:  "Tail logs for the current worktree. With no SERVICE argument every compose service streams (multi-expose default). Pass one or more service names to restrict the stream, same semantics as `docker compose logs [SERVICE...]`.",
+		Args:              cobra.ArbitraryArgs,
+		ValidArgsFunction: serviceCompletion,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			d, err := resolveDaily(cmd, opts.slug)
 			if err != nil {
@@ -27,7 +30,7 @@ func newLogsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.Logs(d.Ctx, opts.follow, opts.tail)
+			return a.Logs(d.Ctx, opts.follow, opts.tail, args)
 		},
 	}
 	f := cmd.Flags()

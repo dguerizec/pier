@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/LeoPartt/pier/internal/adapter"
 	"github.com/LeoPartt/pier/internal/infra"
 	"github.com/LeoPartt/pier/internal/manifest"
 	sluglib "github.com/LeoPartt/pier/internal/slug"
@@ -105,6 +106,39 @@ func projectCompletion(_ *cobra.Command, _ []string, _ string) ([]string, cobra.
 	out := make([]string, 0, len(loads))
 	for _, w := range loads {
 		out = append(out, w.Project+"-"+w.Slug)
+	}
+	return out, cobra.ShellCompDirectiveNoFileComp
+}
+
+// serviceCompletion suggests compose service names parsed from the
+// manifest's stack.file. Used by `pier logs [SERVICE...]` so the user
+// can tab-complete service names instead of memorising the compose file.
+// Already-typed services are filtered out so repeated tab cycles only
+// offer the remaining ones. Returns nothing outside a pier-managed repo
+// or when the compose file can't be parsed — the positional is still
+// accepted at runtime, completion just stays quiet.
+func serviceCompletion(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	info, err := worktree.Detect()
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	m, err := manifest.Load(info.Toplevel)
+	if err != nil || m.Stack.File == "" {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	stackPath := m.Stack.File
+	if !filepath.IsAbs(stackPath) {
+		stackPath = filepath.Join(info.Toplevel, stackPath)
+	}
+	already := map[string]bool{}
+	for _, a := range args {
+		already[a] = true
+	}
+	var out []string
+	for _, name := range adapter.ListComposeServices(stackPath) {
+		if !already[name] {
+			out = append(out, name)
+		}
 	}
 	return out, cobra.ShellCompDirectiveNoFileComp
 }

@@ -50,10 +50,11 @@ type InstallOptions struct {
 	// returned no path.
 	ExternalTraefikDynamicDir string
 
-	// HeadscaleContainer + HeadscaleRecordsPath activate the records
-	// adapter — see Config docs.
-	HeadscaleContainer   string
-	HeadscaleRecordsPath string
+	// HeadscaleContainer is the headscale docker container name when
+	// detected by the install wizard. Persisted to Config so that
+	// Uninstall can `docker restart` after Unpatching the split-DNS
+	// rule. Empty when headscale isn't present on the host.
+	HeadscaleContainer string
 	// HeadscaleConfigPath records the headscale config.yaml path when
 	// the install wizard patches split-DNS into it. Persisted to Config
 	// so Uninstall can revert the patch.
@@ -208,7 +209,6 @@ func Install(opts InstallOptions) error {
 		ExternalTraefik:           opts.ExternalTraefik,
 		ExternalTraefikDynamicDir: opts.ExternalTraefikDynamicDir,
 		HeadscaleContainer:        opts.HeadscaleContainer,
-		HeadscaleRecordsPath:      opts.HeadscaleRecordsPath,
 		HeadscaleConfigPath:       opts.HeadscaleConfigPath,
 	}
 	if err := cfg.Save(paths); err != nil {

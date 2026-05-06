@@ -42,6 +42,12 @@ type Config struct {
 	// extra_records_path is detected.
 	HeadscaleContainer   string `toml:"headscale_container,omitempty"`
 	HeadscaleRecordsPath string `toml:"headscale_records_path,omitempty"`
+	// HeadscaleConfigPath is the headscale config.yaml that pier patched
+	// at install time to add a split-DNS rule for TLD. Set only in
+	// split-DNS mode (TLD outside base_domain) when the wizard
+	// auto-patched. Used by Uninstall to revert the patch via
+	// headscale.Unpatch.
+	HeadscaleConfigPath string `toml:"headscale_config_path,omitempty"`
 }
 
 // EffectiveAnswerIP returns AnswerIP or BindIP (older configs written before

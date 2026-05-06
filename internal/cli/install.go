@@ -282,6 +282,17 @@ func composeInstallPlan(env detect.Environment, base installOpts) infra.InstallO
 		plan.HeadscaleContainer = env.Headscale.Container
 		plan.HeadscaleRecordsPath = env.Headscale.RecordsPath
 	}
+	// Split-DNS mode persists the headscale config path + container so
+	// Uninstall can revert the patch we apply post-Install. Mirror of
+	// the records branch but inverted: TLD must be OUTSIDE base_domain
+	// for split-DNS routing to reach peers (MagicDNS pre-empts otherwise).
+	if env.Headscale.Found && env.Headscale.ConfigPath != "" &&
+		env.Headscale.BaseDomain != "" && !tldIsUnder(plan.TLD, env.Headscale.BaseDomain) {
+		plan.HeadscaleConfigPath = env.Headscale.ConfigPath
+		if plan.HeadscaleContainer == "" {
+			plan.HeadscaleContainer = env.Headscale.Container
+		}
+	}
 	return plan
 }
 
@@ -430,10 +441,23 @@ func newUninstallCmd() *cobra.Command {
 		Short: "Stop infra containers, remove resolver files, clear config dir",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := cmd.OutOrStdout()
+
+			// Load cfg BEFORE infra.Uninstall — it RemoveAll's paths.Root
+			// at the end, taking config.toml with it. We need the
+			// HeadscaleConfigPath/Container fields to revert the
+			// split-DNS patch after infra is torn down.
+			var cfg *infra.Config
+			if paths, perr := infra.DefaultPaths(); perr == nil {
+				cfg, _ = infra.LoadConfig(paths) // tolerate missing
+			}
+
 			infraTouched, err := infra.Uninstall(out, manualDNS)
 			if err != nil {
 				return err
 			}
+
+			headscaleTouched := revertHeadscalePatch(out, cfg)
+
 			skillRemoved := false
 			if dir, err := skill.UserDir(); err == nil {
 				if removed, err := skill.Uninstall(dir); err != nil {
@@ -447,7 +471,7 @@ func newUninstallCmd() *cobra.Command {
 			// distinguish a successful no-op (re-running uninstall) from
 			// a silently broken command. Suppressed when --purge has work
 			// to do — that path prints its own ✓ removed binary line.
-			if !infraTouched && !skillRemoved && !purge {
+			if !infraTouched && !headscaleTouched && !skillRemoved && !purge {
 				fmt.Fprintln(out, "Nothing to uninstall — pier is already clean.")
 			}
 			if purge {
@@ -461,6 +485,45 @@ func newUninstallCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&manualDNS, "manual-dns", false, "do not touch host DNS, print revert instructions instead")
 	cmd.Flags().BoolVar(&purge, "purge", false, "also remove the pier binary itself (skipped when installed by a package manager)")
 	return cmd
+}
+
+// revertHeadscalePatch reverts the split-DNS rule pier added at install
+// time and restarts the headscale container so peers re-sync. No-op
+// when cfg is nil or HeadscaleConfigPath is unset (records mode, or
+// pre-existing install before this field was persisted). Best-effort:
+// individual failures print a warning and a manual recovery hint
+// rather than aborting the rest of uninstall.
+//
+// Returns true when at least the unpatch step actually changed the
+// yaml, so the caller can suppress the "nothing to uninstall" hint
+// when there was real work done.
+func revertHeadscalePatch(out io.Writer, cfg *infra.Config) bool {
+	if cfg == nil || cfg.HeadscaleConfigPath == "" || cfg.TLD == "" {
+		return false
+	}
+	ip := cfg.EffectiveAnswerIP()
+	changed, err := headscale.Unpatch(cfg.HeadscaleConfigPath, cfg.TLD, ip)
+	if err != nil {
+		fmt.Fprintf(out, "! headscale unpatch failed: %v\n", err)
+		fmt.Fprintf(out, "  revert manually from %s.bak then `docker restart %s`\n",
+			cfg.HeadscaleConfigPath, cfg.HeadscaleContainer)
+		return false
+	}
+	if !changed {
+		// Already clean (manual edit, or split-DNS Patch never applied).
+		// Suppress noise — this is a no-op uninstall step.
+		return false
+	}
+	fmt.Fprintf(out, "✓ reverted split-DNS patch in %s (.bak preserved)\n", cfg.HeadscaleConfigPath)
+	if cfg.HeadscaleContainer != "" {
+		if err := headscale.Reload(cfg.HeadscaleContainer); err != nil {
+			fmt.Fprintf(out, "! headscale restart failed (%v) — restart manually: docker restart %s\n",
+				err, cfg.HeadscaleContainer)
+		} else {
+			fmt.Fprintln(out, "✓ headscale restarted (DNS reload)")
+		}
+	}
+	return true
 }
 
 // purgeBinary deletes the pier executable that's running this very call.

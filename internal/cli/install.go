@@ -113,6 +113,20 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 
 	plan := composeInstallPlan(env, base)
 
+	// Refuse to install when the chosen TLD lives under headscale's
+	// base_domain. MagicDNS owns the lookups authoritatively for that
+	// scope, so the split-DNS rule pier would push reaches peers as a
+	// search domain only — workloads never resolve. Catch it BEFORE
+	// spawning containers and writing host DNS, otherwise the user
+	// ends up with a half-applied install pointing at a TLD that
+	// can't work.
+	if env.Headscale.Found && env.Headscale.BaseDomain != "" && tldIsUnder(plan.TLD, env.Headscale.BaseDomain) {
+		fmt.Fprintf(out, "! pier TLD %q lives under headscale base_domain %q.\n", plan.TLD, env.Headscale.BaseDomain)
+		fmt.Fprintln(out, "  MagicDNS pre-empts split-DNS for names under base_domain — workloads won't resolve from peers.")
+		fmt.Fprintln(out, "  Pick a TLD outside the base_domain (e.g. `--tld test`) and re-run install.")
+		return nil
+	}
+
 	// Host-process traefik can't drive pier workloads (no docker
 	// labels) and will fight pier-traefik for port 80. Surface the
 	// conflict before we plan a port-80 spawn.
@@ -155,14 +169,8 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 
 	if env.Headscale.Found && env.Tailscale.Active && env.Headscale.ConfigPath != "" {
 		fmt.Fprintln(out)
-		// Split-DNS push only works for TLDs OUTSIDE the headscale
-		// base_domain. tldIsUnder false ⇒ safe to auto-patch.
-		if env.Headscale.BaseDomain != "" && tldIsUnder(plan.TLD, env.Headscale.BaseDomain) {
-			fmt.Fprintf(out, "! pier TLD %q lives under headscale base_domain %q.\n", plan.TLD, env.Headscale.BaseDomain)
-			fmt.Fprintln(out, "  MagicDNS pre-empts split-DNS for names under base_domain — workloads won't resolve from peers.")
-			fmt.Fprintln(out, "  Pick a TLD outside the base_domain (e.g. `--tld test`) and re-run install.")
-			return nil
-		}
+		// Pre-flight already refused TLD-under-base_domain, so anything
+		// reaching here is safe to auto-patch.
 		if base.yes || confirm(cmd.InOrStdin(), out, fmt.Sprintf("Patch %s with .%s split-DNS?", env.Headscale.ConfigPath, plan.TLD), true) {
 			changed, err := headscale.Patch(env.Headscale.ConfigPath, plan.TLD, plan.AnswerIP)
 			if err != nil {

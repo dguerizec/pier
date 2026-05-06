@@ -110,10 +110,6 @@ func Install(opts InstallOptions) error {
 	d := newDocker()
 	traefikNet := NetworkName
 	byo := opts.ExternalTraefik != ""
-	// Records mode publishes per-slug A records via headscale's extra_records
-	// JSON. Peers resolve via MagicDNS, so pier doesn't need its own
-	// wildcard resolver or host-side DNS routing.
-	recordsMode := opts.HeadscaleRecordsPath != ""
 
 	traefikConfChanged := false
 	dnsmasqConfChanged := false
@@ -136,15 +132,13 @@ func Install(opts InstallOptions) error {
 		}
 	}
 
-	if !recordsMode {
-		dnsmasqYAML, err := renderDnsmasqConfig(opts.TLD, opts.BindIP, opts.AnswerIP)
-		if err != nil {
-			return err
-		}
-		dnsmasqConfChanged, err = writeFileIfChanged(paths.DnsmasqConf, dnsmasqYAML, 0o644)
-		if err != nil {
-			return fmt.Errorf("write dnsmasq.conf: %w", err)
-		}
+	dnsmasqYAML, err := renderDnsmasqConfig(opts.TLD, opts.BindIP, opts.AnswerIP)
+	if err != nil {
+		return err
+	}
+	dnsmasqConfChanged, err = writeFileIfChanged(paths.DnsmasqConf, dnsmasqYAML, 0o644)
+	if err != nil {
+		return fmt.Errorf("write dnsmasq.conf: %w", err)
 	}
 
 	if !byo {
@@ -162,14 +156,12 @@ func Install(opts InstallOptions) error {
 			}
 		}
 	}
-	if !recordsMode {
-		if d.imagePresent(DnsmasqImage) {
-			fmt.Fprintf(out, "✓ image cached: %s\n", DnsmasqImage)
-		} else {
-			fmt.Fprintf(out, "  pulling %s...\n", DnsmasqImage)
-			if err := d.pull(DnsmasqImage); err != nil {
-				return err
-			}
+	if d.imagePresent(DnsmasqImage) {
+		fmt.Fprintf(out, "✓ image cached: %s\n", DnsmasqImage)
+	} else {
+		fmt.Fprintf(out, "  pulling %s...\n", DnsmasqImage)
+		if err := d.pull(DnsmasqImage); err != nil {
+			return err
 		}
 	}
 
@@ -187,33 +179,24 @@ func Install(opts InstallOptions) error {
 		}
 	}
 
-	if !recordsMode {
-		if err := ensureDnsmasqContainer(d, paths, opts.BindIP, dnsmasqConfChanged, out); err != nil {
+	if err := ensureDnsmasqContainer(d, paths, opts.BindIP, dnsmasqConfChanged, out); err != nil {
+		return err
+	}
+
+	if !opts.ManualDNS {
+		changed, err := configureHostDNS(opts.TLD, opts.BindIP)
+		switch {
+		case err == nil && changed:
+			fmt.Fprintf(out, "✓ system DNS configured (.%s → %s)\n", opts.TLD, opts.BindIP)
+		case err == nil:
+			fmt.Fprintf(out, "✓ system DNS already configured (.%s → %s)\n", opts.TLD, opts.BindIP)
+		case errors.Is(err, ErrManualDNSNeeded):
+			fmt.Fprintf(out, "! system DNS not auto-configurable, falling back to manual:\n\n%s\n", manualDNSInstructions(opts.TLD, opts.BindIP))
+		default:
 			return err
 		}
 	} else {
-		// Leftover dnsmasq from a previous non-records install would
-		// shadow MagicDNS — clear it.
-		_, _ = d.removeContainer(DnsmasqContainer)
-		fmt.Fprintf(out, "✓ records mode: per-slug A records will be written to %s\n", opts.HeadscaleRecordsPath)
-	}
-
-	if !recordsMode {
-		if !opts.ManualDNS {
-			changed, err := configureHostDNS(opts.TLD, opts.BindIP)
-			switch {
-			case err == nil && changed:
-				fmt.Fprintf(out, "✓ system DNS configured (.%s → %s)\n", opts.TLD, opts.BindIP)
-			case err == nil:
-				fmt.Fprintf(out, "✓ system DNS already configured (.%s → %s)\n", opts.TLD, opts.BindIP)
-			case errors.Is(err, ErrManualDNSNeeded):
-				fmt.Fprintf(out, "! system DNS not auto-configurable, falling back to manual:\n\n%s\n", manualDNSInstructions(opts.TLD, opts.BindIP))
-			default:
-				return err
-			}
-		} else {
-			fmt.Fprintf(out, "! --manual-dns set; configure host DNS yourself:\n\n%s\n", manualDNSInstructions(opts.TLD, opts.BindIP))
-		}
+		fmt.Fprintf(out, "! --manual-dns set; configure host DNS yourself:\n\n%s\n", manualDNSInstructions(opts.TLD, opts.BindIP))
 	}
 
 	cfg := &Config{
@@ -232,7 +215,7 @@ func Install(opts InstallOptions) error {
 		return fmt.Errorf("save config: %w", err)
 	}
 
-	if !recordsMode && !opts.ManualDNS {
+	if !opts.ManualDNS {
 		// Verify against the listen IP (where dnsmasq is reachable from this
 		// host); the A record value is opts.AnswerIP.
 		probeIP := opts.BindIP

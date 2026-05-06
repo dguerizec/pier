@@ -565,7 +565,7 @@ func (h *apiHandler) streamWorkloadLogs(w http.ResponseWriter, r *http.Request) 
 	// Logs returns an error on client disconnect (broken pipe) or ctx
 	// cancel ("signal: killed") — both are expected end-of-stream
 	// conditions, not failures the caller cares about.
-	_ = a.Logs(d.Ctx, follow, tail)
+	_ = a.Logs(d.Ctx, follow, tail, r.URL.Query()["service"])
 }
 
 // lineFlushWriter forwards Writes to w and calls Flush after each one so

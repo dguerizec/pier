@@ -76,7 +76,7 @@ func (compose) Down(c Ctx) error {
 	return nil
 }
 
-func (compose) Logs(c Ctx, follow bool, tail int) error {
+func (compose) Logs(c Ctx, follow bool, tail int, services []string) error {
 	overridePath := filepath.Join(c.WorktreePath, overrideSubdir, overrideFile)
 	if _, err := os.Stat(overridePath); errors.Is(err, os.ErrNotExist) {
 		var werr error
@@ -92,9 +92,11 @@ func (compose) Logs(c Ctx, follow bool, tail int) error {
 	if tail > 0 {
 		args = append(args, "--tail", strconv.Itoa(tail))
 	}
-	// No service argument → compose streams logs from every service in the
-	// project. Multi-expose makes this the right default; users who want a
-	// single service can `docker compose -p <name> logs <svc>` directly.
+	// services empty → compose streams logs from every service in the
+	// project (the multi-expose default). Otherwise the trailing positional
+	// args restrict the stream to those services, mirroring the
+	// `docker compose logs [SERVICE...]` interface.
+	args = append(args, services...)
 	if _, err := composeRun(c, args, overridePath, true); err != nil {
 		return fmt.Errorf("compose logs: %w", err)
 	}
@@ -424,6 +426,29 @@ func sortedEnv(env map[string]string) []envEntry {
 type composeServiceInfo struct {
 	hasPorts         bool
 	hasContainerName bool
+}
+
+// ListComposeServices returns the service names declared in the compose
+// file at stackFile (absolute or interpreted relative to the caller's cwd).
+// Returns nil on read or parse error — callers (today: shell completion)
+// should silently skip suggestions rather than fail loudly. Unsorted; the
+// caller sorts if it cares.
+func ListComposeServices(stackFile string) []string {
+	body, err := os.ReadFile(stackFile)
+	if err != nil {
+		return nil
+	}
+	var doc struct {
+		Services map[string]struct{} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(doc.Services))
+	for name := range doc.Services {
+		out = append(out, name)
+	}
+	return out
 }
 
 // scanComposeServices reads the user's compose file and reports per-service

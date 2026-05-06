@@ -87,12 +87,13 @@
         { "name": "project", "in": "path", "required": true, "schema": { "type": "string" } },
         { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } },
         { "name": "follow", "in": "query", "schema": { "type": "boolean", "default": false } },
-        { "name": "tail", "in": "query", "schema": { "type": "integer", "default": 200 } }
+        { "name": "tail", "in": "query", "schema": { "type": "integer", "default": 200 } },
+        { "name": "service", "in": "query", "explode": true, "schema": { "type": "array", "items": { "type": "string" } }, "description": "Restrict the stream to one or more compose services (repeatable). Empty → every service streams." }
       ],
       "get": {
         "tags": ["workloads"],
         "summary": "Stream container logs (chunked)",
-        "description": "Chunked text/plain. follow=true tails new lines until the client disconnects (which kills the underlying docker process).",
+        "description": "Chunked text/plain. follow=true tails new lines until the client disconnects (which kills the underlying docker process). Repeat ?service=<name> to filter — empty means all services.",
         "responses": {
           "200": { "description": "Log stream", "content": { "text/plain": { "schema": { "type": "string" } } } },
           "404": { "$ref": "#/components/responses/NotFound" }

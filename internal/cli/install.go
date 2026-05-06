@@ -433,6 +433,9 @@ func newUninstallCmd() *cobra.Command {
 			}
 
 			headscaleTouched := revertHeadscalePatch(out, cfg)
+			if removeOrphanDashboardRecord(out, cfg) {
+				headscaleTouched = true
+			}
 
 			skillRemoved := false
 			if dir, err := skill.UserDir(); err == nil {
@@ -499,6 +502,34 @@ func revertHeadscalePatch(out io.Writer, cfg *infra.Config) bool {
 			fmt.Fprintln(out, "✓ headscale restarted (DNS reload)")
 		}
 	}
+	return true
+}
+
+// removeOrphanDashboardRecord cleans up the dashboard A record pier
+// serve registers in headscale's extra_records when DashboardFQDN is
+// configured under base_domain. pier serve normally removes its own
+// record on graceful shutdown; this is the safety net for the cases
+// where the daemon crashed, was killed without cleanup, or simply
+// wasn't running at uninstall time. No-op when DashboardFQDN is empty
+// (default pier.<TLD> never had a record) or when the records adapter
+// path isn't configured.
+//
+// Returns true when something actually got removed so the caller can
+// suppress the "nothing to uninstall" hint.
+func removeOrphanDashboardRecord(out io.Writer, cfg *infra.Config) bool {
+	if cfg == nil || cfg.DashboardFQDN == "" || cfg.HeadscaleRecordsPath == "" {
+		return false
+	}
+	removed, err := headscale.Remove(cfg.HeadscaleRecordsPath, cfg.DashboardFQDN)
+	if err != nil {
+		fmt.Fprintf(out, "! headscale dashboard record cleanup %s: %v\n", cfg.DashboardFQDN, err)
+		return false
+	}
+	if !removed {
+		return false
+	}
+	fmt.Fprintf(out, "✓ removed orphan dashboard record %s from %s\n",
+		cfg.DashboardFQDN, cfg.HeadscaleRecordsPath)
 	return true
 }
 

@@ -282,6 +282,17 @@ func composeInstallPlan(env detect.Environment, base installOpts) infra.InstallO
 		plan.HeadscaleContainer = env.Headscale.Container
 		plan.HeadscaleRecordsPath = env.Headscale.RecordsPath
 	}
+	// Split-DNS mode persists the headscale config path + container so
+	// Uninstall can revert the patch we apply post-Install. Mirror of
+	// the records branch but inverted: TLD must be OUTSIDE base_domain
+	// for split-DNS routing to reach peers (MagicDNS pre-empts otherwise).
+	if env.Headscale.Found && env.Headscale.ConfigPath != "" &&
+		env.Headscale.BaseDomain != "" && !tldIsUnder(plan.TLD, env.Headscale.BaseDomain) {
+		plan.HeadscaleConfigPath = env.Headscale.ConfigPath
+		if plan.HeadscaleContainer == "" {
+			plan.HeadscaleContainer = env.Headscale.Container
+		}
+	}
 	return plan
 }
 

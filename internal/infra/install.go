@@ -54,6 +54,10 @@ type InstallOptions struct {
 	// adapter — see Config docs.
 	HeadscaleContainer   string
 	HeadscaleRecordsPath string
+	// HeadscaleConfigPath records the headscale config.yaml path when
+	// the install wizard patches split-DNS into it. Persisted to Config
+	// so Uninstall can revert the patch.
+	HeadscaleConfigPath string
 }
 
 // Install brings up the traefik + dnsmasq pair and (optionally) configures
@@ -222,6 +226,7 @@ func Install(opts InstallOptions) error {
 		ExternalTraefikDynamicDir: opts.ExternalTraefikDynamicDir,
 		HeadscaleContainer:        opts.HeadscaleContainer,
 		HeadscaleRecordsPath:      opts.HeadscaleRecordsPath,
+		HeadscaleConfigPath:       opts.HeadscaleConfigPath,
 	}
 	if err := cfg.Save(paths); err != nil {
 		return fmt.Errorf("save config: %w", err)

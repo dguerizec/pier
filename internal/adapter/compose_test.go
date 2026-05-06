@@ -300,25 +300,6 @@ func TestURLs_AndDefault(t *testing.T) {
 	}
 }
 
-func TestRecordNames(t *testing.T) {
-	c := Ctx{
-		Slug:           "x",
-		BaseDomain:     "w3t.test",
-		Expose:         []manifest.ExposeRule{{Service: "front", Port: 8080}, {Service: "api", Port: 8000}},
-		DefaultService: "front",
-	}
-	got := RecordNames(c)
-	want := []string{"x.w3t.test", "front.x.w3t.test", "api.x.w3t.test"}
-	if len(got) != len(want) {
-		t.Fatalf("RecordNames = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("RecordNames[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
 func TestFor(t *testing.T) {
 	if a, err := For(manifest.KindCompose); err != nil || a == nil {
 		t.Errorf("For(compose) = (%v, %v), want non-nil adapter", a, err)

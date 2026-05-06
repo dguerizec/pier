@@ -7,7 +7,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/LeoPartt/pier/internal/adapter"
-	"github.com/LeoPartt/pier/internal/headscale"
 	"github.com/LeoPartt/pier/internal/materialize"
 )
 
@@ -62,16 +61,6 @@ func runDown(d *daily, purge, ignoreHookErrors bool, out, errOut io.Writer) erro
 
 	if err := d.State.Delete(d.Ctx.Project, d.Ctx.Slug); err != nil {
 		return fmt.Errorf("delete state row: %w", err)
-	}
-
-	if d.Config.HeadscaleRecordsPath != "" {
-		for _, name := range adapter.RecordNames(d.Ctx) {
-			if removed, err := headscale.Remove(d.Config.HeadscaleRecordsPath, name); err != nil {
-				fmt.Fprintf(errOut, "! headscale records remove %s: %v\n", name, err)
-			} else if removed {
-				fmt.Fprintf(out, "✓ headscale record removed: %s\n", name)
-			}
-		}
 	}
 
 	if purge {

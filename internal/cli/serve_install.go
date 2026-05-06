@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
@@ -133,12 +134,19 @@ func resolveDashboardFQDN(cmd *cobra.Command, cfg *infra.Config, env detect.Envi
 	if env.Headscale.Found && env.Headscale.RecordsPath != "" && env.Headscale.BaseDomain != "" &&
 		!strings.HasSuffix(env.Headscale.BaseDomain, "."+cfg.TLD) && cfg.TLD != env.Headscale.BaseDomain {
 		baseDomainFQDN := "pier." + env.Headscale.BaseDomain
-		out := cmd.OutOrStdout()
-		fmt.Fprintf(out, "\n")
-		fmt.Fprintf(out, "Headscale extra_records detected — the dashboard can live under your tailnet zone.\n")
-		fmt.Fprintf(out, "  default: %s  (split-DNS wildcard, no records needed)\n", defaultFQDN)
-		fmt.Fprintf(out, "  opt-in:  %s  (records adapter writes a single A record)\n", baseDomainFQDN)
-		if confirm(cmd.InOrStdin(), out, fmt.Sprintf("Use %s as dashboard FQDN?", baseDomainFQDN), false) {
+		choice := defaultFQDN
+		sel := huh.NewSelect[string]().
+			Title("Dashboard FQDN").
+			Description("Where pier serve publishes the admin dashboard.").
+			Options(
+				huh.NewOption(fmt.Sprintf("%s  (split-DNS wildcard, no records adapter)", defaultFQDN), defaultFQDN),
+				huh.NewOption(fmt.Sprintf("%s  (under your tailnet zone via headscale extra_records)", baseDomainFQDN), baseDomainFQDN),
+			).
+			Value(&choice)
+		if err := huh.NewForm(huh.NewGroup(sel)).Run(); err != nil {
+			return "", "", "", fmt.Errorf("dashboard prompt: %w", err)
+		}
+		if choice == baseDomainFQDN {
 			return baseDomainFQDN, env.Headscale.Container, env.Headscale.RecordsPath, nil
 		}
 	}

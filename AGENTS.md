@@ -40,7 +40,7 @@ There is no formal lint config yet — vet + go fmt + the existing test suite ar
 
 ## Dependencies
 
-Locked-in: `github.com/spf13/cobra`, `github.com/BurntSushi/toml`, `gopkg.in/yaml.v3`, `modernc.org/sqlite`. Don't pull a new dep without confirming it's not already in `go.sum`. Charm libs (huh, lipgloss) are planned but unpulled — keep that out of the build until a real UX use case lands.
+Locked-in: `github.com/spf13/cobra`, `github.com/BurntSushi/toml`, `gopkg.in/yaml.v3`, `modernc.org/sqlite`, `github.com/charmbracelet/huh` (interactive forms in `internal/initwizard/` and `pier serve install`'s dashboard FQDN prompt), `github.com/mattn/go-isatty` (TTY detection for non-interactive bypass). Don't pull a new dep without confirming it's not already in `go.sum`.
 
 ## Commit conventions
 

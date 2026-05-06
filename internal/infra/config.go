@@ -52,6 +52,27 @@ type Config struct {
 	// auto-patched. Used by Uninstall to revert the patch via
 	// headscale.Unpatch.
 	HeadscaleConfigPath string `toml:"headscale_config_path,omitempty"`
+
+	// DashboardFQDN is the hostname pier serve registers the dashboard
+	// under. Populated by `pier serve install` (interactive prompt or
+	// --dashboard-fqdn flag). When empty, pier serve falls back to
+	// `pier.<TLD>` which the split-DNS wildcard resolves automatically.
+	// When set under headscale's base_domain, pier serve writes a
+	// matching A record into HeadscaleRecordsPath at start and removes
+	// it at stop.
+	DashboardFQDN string `toml:"dashboard_fqdn,omitempty"`
+}
+
+// EffectiveDashboardFQDN returns DashboardFQDN when set, otherwise the
+// default `pier.<TLD>` which the split-DNS wildcard answers.
+func (c *Config) EffectiveDashboardFQDN() string {
+	if c.DashboardFQDN != "" {
+		return c.DashboardFQDN
+	}
+	if c.TLD == "" {
+		return ""
+	}
+	return "pier." + c.TLD
 }
 
 // EffectiveAnswerIP returns AnswerIP or BindIP (older configs written before

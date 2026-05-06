@@ -69,13 +69,43 @@ func TestResolveBindsServerRecordsAddsTailnet(t *testing.T) {
 	}
 }
 
-func TestResolveBindsServerWithoutRecordsKeepsLoopback(t *testing.T) {
+func TestResolveBindsServerSplitDNSAddsAnswerIP(t *testing.T) {
+	// Split-DNS server install (no records mode) — AnswerIP is the
+	// externally-reachable address peers will dial for pier.<tld>, so
+	// pier serve must bind there for the dashboard route to land.
 	cfg := &infra.Config{Mode: infra.ModeServer, AnswerIP: "100.64.0.10"}
 	got := resolveBinds("", cfg, "")
+	found := false
 	for _, a := range got {
 		if a == "100.64.0.10" {
-			t.Errorf("server-without-records should not advertise tailnet IP, got %+v", got)
+			found = true
 		}
+	}
+	if !found {
+		t.Errorf("AnswerIP missing from binds for server+split-DNS install: %+v", got)
+	}
+}
+
+func TestResolveBindsServerSkipsWildcard(t *testing.T) {
+	// AnswerIP=0.0.0.0 is degenerate: pier serve already gets the
+	// wildcard via 127.0.0.1's listener semantics. Adding 0.0.0.0
+	// would double-bind and surface as a routing target we can't use.
+	cfg := &infra.Config{Mode: infra.ModeServer, AnswerIP: "0.0.0.0"}
+	got := resolveBinds("", cfg, "")
+	for _, a := range got {
+		if a == "0.0.0.0" {
+			t.Errorf("0.0.0.0 should not appear in binds: %+v", got)
+		}
+	}
+}
+
+func TestResolveBindsLocalKeepsLoopback(t *testing.T) {
+	// Local mode never binds AnswerIP — the user explicitly chose the
+	// laptop-only path.
+	cfg := &infra.Config{Mode: infra.ModeLocal, AnswerIP: "127.0.0.1"}
+	got := resolveBinds("", cfg, "")
+	if len(got) != 1 || got[0] != "127.0.0.1" {
+		t.Errorf("local mode should bind 127.0.0.1 only, got %+v", got)
 	}
 }
 

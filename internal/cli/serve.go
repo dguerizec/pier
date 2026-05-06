@@ -255,8 +255,13 @@ func serveAsset(contentType string, body []byte) http.HandlerFunc {
 //     IP. Lets the pier-managed traefik container reach pier serve over
 //     the bridge for the http://pier.<tld> route. Empty in BYO mode or
 //     when the network hasn't been created yet (pre-install).
-//   - tailnet IP: in server+records installs the daemon should be
-//     reachable from peers, mirroring the pre-existing autoBind behaviour.
+//   - AnswerIP (in server mode): the externally-reachable IP that DNS
+//     hands out for *.<tld>. BYO traefik on a foreign docker network
+//     cannot reach pier serve via 127.0.0.1 or the bridge, so the
+//     dashboard route at http://pier.<tld> needs a bind on AnswerIP.
+//     Records-mode peers also dial pier.<tld> directly. 0.0.0.0 is
+//     skipped because dnsmasq's "AnswerIP unset" path leaves it as
+//     the wildcard listener which we already get via 127.0.0.1.
 //
 // Duplicates are dropped so a tailnet-IP install doesn't open the same
 // port twice when the bridge gateway happens to coincide.
@@ -268,8 +273,8 @@ func resolveBinds(explicit string, cfg *infra.Config, bridgeGateway string) []st
 	if bridgeGateway != "" {
 		addrs = appendUnique(addrs, bridgeGateway)
 	}
-	if cfg.Mode == infra.ModeServer && cfg.HeadscaleRecordsPath != "" {
-		if tn := cfg.EffectiveAnswerIP(); tn != "" {
+	if cfg.Mode == infra.ModeServer {
+		if tn := cfg.EffectiveAnswerIP(); tn != "" && tn != "0.0.0.0" {
 			addrs = appendUnique(addrs, tn)
 		}
 	}

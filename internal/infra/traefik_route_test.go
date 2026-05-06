@@ -10,7 +10,7 @@ import (
 func TestWriteDashboardRoute_RoundTrip(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "dynamic")
 
-	path, err := WriteDashboardRoute(dir, "pier", "test", "http://10.10.6.1:60080")
+	path, err := WriteDashboardRoute(dir, "pier.test", "http://10.10.6.1:60080")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestWriteDashboardRoute_RoundTrip(t *testing.T) {
 	}
 
 	// Re-write with a different upstream → file overwritten in place.
-	if _, err := WriteDashboardRoute(dir, "pier", "test", "http://10.0.0.1:60080"); err != nil {
+	if _, err := WriteDashboardRoute(dir, "pier.test", "http://10.0.0.1:60080"); err != nil {
 		t.Fatal(err)
 	}
 	body, _ = os.ReadFile(path)
@@ -43,15 +43,28 @@ func TestWriteDashboardRoute_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestWriteDashboardRoute_AcceptsBaseDomainFQDN(t *testing.T) {
+	// Dashboard FQDN under headscale base_domain (e.g. "pier.nebula")
+	// must round-trip cleanly — no host/tld split forced by the API.
+	dir := filepath.Join(t.TempDir(), "dynamic")
+	path, err := WriteDashboardRoute(dir, "pier.nebula", "http://100.64.0.10:60080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(path)
+	if !strings.Contains(string(body), "Host(`pier.nebula`)") {
+		t.Errorf("rule missing pier.nebula:\n%s", body)
+	}
+}
+
 func TestWriteDashboardRoute_RejectsEmpty(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "dynamic")
-	cases := []struct{ host, tld, upstream string }{
-		{"", "test", "http://x:1"},
-		{"pier", "", "http://x:1"},
-		{"pier", "test", ""},
+	cases := []struct{ fqdn, upstream string }{
+		{"", "http://x:1"},
+		{"pier.test", ""},
 	}
 	for _, c := range cases {
-		if _, err := WriteDashboardRoute(dir, c.host, c.tld, c.upstream); err == nil {
+		if _, err := WriteDashboardRoute(dir, c.fqdn, c.upstream); err == nil {
 			t.Errorf("expected error for %+v", c)
 		}
 	}
@@ -70,7 +83,7 @@ func TestRemoveDashboardRoute_MissingIsNoop(t *testing.T) {
 
 func TestRemoveDashboardRoute_DeletesFile(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "dynamic")
-	path, err := WriteDashboardRoute(dir, "pier", "test", "http://x:1")
+	path, err := WriteDashboardRoute(dir, "pier.test", "http://x:1")
 	if err != nil {
 		t.Fatal(err)
 	}

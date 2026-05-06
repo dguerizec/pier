@@ -186,8 +186,6 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 				fmt.Fprintf(out, "! reload headscale failed (%v) — restart the container manually: docker restart %s\n", err, env.Headscale.Container)
 			} else {
 				fmt.Fprintln(out, "✓ headscale restarted (DNS config reload)")
-				fmt.Fprintln(out, "  note: peers test the rule with `resolvectl query <name>.<tld>`; `dig` doesn't")
-				fmt.Fprintln(out, "        always honour systemd-resolved per-link routing and will look broken.")
 			}
 		}
 	}

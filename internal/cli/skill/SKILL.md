@@ -197,10 +197,18 @@ Don't write it into `.pier.toml` proactively. See
 6. **Running `docker compose up` directly.** Bypasses traefik
    registration, host port stripping, and per-worktree container
    names — multi-worktree runs will collide.
-7. **Adding `[worktree].dir` to `.pier.toml` without being asked.**
+7. **Running `docker compose restart` / `stop` / `start` / `rm`
+   on a pier workload.** Pier attaches the shared `pier` network
+   with a unique alias *after* `compose up`. A raw compose restart
+   re-creates the container without that alias, traefik loses the
+   route, and short service names (`backend`, `frontend`) collide
+   with other projects on the shared network. Use `pier down && pier
+   up` instead, or `pier doctor --fix` to re-sync if you've already
+   restarted out-of-band.
+8. **Adding `[worktree].dir` to `.pier.toml` without being asked.**
    It's a per-user preference. See
    [reference/worktree-dir.md](reference/worktree-dir.md).
-8. **Hand-writing `.pier.toml` from scratch.** Run `pier init --yes`
+9. **Hand-writing `.pier.toml` from scratch.** Run `pier init --yes`
    instead. Typos in `base_domain`, missing `match_host_uid`, slug
    collisions are common bugs the wizard avoids by construction. See
    [reference/init.md](reference/init.md).

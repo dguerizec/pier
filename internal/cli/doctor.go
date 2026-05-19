@@ -1,13 +1,16 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/LeoPartt/pier/internal/adapter"
 	"github.com/LeoPartt/pier/internal/infra"
+	"github.com/LeoPartt/pier/internal/manifest"
 	"github.com/LeoPartt/pier/internal/state"
 	"github.com/LeoPartt/pier/internal/systemd"
 )
@@ -39,6 +42,8 @@ drop dead workload rows).`,
 			fixed := infra.Fix()
 			pruned := pruneDeadWorkloads()
 			fixed.Actions = append(fixed.Actions, pruned...)
+			rea := reattachLeakyAliases()
+			fixed.Actions = append(fixed.Actions, rea...)
 			appendServeUnitChecks(&fixed)
 			appendStateChecks(&fixed)
 			fixed.Print(out)
@@ -81,11 +86,17 @@ func appendServeUnitChecks(r *infra.Report) {
 }
 
 // appendStateChecks adds one check per workload row, marking rows whose
-// container is gone as failures.
+// container is gone as failures, or whose pier-network aliases leak the
+// compose service short name as warnings (cross-project collision).
 func appendStateChecks(r *infra.Report) {
 	paths, err := infra.DefaultPaths()
 	if err != nil {
 		return
+	}
+	cfg, err := infra.LoadConfig(paths)
+	network := ""
+	if err == nil {
+		network = cfg.EffectiveTraefikNetwork()
 	}
 	store, err := state.Open(paths.StateDB)
 	if err != nil {
@@ -120,8 +131,122 @@ func appendStateChecks(r *infra.Report) {
 			})
 			continue
 		}
+		if leaks := leakyPierAliases(w.ContainerID, network); len(leaks) > 0 {
+			r.Checks = append(r.Checks, infra.Check{
+				Name:   name,
+				Status: infra.StatusFail,
+				Detail: fmt.Sprintf("short alias%s on %s network: %s — collides with sibling projects",
+					pluralS(len(leaks)), network, strings.Join(leaks, ", ")),
+				FixHint: "pier doctor --fix  (will reattach with FQDN-only aliases)",
+			})
+			continue
+		}
 		r.Checks = append(r.Checks, infra.Check{Name: name, Status: infra.StatusPass})
 	}
+}
+
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "es"
+}
+
+// leakyPierAliases returns the short (dot-less) aliases the container
+// carries on the shared pier network. Any value here is a leak: docker
+// auto-registers compose service names (`backend`, `frontend`, …) on
+// every network the service joins, which collides across projects on
+// the shared pier net. Pier attaches the shared network itself, with
+// --alias <FQDN> only, to avoid this — but a `docker compose restart`
+// outside pier (or a pre-fix workload) reintroduces the short alias.
+//
+// Returns nil when the container isn't on the pier network at all, or
+// when its aliases are clean.
+func leakyPierAliases(containerID, network string) []string {
+	format := fmt.Sprintf(`{{json (index .NetworkSettings.Networks %q).Aliases}}`, network)
+	out, err := exec.Command("docker", "inspect", "--format", format, containerID).Output()
+	if err != nil {
+		// Container isn't on the pier network — separate concern; we
+		// don't surface it here because traefik would already show a
+		// 502 and the user notices.
+		return nil
+	}
+	var aliases []string
+	if err := json.Unmarshal(out, &aliases); err != nil || len(aliases) == 0 {
+		return nil
+	}
+	var bad []string
+	for _, a := range aliases {
+		if !strings.Contains(a, ".") {
+			bad = append(bad, a)
+		}
+	}
+	return bad
+}
+
+// reattachLeakyAliases re-runs pier's network attachment for every
+// workload whose pier-network aliases include a short (collision-risk)
+// name. It reads each workload's manifest to recover the exposed
+// service list, then defers to adapter.AttachToTraefikNetwork.
+func reattachLeakyAliases() []string {
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		return nil
+	}
+	cfg, err := infra.LoadConfig(paths)
+	if err != nil {
+		return nil
+	}
+	store, err := state.Open(paths.StateDB)
+	if err != nil {
+		return nil
+	}
+	defer store.Close()
+
+	workloads, err := store.List()
+	if err != nil {
+		return nil
+	}
+	network := cfg.EffectiveTraefikNetwork()
+	var actions []string
+	for _, w := range workloads {
+		if w.ContainerID == "" || !containerAlive(w.ContainerID) {
+			continue
+		}
+		if len(leakyPierAliases(w.ContainerID, network)) == 0 {
+			continue
+		}
+		m, err := manifest.Load(w.WorktreePath)
+		if err != nil {
+			continue
+		}
+		baseDomain := m.Project.BaseDomain
+		if baseDomain == "" {
+			baseDomain = m.Project.Name + "." + cfg.TLD
+		} else {
+			expanded, err := adapter.ExpandPierTokens(baseDomain, cfg.TLD)
+			if err != nil {
+				continue
+			}
+			baseDomain = expanded
+		}
+		defaultService := ""
+		if d := m.DefaultExpose(); d != nil {
+			defaultService = d.Service
+		}
+		c := adapter.Ctx{
+			Project:        m.Project.Name,
+			Slug:           w.Slug,
+			BaseDomain:     baseDomain,
+			TraefikNetwork: network,
+			Expose:         m.Expose,
+			DefaultService: defaultService,
+		}
+		if err := adapter.AttachToTraefikNetwork(c); err == nil {
+			actions = append(actions, fmt.Sprintf("reattached %s/%s on %s network", w.Project, w.Slug, network))
+		}
+	}
+	return actions
 }
 
 // pruneDeadWorkloads removes state rows whose backing container is gone.

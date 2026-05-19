@@ -14,22 +14,20 @@ import (
 const DashboardRouteFile = "pier-dashboard.yml"
 
 // WriteDashboardRoute (re)writes the traefik file-provider yaml that
-// routes `host.<tld>` to a service running on the host. host is the
-// sub-domain label (e.g. "pier"); upstream is the URL traefik proxies
-// to from inside its container. dir is the file-provider directory
-// traefik watches — pier-managed (paths.TraefikDynamic) by default,
-// or an external directory in BYO-traefik mode.
+// routes fqdn to a service running on the host. fqdn is the full
+// hostname (e.g. "pier.test" or "pier.nebula"); upstream is the URL
+// traefik proxies to from inside its container. dir is the
+// file-provider directory traefik watches — pier-managed
+// (paths.TraefikDynamic) by default, or an external directory in
+// BYO-traefik mode.
 //
 // Returns the absolute path of the written file so the caller can hand
 // it back to RemoveDashboardRoute on shutdown. Writes are atomic via a
 // sibling .tmp + rename so traefik's filesystem watch never sees a
 // half-written file.
-func WriteDashboardRoute(dir, host, tld, upstream string) (string, error) {
-	if tld == "" {
-		return "", errors.New("traefik route: tld is required")
-	}
-	if host == "" {
-		return "", errors.New("traefik route: host is required")
+func WriteDashboardRoute(dir, fqdn, upstream string) (string, error) {
+	if fqdn == "" {
+		return "", errors.New("traefik route: fqdn is required")
 	}
 	if upstream == "" {
 		return "", errors.New("traefik route: upstream URL is required")
@@ -37,7 +35,7 @@ func WriteDashboardRoute(dir, host, tld, upstream string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	body := renderDashboardRoute(host, tld, upstream)
+	body := renderDashboardRoute(fqdn, upstream)
 	path := filepath.Join(dir, DashboardRouteFile)
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
@@ -69,8 +67,7 @@ func RemoveDashboardRoute(dir string) (bool, error) {
 // fixed router/service names (`pier-dashboard`) because there is at
 // most one of these per host; if a future feature needs a second route
 // it can land in its own file with its own names.
-func renderDashboardRoute(host, tld, upstream string) string {
-	fqdn := host + "." + tld
+func renderDashboardRoute(fqdn, upstream string) string {
 	var b strings.Builder
 	fmt.Fprintln(&b, "# managed by pier; rewritten by `pier serve` on every start, removed on shutdown")
 	fmt.Fprintln(&b, "http:")

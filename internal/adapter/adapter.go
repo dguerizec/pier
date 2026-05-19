@@ -110,16 +110,3 @@ func DefaultURL(c Ctx) string {
 	return ""
 }
 
-// RecordNames returns the DNS labels pier registers in headscale's
-// extra_records (no scheme): one per exposed service, plus the bare
-// `<slug>.<base>` alias when a default is set.
-func RecordNames(c Ctx) []string {
-	var out []string
-	if c.DefaultService != "" {
-		out = append(out, AliasHost(c.Slug, c.BaseDomain))
-	}
-	for _, e := range c.Expose {
-		out = append(out, HostFor(e, c.Slug, c.BaseDomain))
-	}
-	return out
-}

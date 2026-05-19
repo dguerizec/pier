@@ -113,6 +113,20 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 
 	plan := composeInstallPlan(env, base)
 
+	// Refuse to install when the chosen TLD lives under headscale's
+	// base_domain. MagicDNS owns the lookups authoritatively for that
+	// scope, so the split-DNS rule pier would push reaches peers as a
+	// search domain only — workloads never resolve. Catch it BEFORE
+	// spawning containers and writing host DNS, otherwise the user
+	// ends up with a half-applied install pointing at a TLD that
+	// can't work.
+	if env.Headscale.Found && env.Headscale.BaseDomain != "" && tldIsUnder(plan.TLD, env.Headscale.BaseDomain) {
+		fmt.Fprintf(out, "! pier TLD %q lives under headscale base_domain %q.\n", plan.TLD, env.Headscale.BaseDomain)
+		fmt.Fprintln(out, "  MagicDNS pre-empts split-DNS for names under base_domain — workloads won't resolve from peers.")
+		fmt.Fprintln(out, "  Pick a TLD outside the base_domain (e.g. `--tld test`) and re-run install.")
+		return nil
+	}
+
 	// Host-process traefik can't drive pier workloads (no docker
 	// labels) and will fight pier-traefik for port 80. Surface the
 	// conflict before we plan a port-80 spawn.
@@ -154,23 +168,9 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 	askWorktreeDirPref(cmd, base.yes)
 
 	if env.Headscale.Found && env.Tailscale.Active && env.Headscale.ConfigPath != "" {
-		// Records mode is already wired through Config — no headscale
-		// auto-patch needed. The MagicDNS layer resolves slugs as soon as
-		// pier up writes them.
-		if plan.HeadscaleRecordsPath != "" {
-			fmt.Fprintln(out)
-			fmt.Fprintf(out, "✓ records mode: pier up/down will manage %s\n", plan.HeadscaleRecordsPath)
-			return nil
-		}
 		fmt.Fprintln(out)
-		// Split-DNS push only works for TLDs OUTSIDE the headscale
-		// base_domain. tldIsUnder false ⇒ safe to auto-patch.
-		if env.Headscale.BaseDomain != "" && tldIsUnder(plan.TLD, env.Headscale.BaseDomain) {
-			fmt.Fprintf(out, "! pier TLD %q is under headscale base_domain %q but extra_records is not configured.\n", plan.TLD, env.Headscale.BaseDomain)
-			fmt.Fprintln(out, "  Pick a TLD outside the base_domain (e.g. `--tld test`) for split-DNS,")
-			fmt.Fprintln(out, "  or set dns.extra_records_path in headscale.yaml so pier can publish records.")
-			return nil
-		}
+		// Pre-flight already refused TLD-under-base_domain, so anything
+		// reaching here is safe to auto-patch.
 		if base.yes || confirm(cmd.InOrStdin(), out, fmt.Sprintf("Patch %s with .%s split-DNS?", env.Headscale.ConfigPath, plan.TLD), true) {
 			changed, err := headscale.Patch(env.Headscale.ConfigPath, plan.TLD, plan.AnswerIP)
 			if err != nil {
@@ -186,8 +186,6 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 				fmt.Fprintf(out, "! reload headscale failed (%v) — restart the container manually: docker restart %s\n", err, env.Headscale.Container)
 			} else {
 				fmt.Fprintln(out, "✓ headscale restarted (DNS config reload)")
-				fmt.Fprintln(out, "  note: peers test the rule with `resolvectl query <name>.<tld>`; `dig` doesn't")
-				fmt.Fprintln(out, "        always honour systemd-resolved per-link routing and will look broken.")
 			}
 		}
 	}
@@ -221,6 +219,11 @@ func tldIsUnder(tld, base string) bool {
 
 // composeInstallPlan turns detected environment + user flags into the
 // concrete InstallOptions. Explicit flags always win over detected values.
+//
+// Workloads always resolve via split-DNS (pier-dnsmasq + headscale config
+// patch) regardless of whether a headscale records adapter is available —
+// the records adapter is reserved for the dashboard FQDN, configured
+// later by `pier serve install` and not at infra install time.
 func composeInstallPlan(env detect.Environment, base installOpts) infra.InstallOptions {
 	plan := infra.InstallOptions{
 		Mode:                      base.mode,
@@ -233,15 +236,7 @@ func composeInstallPlan(env detect.Environment, base installOpts) infra.InstallO
 		ExternalTraefikDynamicDir: base.externalTraefikDynamicDir,
 	}
 	if plan.TLD == "" {
-		// When extra_records is available, pier can publish per-slug records
-		// directly under the headscale base_domain (MagicDNS resolves them
-		// for free) — that's strictly better than inventing a `.test` TLD
-		// alongside. Otherwise default to .test (split-DNS path).
-		if env.Headscale.RecordsPath != "" && env.Headscale.BaseDomain != "" {
-			plan.TLD = env.Headscale.BaseDomain
-		} else {
-			plan.TLD = infra.DefaultTLD
-		}
+		plan.TLD = infra.DefaultTLD
 	}
 	switch {
 	case env.Tailscale.Active:
@@ -274,24 +269,14 @@ func composeInstallPlan(env detect.Environment, base installOpts) infra.InstallO
 			plan.ExternalTraefikDynamicDir = env.Traefik.DynamicDir
 		}
 	}
-	// Records mode kicks in only when the chosen TLD is a sub-domain of (or
-	// identical to) the headscale base_domain — that's the case where
-	// MagicDNS owns the lookups and split-DNS is preempted. In other
-	// cases the records publication wouldn't survive a peer query.
-	if env.Headscale.RecordsPath != "" && env.Headscale.BaseDomain != "" && tldIsUnder(plan.TLD, env.Headscale.BaseDomain) {
-		plan.HeadscaleContainer = env.Headscale.Container
-		plan.HeadscaleRecordsPath = env.Headscale.RecordsPath
-	}
-	// Split-DNS mode persists the headscale config path + container so
-	// Uninstall can revert the patch we apply post-Install. Mirror of
-	// the records branch but inverted: TLD must be OUTSIDE base_domain
-	// for split-DNS routing to reach peers (MagicDNS pre-empts otherwise).
+	// Persist the headscale config path so Uninstall can revert the
+	// split-DNS patch we apply post-Install. Requires the chosen TLD
+	// to live OUTSIDE base_domain (MagicDNS pre-empts split-DNS for
+	// names under base_domain).
 	if env.Headscale.Found && env.Headscale.ConfigPath != "" &&
 		env.Headscale.BaseDomain != "" && !tldIsUnder(plan.TLD, env.Headscale.BaseDomain) {
 		plan.HeadscaleConfigPath = env.Headscale.ConfigPath
-		if plan.HeadscaleContainer == "" {
-			plan.HeadscaleContainer = env.Headscale.Container
-		}
+		plan.HeadscaleContainer = env.Headscale.Container
 	}
 	return plan
 }
@@ -312,9 +297,6 @@ func planSummary(p infra.InstallOptions) string {
 	}
 	if p.ExternalTraefikDynamicDir != "" {
 		parts = append(parts, "--traefik-dynamic-dir "+p.ExternalTraefikDynamicDir)
-	}
-	if p.HeadscaleRecordsPath != "" {
-		parts = append(parts, "(records mode: "+p.HeadscaleRecordsPath+")")
 	}
 	return strings.Join(parts, " ")
 }
@@ -457,6 +439,9 @@ func newUninstallCmd() *cobra.Command {
 			}
 
 			headscaleTouched := revertHeadscalePatch(out, cfg)
+			if removeOrphanDashboardRecord(out, cfg) {
+				headscaleTouched = true
+			}
 
 			skillRemoved := false
 			if dir, err := skill.UserDir(); err == nil {
@@ -523,6 +508,34 @@ func revertHeadscalePatch(out io.Writer, cfg *infra.Config) bool {
 			fmt.Fprintln(out, "✓ headscale restarted (DNS reload)")
 		}
 	}
+	return true
+}
+
+// removeOrphanDashboardRecord cleans up the dashboard A record pier
+// serve registers in headscale's extra_records when DashboardFQDN is
+// configured under base_domain. pier serve normally removes its own
+// record on graceful shutdown; this is the safety net for the cases
+// where the daemon crashed, was killed without cleanup, or simply
+// wasn't running at uninstall time. No-op when DashboardFQDN is empty
+// (default pier.<TLD> never had a record) or when the records adapter
+// path isn't configured.
+//
+// Returns true when something actually got removed so the caller can
+// suppress the "nothing to uninstall" hint.
+func removeOrphanDashboardRecord(out io.Writer, cfg *infra.Config) bool {
+	if cfg == nil || cfg.DashboardFQDN == "" || cfg.HeadscaleRecordsPath == "" {
+		return false
+	}
+	removed, err := headscale.Remove(cfg.HeadscaleRecordsPath, cfg.DashboardFQDN)
+	if err != nil {
+		fmt.Fprintf(out, "! headscale dashboard record cleanup %s: %v\n", cfg.DashboardFQDN, err)
+		return false
+	}
+	if !removed {
+		return false
+	}
+	fmt.Fprintf(out, "✓ removed orphan dashboard record %s from %s\n",
+		cfg.DashboardFQDN, cfg.HeadscaleRecordsPath)
 	return true
 }
 

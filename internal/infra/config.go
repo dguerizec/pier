@@ -33,14 +33,18 @@ type Config struct {
 	// pier serve then skips the dashboard route in BYO mode.
 	ExternalTraefikDynamicDir string `toml:"external_traefik_dynamic_dir,omitempty"`
 
-	// HeadscaleContainer + HeadscaleRecordsPath enable the records adapter:
-	// when set, every pier up/down appends/removes an A record in the
-	// headscale extra_records JSON file so peers can resolve pier slugs
-	// via MagicDNS even when the TLD lives under headscale's base_domain
-	// (where split-DNS rules are pre-empted by MagicDNS authoritative
-	// scope). Both fields are populated by the install wizard when
-	// extra_records_path is detected.
-	HeadscaleContainer   string `toml:"headscale_container,omitempty"`
+	// HeadscaleContainer is the headscale container name. Populated by
+	// `pier install` when headscale is detected so Uninstall can
+	// `docker restart` after Unpatching the split-DNS rule, and
+	// (if a dashboard FQDN under base_domain is configured later)
+	// after Add/Removeing the dashboard A record in extra_records.
+	HeadscaleContainer string `toml:"headscale_container,omitempty"`
+	// HeadscaleRecordsPath is the path to headscale's extra_records JSON.
+	// Populated by `pier serve install` when the user opts in to a
+	// dashboard FQDN under base_domain. Empty when the dashboard lives
+	// under the pier TLD (covered by the split-DNS wildcard) or when
+	// headscale extra_records aren't configured at all. NOT populated
+	// by `pier install` — workloads no longer use the records adapter.
 	HeadscaleRecordsPath string `toml:"headscale_records_path,omitempty"`
 	// HeadscaleConfigPath is the headscale config.yaml that pier patched
 	// at install time to add a split-DNS rule for TLD. Set only in
@@ -48,6 +52,27 @@ type Config struct {
 	// auto-patched. Used by Uninstall to revert the patch via
 	// headscale.Unpatch.
 	HeadscaleConfigPath string `toml:"headscale_config_path,omitempty"`
+
+	// DashboardFQDN is the hostname pier serve registers the dashboard
+	// under. Populated by `pier serve install` (interactive prompt or
+	// --dashboard-fqdn flag). When empty, pier serve falls back to
+	// `pier.<TLD>` which the split-DNS wildcard resolves automatically.
+	// When set under headscale's base_domain, pier serve writes a
+	// matching A record into HeadscaleRecordsPath at start and removes
+	// it at stop.
+	DashboardFQDN string `toml:"dashboard_fqdn,omitempty"`
+}
+
+// EffectiveDashboardFQDN returns DashboardFQDN when set, otherwise the
+// default `pier.<TLD>` which the split-DNS wildcard answers.
+func (c *Config) EffectiveDashboardFQDN() string {
+	if c.DashboardFQDN != "" {
+		return c.DashboardFQDN
+	}
+	if c.TLD == "" {
+		return ""
+	}
+	return "pier." + c.TLD
 }
 
 // EffectiveAnswerIP returns AnswerIP or BindIP (older configs written before

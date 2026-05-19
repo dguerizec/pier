@@ -36,22 +36,24 @@ var webAppJS []byte
 
 func newServeCmd() *cobra.Command {
 	var (
-		bind        string
-		port        int
-		corsOrigins []string
+		bind          string
+		port          int
+		corsOrigins   []string
+		dashboardFQDN string
 	)
 	cmd := &cobra.Command{
 		Use:     "serve",
 		Aliases: []string{"web"},
 		Short:   "Serve the pier HTTP surface (dashboard at /, REST API at /api/v1/)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServe(cmd, bind, port, corsOrigins)
+			return runServe(cmd, bind, port, corsOrigins, dashboardFQDN)
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&bind, "bind", "", "interface to bind on (default: 127.0.0.1 + pier network gateway + tailnet IP in server+records mode)")
+	f.StringVar(&bind, "bind", "", "interface to bind on (default: 127.0.0.1 + pier network gateway + AnswerIP in server mode)")
 	f.IntVar(&port, "port", 60080, "TCP port to listen on")
 	f.StringSliceVar(&corsOrigins, "cors-origin", []string{"*"}, "comma-separated CORS origins for /api/v1/* (default: any)")
+	f.StringVar(&dashboardFQDN, "dashboard-fqdn", "", "override the persisted dashboard FQDN for this run (default: cfg.dashboard_fqdn or pier.<TLD>)")
 
 	cmd.AddCommand(
 		newServeInstallCmd(),
@@ -64,7 +66,7 @@ func newServeCmd() *cobra.Command {
 // runServe is the foreground daemon body. Extracted so cobra wiring
 // stays a thin dispatch layer and so SIGUSR2 re-exec lands back in
 // the same code path on restart.
-func runServe(cmd *cobra.Command, bind string, port int, corsOrigins []string) error {
+func runServe(cmd *cobra.Command, bind string, port int, corsOrigins []string, dashboardFQDN string) error {
 	paths, err := infra.DefaultPaths()
 	if err != nil {
 		return err
@@ -72,6 +74,13 @@ func runServe(cmd *cobra.Command, bind string, port int, corsOrigins []string) e
 	cfg, err := infra.LoadConfig(paths)
 	if err != nil {
 		return err
+	}
+
+	// CLI flag overrides the persisted FQDN for this run only — useful
+	// for ad-hoc tests on a different hostname without rewriting cfg.
+	// Doesn't persist; the next pier serve start reads cfg again.
+	if dashboardFQDN != "" {
+		cfg.DashboardFQDN = dashboardFQDN
 	}
 
 	out := cmd.OutOrStdout()
@@ -318,18 +327,25 @@ func discoverBridgeGatewayIP(network string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// registerDashboardRecord adds a `pier.<tld>` A record so peers can reach
-// the dashboard at a friendly URL instead of an IP. No-op outside records
-// mode, when bind is loopback (the address wouldn't be reachable anyway),
-// or when the record already exists for someone else (ErrConflict).
+// registerDashboardRecord adds an A record for the dashboard FQDN so
+// peers can reach the dashboard at a friendly URL instead of an IP.
+// Only fires when the user opted in to a dashboard FQDN backed by
+// headscale's extra_records (the records adapter): cfg.DashboardFQDN
+// is set AND cfg.HeadscaleRecordsPath is set. The split-DNS wildcard
+// path (DashboardFQDN empty or pointing under cfg.TLD) needs no
+// record — pier-dnsmasq answers `pier.<tld>` automatically.
+//
+// Skipped when bind is loopback (the address wouldn't be reachable
+// anyway) or when the record already exists for someone else
+// (ErrConflict).
 func registerDashboardRecord(cfg *infra.Config, bind string, out io.Writer) (string, bool) {
-	if cfg.HeadscaleRecordsPath == "" || cfg.TLD == "" {
+	if cfg.DashboardFQDN == "" || cfg.HeadscaleRecordsPath == "" {
 		return "", false
 	}
 	if bind == "" || bind == "127.0.0.1" || bind == "0.0.0.0" {
 		return "", false
 	}
-	name := "pier." + cfg.TLD
+	name := cfg.DashboardFQDN
 	added, err := headscale.Add(cfg.HeadscaleRecordsPath, name, bind)
 	if errors.Is(err, headscale.ErrConflict) {
 		fmt.Fprintf(out, "! headscale: %s already mapped elsewhere; skipping auto-record\n", name)
@@ -349,8 +365,12 @@ func registerDashboardRecord(cfg *infra.Config, bind string, out io.Writer) (str
 	return name, true
 }
 
-// registerDashboardRoute writes a traefik file-provider entry so
-// `http://pier.<tld>` lands on the running serve.
+// registerDashboardRoute writes a traefik file-provider entry so the
+// dashboard FQDN lands on the running serve. The FQDN is taken from
+// cfg.EffectiveDashboardFQDN(): explicit cfg.DashboardFQDN when set
+// (typically `pier.<base_domain>` after `pier serve install` opt-in),
+// otherwise the implicit `pier.<TLD>` covered by the split-DNS
+// wildcard.
 //
 // Two modes, picked by which directory traefik watches:
 //
@@ -370,7 +390,8 @@ func registerDashboardRecord(cfg *infra.Config, bind string, out io.Writer) (str
 // Returns (fqdn, true) when a file was written so shutdown can remove
 // it; (_, false) when we skipped (nothing to clean up).
 func registerDashboardRoute(paths *infra.Paths, cfg *infra.Config, bridgeGateway string, bindAddrs []string, port int, out io.Writer) (string, bool) {
-	if cfg.TLD == "" {
+	fqdn := cfg.EffectiveDashboardFQDN()
+	if fqdn == "" {
 		return "", false
 	}
 	dir := dashboardRouteDir(cfg, paths)
@@ -385,10 +406,7 @@ func registerDashboardRoute(paths *infra.Paths, cfg *infra.Config, bridgeGateway
 	}
 
 	upstream := fmt.Sprintf("http://%s:%d", upstreamIP, port)
-	host := "pier"
-	fqdn := host + "." + cfg.TLD
-
-	if _, err := infra.WriteDashboardRoute(dir, host, cfg.TLD, upstream); err != nil {
+	if _, err := infra.WriteDashboardRoute(dir, fqdn, upstream); err != nil {
 		fmt.Fprintf(out, "! traefik route %s: %v\n", fqdn, err)
 		return "", false
 	}

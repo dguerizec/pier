@@ -1,14 +1,12 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"io"
 
 	"github.com/spf13/cobra"
 
 	"github.com/LeoPartt/pier/internal/adapter"
-	"github.com/LeoPartt/pier/internal/headscale"
 	"github.com/LeoPartt/pier/internal/materialize"
 	"github.com/LeoPartt/pier/internal/state"
 )
@@ -80,20 +78,6 @@ func runUp(d *daily, ignoreHookErrors bool, out, errOut io.Writer) error {
 	})
 	if err != nil {
 		return fmt.Errorf("persist workload: %w", err)
-	}
-
-	if d.Config.HeadscaleRecordsPath != "" {
-		ip := d.Config.EffectiveAnswerIP()
-		for _, name := range adapter.RecordNames(d.Ctx) {
-			added, err := headscale.Add(d.Config.HeadscaleRecordsPath, name, ip)
-			if errors.Is(err, headscale.ErrConflict) {
-				fmt.Fprintf(errOut, "! headscale: %s already mapped elsewhere; not overwriting\n", name)
-			} else if err != nil {
-				return fmt.Errorf("headscale records: %w", err)
-			} else if added {
-				fmt.Fprintf(out, "✓ headscale record: %s → %s\n", name, ip)
-			}
-		}
 	}
 
 	for _, u := range adapter.URLs(d.Ctx) {

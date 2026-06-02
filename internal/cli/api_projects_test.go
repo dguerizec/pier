@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LeoPartt/pier/internal/state"
 )
@@ -162,6 +165,64 @@ func TestAPIListProjectWorktreesNotFound(t *testing.T) {
 	}
 }
 
+func TestAPIListProjectWorktreesIncludesMissingWorkloads(t *testing.T) {
+	h, mux := newTestAPI(t)
+	repo := t.TempDir()
+	if err := exec.Command("git", "init", repo).Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	store, err := state.Open(h.paths.StateDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterProject("alpha", repo); err != nil {
+		t.Fatal(err)
+	}
+	missingPath := filepath.Join(repo, ".pier", "worktrees", "gone")
+	if err := store.Upsert(&state.Workload{
+		Project:      "alpha",
+		Slug:         "gone",
+		Branch:       "feat/gone",
+		Kind:         "compose",
+		WorktreePath: missingPath,
+		ContainerID:  "missing-container",
+		StartedAt:    time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects/alpha/worktrees", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got []apiWorktreeListItem
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, wt := range got {
+		if wt.Slug == "gone" {
+			found = true
+			if !wt.Missing || !wt.HasWorkload {
+				t.Fatalf("missing workload flags = missing:%v has:%v", wt.Missing, wt.HasWorkload)
+			}
+			if wt.Path != missingPath {
+				t.Fatalf("path = %q, want %q", wt.Path, missingPath)
+			}
+			if wt.Workload == nil || !wt.Workload.WorktreeMissing {
+				t.Fatalf("workload missing flag = %+v", wt.Workload)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("missing workload not returned: %+v", got)
+	}
+}
+
 func TestAPIPostWorktreeUnknownProject(t *testing.T) {
 	// Specifying a project that isn't registered must return 404, not
 	// 500 — sillage / the UI need to distinguish "fix the request" from
@@ -188,5 +249,58 @@ func TestAPIDeleteWorktreeProjectQuery(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
+
+func TestAPIDeleteMissingWorktreeDropsOrphanState(t *testing.T) {
+	h, mux := newTestAPI(t)
+	repo := t.TempDir()
+	if err := exec.Command("git", "init", repo).Run(); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+
+	store, err := state.Open(h.paths.StateDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RegisterProject("alpha", repo); err != nil {
+		t.Fatal(err)
+	}
+	missingPath := filepath.Join(repo, ".pier", "worktrees", "gone")
+	if err := store.Upsert(&state.Workload{
+		Project:      "alpha",
+		Slug:         "gone",
+		Branch:       "feat/gone",
+		Kind:         "compose",
+		WorktreePath: missingPath,
+		ContainerID:  "missing-container",
+		StartedAt:    time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	req := httptest.NewRequest(http.MethodDelete,
+		"/api/v1/worktrees/gone?project=alpha", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	var got apiActionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != "removed" || !strings.Contains(got.Warning, "state row dropped") {
+		t.Fatalf("unexpected response: %+v", got)
+	}
+
+	store, err = state.Open(h.paths.StateDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.Get("alpha", "gone"); err != state.ErrNotFound {
+		t.Fatalf("state row err = %v, want ErrNotFound", err)
 	}
 }

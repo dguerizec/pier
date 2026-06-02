@@ -32,6 +32,42 @@ function el(tag, props = {}, children = []) {
   return e;
 }
 
+function confirmModal({ title, message, confirmText = "OK", cancelText = "Cancel", danger = false }) {
+  return new Promise((resolve) => {
+    const previousFocus = document.activeElement;
+    const paragraphs = Array.isArray(message) ? message : String(message).split("\n\n");
+    const cancel = el("button", { type: "button" }, cancelText);
+    const confirm = el("button", { type: "button", class: danger ? "danger primary" : "primary" }, confirmText);
+    const dialog = el("div", {
+      class: "modal",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-labelledby": "confirm-title",
+    }, [
+      el("header", {}, el("h2", { id: "confirm-title" }, title)),
+      el("div", { class: "modal-body" }, paragraphs.map((p) => el("p", {}, p))),
+      el("div", { class: "modal-actions" }, [cancel, confirm]),
+    ]);
+    const overlay = el("div", { class: "modal-backdrop" }, dialog);
+    const close = (answer) => {
+      document.removeEventListener("keydown", onKey);
+      overlay.remove();
+      if (previousFocus && previousFocus.focus) previousFocus.focus();
+      resolve(answer);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") close(false);
+    };
+    cancel.addEventListener("click", () => close(false));
+    confirm.addEventListener("click", () => close(true));
+    overlay.addEventListener("click", () => close(false));
+    dialog.addEventListener("click", (e) => e.stopPropagation());
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(overlay);
+    confirm.focus();
+  });
+}
+
 function fmtUptime(seconds) {
   if (!Number.isFinite(seconds) || seconds < 0) return "—";
   const d = Math.floor(seconds / 86400);
@@ -198,6 +234,10 @@ function workloadDetailHash(project, slug) {
   return `#/projects/${encodeURIComponent(project)}/workload/${encodeURIComponent(slug)}`;
 }
 
+function isMissingWorkload(w) {
+  return w.worktree_missing || (w.status === "missing" && (w.error || "").startsWith("manifest unreadable:"));
+}
+
 function urlList(urls) {
   if (!urls || urls.length === 0) return null;
   return el("div", { class: "urls" }, [
@@ -224,23 +264,33 @@ function containerList(containers) {
 
 function renderWorkloadRow(w) {
   const detailHash = workloadDetailHash(w.project, w.slug);
-  return el("div", { class: "workload" }, [
-    el("div", { class: "ident" }, [
-      el("span", { class: "slug" }, el("a", { href: detailHash }, w.slug)),
-      el("span", { class: "branch" }, w.branch),
-      el("span", { class: "status" }, [
-        el("span", { class: `dot ${w.status}` }),
-        `${w.status} · ${fmtUptime(w.uptime_seconds)}`,
+  const missing = isMissingWorkload(w);
+  const rowFlash = el("div", { style: "padding: 0 1rem 0.85rem;" });
+  const actions = [el("a", { class: "btn", href: detailHash }, "details")];
+  if (missing) {
+    actions.push(el("button", {
+      class: "danger",
+      onclick: () => deleteMissingWorkload(w, rowFlash),
+    }, "delete"));
+  }
+  return el("div", {}, [
+    el("div", { class: "workload" }, [
+      el("div", { class: "ident" }, [
+        el("span", { class: "slug" }, el("a", { href: detailHash }, w.slug)),
+        el("span", { class: "branch" }, w.branch),
+        el("span", { class: "status" }, [
+          el("span", { class: `dot ${w.status}` }),
+          `${w.status} · ${fmtUptime(w.uptime_seconds)}`,
+        ]),
       ]),
+      el("div", { class: "panels" }, [
+        urlList(w.urls),
+        containerList(w.containers),
+        w.error ? el("div", { class: "err" }, "! " + w.error) : null,
+      ]),
+      el("div", { class: "actions" }, actions),
     ]),
-    el("div", { class: "panels" }, [
-      urlList(w.urls),
-      containerList(w.containers),
-      w.error ? el("div", { class: "err" }, "! " + w.error) : null,
-    ]),
-    el("div", { class: "actions" }, [
-      el("a", { class: "btn", href: detailHash }, "details"),
-    ]),
+    rowFlash,
   ]);
 }
 
@@ -620,19 +670,19 @@ function renderProjectWorktreesCard(p, worktrees, parentFlash) {
 
 function renderWorktreeRow(p, wt, parentFlash) {
   const detailHash = workloadDetailHash(p.name, wt.slug);
-  const status = wt.has_workload ? wt.workload.status : "no-workload";
-  const dotClass = wt.has_workload ? wt.workload.status : "";
+  const status = wt.missing ? "missing" : (wt.has_workload ? wt.workload.status : "no-workload");
+  const dotClass = wt.missing ? "warn" : (wt.has_workload ? wt.workload.status : "");
 
   const flash = el("div", { style: "padding: 0 1rem 0.85rem;" });
   const actions = [];
   if (wt.has_workload) {
     actions.push(el("a", { class: "btn", href: detailHash }, "details"));
-    if (wt.workload.status === "running") {
+    if (!wt.missing && wt.workload.status === "running") {
       actions.push(el("button", { class: "danger", onclick: () => doDown(p.name, wt.slug, flash) }, "down"));
-    } else {
+    } else if (!wt.missing) {
       actions.push(el("button", { class: "primary", onclick: () => doUp(p.name, wt.slug, wt.path, flash) }, "up"));
     }
-  } else {
+  } else if (!wt.missing) {
     actions.push(el("button", { class: "primary", onclick: () => doUp(p.name, wt.slug, wt.path, flash) }, "up"));
   }
   actions.push(el("button", {
@@ -655,7 +705,8 @@ function renderWorktreeRow(p, wt, parentFlash) {
       el("div", { class: "panels" }, [
         wt.has_workload ? urlList(wt.workload.urls) : null,
         wt.has_workload ? containerList(wt.workload.containers) : null,
-        el("div", { class: "branch", style: "word-break: break-all;" }, wt.path),
+        wt.missing ? el("div", { class: "err" }, "! worktree path missing: " + wt.path) :
+          el("div", { class: "branch", style: "word-break: break-all;" }, wt.path),
       ]),
       el("div", { class: "actions" }, actions),
     ]),
@@ -725,7 +776,16 @@ function renderCreateWorktreeForm(p, parentFlash) {
 }
 
 async function unregisterProject(name, flash) {
-  if (!confirm(`Unregister "${name}"?\n\nThis only removes the registry entry. The .pier.toml and any worktrees stay on disk.`)) return;
+  const ok = await confirmModal({
+    title: `Unregister ${name}`,
+    message: [
+      "This only removes the registry entry.",
+      "The .pier.toml and any worktrees stay on disk.",
+    ],
+    confirmText: "unregister",
+    danger: true,
+  });
+  if (!ok) return;
   flash.replaceChildren(el("div", { class: "flash" }, "unregistering…"));
   try {
     await api(`/api/v1/projects/${encodeURIComponent(name)}`, { method: "DELETE" });
@@ -739,7 +799,16 @@ async function unregisterProject(name, flash) {
 }
 
 async function deleteWorktree(p, wt, flash) {
-  if (!confirm(`Delete worktree "${wt.slug}" at ${wt.path}?\n\npier will run "down" first if a workload is up.`)) return;
+  const ok = await confirmModal({
+    title: `Delete ${wt.slug}`,
+    message: [
+      `Worktree path: ${wt.path}`,
+      "pier will run down first if a workload is up.",
+    ],
+    confirmText: "delete",
+    danger: true,
+  });
+  if (!ok) return;
   flash.replaceChildren(el("div", { class: "flash" }, "deleting…"));
   try {
     const r = await api(
@@ -755,6 +824,38 @@ async function deleteWorktree(p, wt, flash) {
     );
     await loadProjectWorktrees(p.name);
     render();
+  } catch (e) {
+    flash.replaceChildren(el("div", { class: "flash error" }, "delete failed: " + e.message));
+  }
+}
+
+async function deleteMissingWorkload(w, flash, after) {
+  const ok = await confirmModal({
+    title: `Delete missing worktree ${w.slug}`,
+    message: [
+      `Worktree path: ${w.worktree_path}`,
+      "pier will drop its state row and remove any dangling containers it can find.",
+    ],
+    confirmText: "delete",
+    danger: true,
+  });
+  if (!ok) return;
+  flash.replaceChildren(el("div", { class: "flash" }, "deleting…"));
+  try {
+    const r = await api(
+      `/api/v1/worktrees/${encodeURIComponent(w.slug)}?project=${encodeURIComponent(w.project)}`,
+      { method: "DELETE" },
+    );
+    flash.replaceChildren(
+      el("div", { class: r.warning ? "flash warn" : "flash success" },
+        r.warning || `removed ${w.slug}`),
+    );
+    store.workloads = store.workloads.filter(
+      (x) => !(x.project === w.project && x.slug === w.slug),
+    );
+    if (store.projectWorktrees[w.project]) await loadProjectWorktrees(w.project);
+    if (after) after();
+    else render();
   } catch (e) {
     flash.replaceChildren(el("div", { class: "flash error" }, "delete failed: " + e.message));
   }
@@ -777,18 +878,27 @@ async function renderWorkloadDetail(project, slug) {
     el("a", { href: `#/projects/${encodeURIComponent(project)}` }, `← ${project}`),
   ]);
   const running = w.status === "running";
+  const missing = isMissingWorkload(w);
   const logsHash = `#/projects/${encodeURIComponent(project)}/workload/${encodeURIComponent(slug)}/logs`;
-
   const flash = el("div");
+  const actions = [el("a", { class: "btn", href: logsHash }, "logs")];
+  if (missing) {
+    actions.push(el("button", {
+      class: "danger",
+      onclick: () => deleteMissingWorkload(w, flash, () => {
+        location.hash = `#/projects/${encodeURIComponent(project)}`;
+      }),
+    }, "delete"));
+  } else {
+    actions.push(running
+      ? el("button", { class: "danger", onclick: () => doDown(project, slug, flash) }, "down")
+      : el("button", { class: "primary", onclick: () => doUp(project, slug, w.worktree_path, flash) }, "up"));
+  }
+
   const card = el("section", { class: "card" }, [
     el("header", {}, [
       el("h2", {}, `${project} / ${slug}`),
-      el("div", { class: "toolbar" }, [
-        el("a", { class: "btn", href: logsHash }, "logs"),
-        running
-          ? el("button", { class: "danger", onclick: () => doDown(project, slug, flash) }, "down")
-          : el("button", { class: "primary", onclick: () => doUp(project, slug, w.worktree_path, flash) }, "up"),
-      ]),
+      el("div", { class: "toolbar" }, actions),
     ]),
     el("div", { class: "workload" }, [
       el("div", { class: "ident" }, [

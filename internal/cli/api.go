@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -37,18 +38,19 @@ type apiContainer struct {
 }
 
 type apiWorkload struct {
-	Project       string         `json:"project"`
-	Slug          string         `json:"slug"`
-	Branch        string         `json:"branch"`
-	Kind          string         `json:"kind"`
-	Status        string         `json:"status"`
-	URLs          []apiURL       `json:"urls"`
-	Containers    []apiContainer `json:"containers"`
-	WorktreePath  string         `json:"worktree_path"`
-	ContainerID   string         `json:"container_id,omitempty"`
-	StartedAt     time.Time      `json:"started_at"`
-	UptimeSeconds int64          `json:"uptime_seconds"`
-	Error         string         `json:"error,omitempty"`
+	Project         string         `json:"project"`
+	Slug            string         `json:"slug"`
+	Branch          string         `json:"branch"`
+	Kind            string         `json:"kind"`
+	Status          string         `json:"status"`
+	URLs            []apiURL       `json:"urls"`
+	Containers      []apiContainer `json:"containers"`
+	WorktreePath    string         `json:"worktree_path"`
+	WorktreeMissing bool           `json:"worktree_missing,omitempty"`
+	ContainerID     string         `json:"container_id,omitempty"`
+	StartedAt       time.Time      `json:"started_at"`
+	UptimeSeconds   int64          `json:"uptime_seconds"`
+	Error           string         `json:"error,omitempty"`
 }
 
 type apiConfig struct {
@@ -275,6 +277,9 @@ func buildAPIWorkload(cfg *infra.Config, wl *state.Workload) apiWorkload {
 		URLs:          []apiURL{},
 		Containers:    []apiContainer{},
 	}
+	if _, err := os.Stat(wl.WorktreePath); errors.Is(err, os.ErrNotExist) {
+		out.WorktreeMissing = true
+	}
 
 	m, err := loadManifestForWorkloadPath(wl.WorktreePath)
 	if err != nil {
@@ -349,6 +354,49 @@ type apiActionResponse struct {
 	Slug    string `json:"slug"`
 	Status  string `json:"status"`            // "running" | "down"
 	Warning string `json:"warning,omitempty"` // surfaced when the row was dropped despite the worktree being gone
+}
+
+func removeProjectContainers(projectName string) ([]string, error) {
+	containers, err := listProjectContainers(projectName)
+	if err != nil {
+		return nil, err
+	}
+	if len(containers) == 0 {
+		return nil, nil
+	}
+	names := make([]string, 0, len(containers))
+	for _, c := range containers {
+		names = append(names, c.Name)
+	}
+	args := append([]string{"rm", "-f"}, names...)
+	out, err := exec.Command("docker", args...).CombinedOutput()
+	if err != nil {
+		return names, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return names, nil
+}
+
+func (h *apiHandler) dropMissingWorkload(project, slug, path string) apiActionResponse {
+	removed, err := removeProjectContainers(adapter.Name(project, slug))
+
+	if store, openErr := state.Open(h.paths.StateDB); openErr == nil {
+		_ = store.Delete(project, slug)
+		store.Close()
+	}
+
+	warnings := []string{"worktree at " + path + " missing; state row dropped"}
+	if len(removed) > 0 {
+		warnings = append(warnings, "removed containers: "+strings.Join(removed, ", "))
+	}
+	if err != nil {
+		warnings = append(warnings, "docker cleanup incomplete: "+err.Error())
+	}
+	return apiActionResponse{
+		Project: project,
+		Slug:    slug,
+		Status:  "removed",
+		Warning: strings.Join(warnings, "; "),
+	}
 }
 
 func (h *apiHandler) postWorkloadUp(w http.ResponseWriter, r *http.Request) {
@@ -454,18 +502,12 @@ func (h *apiHandler) postWorkloadDown(w http.ResponseWriter, r *http.Request) {
 
 	info, err := worktree.DetectFrom(wl.WorktreePath)
 	if err != nil {
-		// Worktree gone (deleted out from under pier). The containers
-		// might still exist; we can't drive compose without a manifest,
-		// so just drop the orphaned row and warn the caller.
-		s, e := state.Open(h.paths.StateDB)
-		if e == nil {
-			_ = s.Delete(project, slug)
-			s.Close()
-		}
-		writeJSON(w, http.StatusOK, apiActionResponse{
-			Project: project, Slug: slug, Status: "down",
-			Warning: "worktree at " + wl.WorktreePath + " missing; state row dropped without docker compose down",
-		})
+		// Worktree gone (deleted out from under pier). Compose cannot
+		// run without the manifest path, but Docker labels still let us
+		// force-remove containers left behind by the missing worktree.
+		resp := h.dropMissingWorkload(project, slug, wl.WorktreePath)
+		resp.Status = "down"
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
@@ -686,7 +728,8 @@ func (h *apiHandler) postWorktree(w http.ResponseWriter, r *http.Request) {
 func (h *apiHandler) deleteWorktree(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	repo := r.URL.Query().Get("repo")
-	if project := r.URL.Query().Get("project"); project != "" {
+	project := r.URL.Query().Get("project")
+	if project != "" {
 		resolved, rerr := h.resolveProjectRepo(project)
 		if rerr != nil {
 			if errors.Is(rerr, state.ErrProjectNotFound) {
@@ -704,8 +747,28 @@ func (h *apiHandler) deleteWorktree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if project == "" {
+		if m, err := manifest.Load(repo); err == nil {
+			project = m.Project.Name
+		}
+	}
+
+	var orphan *state.Workload
+	if project != "" {
+		if store, err := state.Open(h.paths.StateDB); err == nil {
+			if wl, err := store.Get(project, slug); err == nil {
+				orphan = wl
+			}
+			store.Close()
+		}
+	}
+
 	abs, err := resolveExistingWorktreePath(repo, slug)
 	if err != nil {
+		if orphan != nil {
+			writeJSON(w, http.StatusOK, h.dropMissingWorkload(project, slug, orphan.WorktreePath))
+			return
+		}
 		writeAPIError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -733,11 +796,6 @@ func (h *apiHandler) deleteWorktree(w http.ResponseWriter, r *http.Request) {
 			_ = runDown(d, false, false, io.Discard, io.Discard)
 			d.State.Close()
 		}
-	}
-
-	project := ""
-	if m, err := manifest.Load(repo); err == nil {
-		project = m.Project.Name
 	}
 
 	// API DELETE always passes --force: sillage is non-interactive, an

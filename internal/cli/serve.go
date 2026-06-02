@@ -34,6 +34,9 @@ var webAppCSS []byte
 //go:embed web/app.js
 var webAppJS []byte
 
+//go:embed web/favicon.png
+var webFaviconPNG []byte
+
 func newServeCmd() *cobra.Command {
 	var (
 		bind          string
@@ -97,6 +100,7 @@ func runServe(cmd *cobra.Command, bind string, port int, corsOrigins []string, d
 	mux.HandleFunc("GET /{$}", serveAsset("text/html; charset=utf-8", webIndexHTML))
 	mux.HandleFunc("GET /app.css", serveAsset("text/css; charset=utf-8", webAppCSS))
 	mux.HandleFunc("GET /app.js", serveAsset("application/javascript; charset=utf-8", webAppJS))
+	mux.HandleFunc("GET /favicon.png", serveAsset("image/png", webFaviconPNG))
 	(&apiHandler{paths: paths, cfg: cfg, hub: hub}).register(mux)
 
 	handler := withCORS(mux, corsOrigins)

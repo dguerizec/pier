@@ -327,6 +327,7 @@ type envEntry struct {
 // container_name reset to avoid colliding with sibling worktrees.
 type serviceOverride struct {
 	Service            string
+	User               string
 	Exposed            *exposedDetails
 	ResetPorts         bool
 	ResetContainerName bool
@@ -340,6 +341,8 @@ func renderOverride(c Ctx) ([]byte, error) {
 	if len(c.Expose) == 0 {
 		return nil, errors.New("compose: at least one [[expose]] entry is required")
 	}
+	composeServices := scanComposeServices(c)
+	user := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 
 	blocks := map[string]*serviceOverride{}
 	get := func(name string) *serviceOverride {
@@ -357,6 +360,9 @@ func renderOverride(c Ctx) ([]byte, error) {
 			alias = AliasHost(c.Slug, c.BaseDomain)
 		}
 		b := get(e.Service)
+		if c.Stack.MatchHostUID || c.Service[e.Service].MatchHostUID {
+			b.User = user
+		}
 		b.Exposed = &exposedDetails{
 			ContainerName: ServiceName(c.Project, c.Slug, e.Service),
 			RouterID:      ServiceName(c.Project, c.Slug, e.Service),
@@ -371,7 +377,19 @@ func renderOverride(c Ctx) ([]byte, error) {
 		b.ResetPorts = true
 	}
 
-	for name, info := range scanComposeServices(c) {
+	for name, cfg := range c.Service {
+		if !cfg.MatchHostUID {
+			continue
+		}
+		if _, exists := blocks[name]; !exists && len(composeServices) > 0 {
+			if _, exists := composeServices[name]; !exists {
+				return nil, fmt.Errorf("service[%s].match_host_uid: compose service %q not found", name, name)
+			}
+		}
+		get(name).User = user
+	}
+
+	for name, info := range composeServices {
 		b, exists := blocks[name]
 		if !exists && !info.hasPorts && !info.hasContainerName {
 			continue
@@ -404,11 +422,11 @@ func renderOverride(c Ctx) ([]byte, error) {
 services:
 {{- range .Blocks}}
   {{.Service}}:
+{{- if .User}}
+    user: "{{.User}}"
+{{- end}}
 {{- with .Exposed}}
     container_name: {{.ContainerName}}
-{{- if $.User}}
-    user: "{{$.User}}"
-{{- end}}
     labels:
       - traefik.enable=true
       - traefik.http.routers.{{.RouterID}}.rule=Host(` + "`{{.HostRule}}`" + `)
@@ -436,16 +454,11 @@ services:
 {{- end}}
 {{- end}}
 `))
-	user := ""
-	if c.Stack.MatchHostUID {
-		user = fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
-	}
 	data := struct {
-		Network, User string
-		Blocks        []*serviceOverride
+		Network string
+		Blocks  []*serviceOverride
 	}{
 		Network: c.TraefikNetwork,
-		User:    user,
 		Blocks:  ordered,
 	}
 	var buf bytes.Buffer

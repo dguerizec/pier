@@ -22,7 +22,7 @@ match_host_uid = true                # injects user: "<uid>:<gid>" into every ex
                                      # bind-mounted host paths stay writable when the image's
                                      # default UID differs (distroless/nonroot). `pier init`
                                      # prompts and writes an explicit value. See
-                                     # "[stack].match_host_uid — when to set true vs false" below.
+                                     # "match_host_uid — when to set true vs false" below.
 
 # Each [[expose]] entry tells pier to publish one compose service behind
 # traefik. The container-side port is what traefik forwards to over the
@@ -37,6 +37,10 @@ service = "api"
 port    = 8000
 # host  = "backend"                  # optional; defaults to the service name.
                                      # → backend.<slug>.<base> instead of api.<slug>.<base>
+
+[service.worker]
+match_host_uid = true                # per-service override for any compose service,
+                                     # including services that are not exposed.
 
 # [env.<service>] values are templated by pier at `pier up` time and
 # injected as environment variables into that service's container, so
@@ -118,10 +122,10 @@ emits the env block even for non-exposed services):
 API_URL = "{url.api}"
 ```
 
-## `[stack].match_host_uid` — when to set true vs false
+## `match_host_uid` — when to set true vs false
 
 `pier init` prompts for this and writes an explicit value. Default is
-`true`. Decide which way the project leans like this:
+`true` on `[stack]`. Decide which way the project leans like this:
 
 - **`true` (recommended)** — pier injects `user: "<UID>:<GID>"` into
   every exposed service in the compose override. Containers run as the
@@ -134,6 +138,11 @@ API_URL = "{url.api}"
   (e.g. `postgres` runs as the `postgres` user, expects its data dir
   owned by that user), or (b) the image's entrypoint does its own
   `chown`/`gosu` dance and would be confused by a forced uid swap.
+
+Use `[service.<name>].match_host_uid = true` when only one compose
+service should run as the host UID, or when a non-exposed service such
+as a worker/backend also writes to bind-mounted host paths. A
+per-service `true` works even when `[stack].match_host_uid = false`.
 
 **Symptom that says "you should have set true"**: container starts but
 fails with `Permission denied` writing to a path that's bind-mounted

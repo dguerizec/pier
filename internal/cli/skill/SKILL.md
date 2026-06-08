@@ -182,9 +182,11 @@ workload lifecycle (`pre_up`, `post_up`, `pre_down`, `post_down`). All
 six phases share the same `sh -c` execution model and `PIER_*` env. See
 [reference/materialize.md](reference/materialize.md).
 
-**`[stack].match_host_uid`** controls whether containers run as the
-host UID. `pier init` prompts for this; default is `true` (safe for
-distroless / nonroot images). See
+**`[stack].match_host_uid`** controls whether exposed containers run as
+the host UID. `pier init` prompts for this; default is `true` (safe for
+distroless / nonroot images). **`[service.<name>].match_host_uid`**
+enables the same override for one compose service, including non-exposed
+workers/backends. See
 [reference/manifest.md](reference/manifest.md) "when to set true vs
 false".
 

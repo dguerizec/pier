@@ -18,19 +18,20 @@ import (
 
 // Ctx carries everything an adapter needs to run a command.
 type Ctx struct {
-	Project        string                       // manifest.project.name
-	Slug           string                       // derived or overridden DNS slug
-	BaseDomain     string                       // manifest.project.base_domain (post-template expansion)
-	TLD            string                       // installed pier TLD; exposed via {pier.tld} in templates
-	WorktreePath   string                       // git toplevel
-	Stack          manifest.Stack               // adapter-specific fields under manifest.stack
-	Expose         []manifest.ExposeRule        // services pier should publish behind traefik
-	DefaultService string                       // service name that gets the bare-slug alias; "" when no alias
-	Env            map[string]map[string]string // service → key → templated value injected into the override
-	TraefikNetwork string                       // docker network the workload joins for label discovery
-	Out            io.Writer                    // command output sink
-	Err            io.Writer                    // command error sink
-	Context        context.Context              // cancels the underlying docker process; nil = no cancellation
+	Project        string                            // manifest.project.name
+	Slug           string                            // derived or overridden DNS slug
+	BaseDomain     string                            // manifest.project.base_domain (post-template expansion)
+	TLD            string                            // installed pier TLD; exposed via {pier.tld} in templates
+	WorktreePath   string                            // git toplevel
+	Stack          manifest.Stack                    // adapter-specific fields under manifest.stack
+	Expose         []manifest.ExposeRule             // services pier should publish behind traefik
+	Service        map[string]manifest.ServiceConfig // per-compose-service overrides
+	DefaultService string                            // service name that gets the bare-slug alias; "" when no alias
+	Env            map[string]map[string]string      // service → key → templated value injected into the override
+	TraefikNetwork string                            // docker network the workload joins for label discovery
+	Out            io.Writer                         // command output sink
+	Err            io.Writer                         // command error sink
+	Context        context.Context                   // cancels the underlying docker process; nil = no cancellation
 }
 
 // Handle is the state to persist after a successful Up.
@@ -109,4 +110,3 @@ func DefaultURL(c Ctx) string {
 	}
 	return ""
 }
-

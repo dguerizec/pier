@@ -36,6 +36,7 @@ type Manifest struct {
 	Project     Project                      `toml:"project"               json:"project"`
 	Stack       Stack                        `toml:"stack"                 json:"stack"`
 	Expose      []ExposeRule                 `toml:"expose"                json:"expose"`
+	Service     map[string]ServiceConfig     `toml:"service,omitempty"     json:"service,omitempty"`
 	Env         map[string]map[string]string `toml:"env,omitempty"         json:"env,omitempty"`
 	Materialize Materialize                  `toml:"materialize,omitempty" json:"materialize,omitempty"`
 	Hooks       Hooks                        `toml:"hooks,omitempty"       json:"hooks,omitempty"`
@@ -98,6 +99,14 @@ func (e ExposeRule) Hostname() string {
 		return e.Host
 	}
 	return e.Service
+}
+
+// ServiceConfig carries optional per-compose-service overrides. It applies
+// to both exposed and non-exposed services.
+type ServiceConfig struct {
+	// MatchHostUID, when true, makes pier inject `user: "<uid>:<gid>"`
+	// for this compose service in the generated override.
+	MatchHostUID bool `toml:"match_host_uid,omitempty" json:"match_host_uid,omitempty"`
 }
 
 type Materialize struct {
@@ -319,6 +328,11 @@ func (m *Manifest) Validate() error {
 			return fmt.Errorf("manifest: expose: host %q listed twice", host)
 		}
 		seenHost[host] = true
+	}
+	for service := range m.Service {
+		if strings.TrimSpace(service) == "" {
+			return errors.New("manifest: service table name is required")
+		}
 	}
 
 	if oc := m.Watch.OnChange; oc != "" && oc != "rebuild" && oc != "restart" {

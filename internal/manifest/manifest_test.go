@@ -30,6 +30,9 @@ service = "app"
 service = "app"
 port    = 3000
 
+[service.worker]
+match_host_uid = true
+
 [materialize]
 symlinks  = [".env", "secrets/"]
 snapshots = ["data-dev/"]
@@ -49,6 +52,9 @@ snapshots = ["data-dev/"]
 	}
 	if d := m.DefaultExpose(); d == nil || d.Service != "app" {
 		t.Errorf("default expose = %+v", d)
+	}
+	if !m.Service["worker"].MatchHostUID {
+		t.Errorf("service.worker.match_host_uid = false, want true")
 	}
 	if len(m.Materialize.Symlinks) != 2 || m.Materialize.Symlinks[0] != ".env" {
 		t.Errorf("symlinks = %v", m.Materialize.Symlinks)
@@ -230,6 +236,18 @@ func TestValidate_Errors(t *testing.T) {
 			},
 			"on_change",
 		},
+		{
+			"empty service override name",
+			Manifest{
+				Project: Project{Name: "x", BaseDomain: "x.test"},
+				Stack:   Stack{Kind: KindCompose, File: "a"},
+				Expose:  okExpose,
+				Service: map[string]ServiceConfig{
+					" ": {MatchHostUID: true},
+				},
+			},
+			"service table name",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -250,6 +268,9 @@ func TestWriteRoundTrip(t *testing.T) {
 		Project: Project{Name: "myapp", BaseDomain: "myapp.test"},
 		Stack:   Stack{Kind: KindCompose, File: "docker-compose.yml", Service: "app"},
 		Expose:  []ExposeRule{{Service: "app", Port: 3000}},
+		Service: map[string]ServiceConfig{
+			"worker": {MatchHostUID: true},
+		},
 		Materialize: Materialize{
 			Symlinks:   []string{".env"},
 			Snapshots:  []string{"data-dev/"},
@@ -270,6 +291,9 @@ func TestWriteRoundTrip(t *testing.T) {
 	}
 	if len(loaded.Expose) != 1 || loaded.Expose[0] != original.Expose[0] {
 		t.Errorf("expose round-trip mismatch:\noriginal=%+v\nloaded=  %+v", original.Expose, loaded.Expose)
+	}
+	if !loaded.Service["worker"].MatchHostUID {
+		t.Errorf("service.worker.match_host_uid = false, want true")
 	}
 	if len(loaded.Materialize.PostCreate) != 1 || loaded.Materialize.PostCreate[0] != "./scripts/seed.sh" {
 		t.Errorf("post_create round-trip mismatch: %v", loaded.Materialize.PostCreate)

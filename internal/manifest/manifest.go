@@ -87,8 +87,9 @@ type Stack struct {
 // pointed at by Stack.Service additionally gets `http://<slug>.<base_domain>`
 // as an alias.
 type ExposeRule struct {
-	Service string `toml:"service" json:"service"`
-	Port    int    `toml:"port"    json:"port"`
+	Service       string `toml:"service"                 json:"service"`
+	Port          int    `toml:"port"                    json:"port"`
+	PreservePorts []int  `toml:"preserve_ports,omitempty" json:"preserve_ports,omitempty"`
 	// Host is the sub-domain label. Defaults to Service when empty.
 	Host string `toml:"host,omitempty" json:"host,omitempty"`
 }
@@ -319,6 +320,16 @@ func (m *Manifest) Validate() error {
 		seenService[e.Service] = true
 		if e.Port <= 0 {
 			return fmt.Errorf("manifest: expose[%d].port must be > 0", i)
+		}
+		seenPreservePort := map[int]bool{}
+		for _, port := range e.PreservePorts {
+			if port <= 0 {
+				return fmt.Errorf("manifest: expose[%d].preserve_ports must contain ports > 0", i)
+			}
+			if seenPreservePort[port] {
+				return fmt.Errorf("manifest: expose[%d].preserve_ports contains duplicate port %d", i, port)
+			}
+			seenPreservePort[port] = true
 		}
 		host := e.Hostname()
 		if !dnsLabel.MatchString(host) {

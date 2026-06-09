@@ -490,12 +490,13 @@ function renderManifestForm(scanState, parentFlash) {
   });
 
   const exposeRows = el("div", { class: "stack", style: "gap: 0.4rem;" });
-  function addExposeRow(rule = { service: "", port: 80, host: "" }) {
+  function addExposeRow(rule = { service: "", port: 80, host: "", preserve_ports: [] }) {
     const svc = el("input", { type: "text", name: "expose_service", value: rule.service, placeholder: "service", style: "flex: 1;" });
     const port = el("input", { type: "text", name: "expose_port", value: String(rule.port), placeholder: "port", style: "width: 6rem;" });
     const host = el("input", { type: "text", name: "expose_host", value: rule.host || "", placeholder: "host (default: service)", style: "flex: 1;" });
+    const preserve = el("input", { type: "text", name: "expose_preserve_ports", value: (rule.preserve_ports || []).join(", "), placeholder: "preserve ports", style: "width: 9rem;" });
     const remove = el("button", { type: "button", class: "danger", onclick: (e) => { e.target.closest(".row").remove(); } }, "×");
-    exposeRows.appendChild(el("div", { class: "row" }, [svc, port, host, remove]));
+    exposeRows.appendChild(el("div", { class: "row" }, [svc, port, host, preserve, remove]));
   }
   for (const r of m.expose || []) addExposeRow(r);
   if (!m.expose || m.expose.length === 0) {
@@ -514,9 +515,11 @@ function renderManifestForm(scanState, parentFlash) {
         const svc = inputs[0].value.trim();
         const port = parseInt(inputs[1].value, 10);
         const host = inputs[2].value.trim();
+        const preservePorts = inputs[3].value.split(",").map((v) => parseInt(v.trim(), 10)).filter(Number.isFinite);
         if (!svc || !Number.isFinite(port)) continue;
         const rule = { service: svc, port };
         if (host) rule.host = host;
+        if (preservePorts.length) rule.preserve_ports = preservePorts;
         rules.push(rule);
       }
       if (rules.length === 0) {

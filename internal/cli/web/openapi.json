@@ -482,6 +482,7 @@
         "properties": {
           "service": { "type": "string" },
           "port":    { "type": "integer" },
+          "preserve_ports": { "type": "array", "items": { "type": "integer" }, "description": "TCP host bindings to preserve from the compose service ports list instead of resetting them" },
           "host":    { "type": "string", "description": "Sub-domain label, defaults to service when empty" }
         }
       },

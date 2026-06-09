@@ -190,6 +190,11 @@ workers/backends. See
 [reference/manifest.md](reference/manifest.md) "when to set true vs
 false".
 
+**`[[expose]].preserve_ports = [2223, ...]`** keeps selected TCP host
+bindings from the compose service instead of stripping every `ports`
+entry. Use only for non-HTTP protocols where traefik virtual hosts cannot
+help; fixed host ports still collide between simultaneous worktrees.
+
 **`[worktree].dir`** is a per-user preference, not a project setting.
 Don't write it into `.pier.toml` proactively. See
 [reference/worktree-dir.md](reference/worktree-dir.md).

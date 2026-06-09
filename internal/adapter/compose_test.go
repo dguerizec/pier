@@ -278,6 +278,92 @@ func TestRenderOverride_StripsHostBindings(t *testing.T) {
 	}
 }
 
+func TestRenderOverride_PreserveSelectedHostBindings(t *testing.T) {
+	dir := t.TempDir()
+	stack := filepath.Join(dir, "docker-compose.yml")
+	if err := os.WriteFile(stack, []byte(`services:
+  front:
+    image: node:20-alpine
+    ports:
+      - "60180:8080"
+      - "2223:2223"
+      - target: 2224
+        published: 2224
+        protocol: tcp
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := Ctx{
+		Project:        "w3t",
+		Slug:           "x",
+		BaseDomain:     "w3t.test",
+		TraefikNetwork: "pier",
+		WorktreePath:   dir,
+		Stack: manifest.Stack{
+			Kind: manifest.KindCompose,
+			File: "docker-compose.yml",
+		},
+		Expose: []manifest.ExposeRule{
+			{Service: "front", Port: 8080, PreservePorts: []int{2223, 2224}},
+		},
+	}
+	got, err := renderOverride(c)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	front := sectionForService(string(got), "front")
+	for _, want := range []string{
+		"ports: !override",
+		`"2223:2223"`,
+		"target: 2224",
+		"published: 2224",
+	} {
+		if !strings.Contains(front, want) {
+			t.Errorf("front override missing %q:\n%s", want, front)
+		}
+	}
+	for _, bad := range []string{
+		"ports: !reset []",
+		"60180:8080",
+	} {
+		if strings.Contains(front, bad) {
+			t.Errorf("front override should not contain %q:\n%s", bad, front)
+		}
+	}
+}
+
+func TestRenderOverride_PreserveHostBindingMissingPort(t *testing.T) {
+	dir := t.TempDir()
+	stack := filepath.Join(dir, "docker-compose.yml")
+	if err := os.WriteFile(stack, []byte(`services:
+  front:
+    image: node:20-alpine
+    ports:
+      - "2223:2223"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := Ctx{
+		Project:        "w3t",
+		Slug:           "x",
+		BaseDomain:     "w3t.test",
+		TraefikNetwork: "pier",
+		WorktreePath:   dir,
+		Stack: manifest.Stack{
+			Kind: manifest.KindCompose,
+			File: "docker-compose.yml",
+		},
+		Expose: []manifest.ExposeRule{
+			{Service: "front", Port: 8080, PreservePorts: []int{2224}},
+		},
+	}
+	if _, err := renderOverride(c); err == nil {
+		t.Fatal("renderOverride should reject preserve_ports when the compose binding is missing")
+	}
+}
+
 func TestRenderOverride_EnvInjection(t *testing.T) {
 	c := Ctx{
 		Project:        "w3t",
@@ -416,9 +502,16 @@ func sectionForService(s, service string) string {
 		return ""
 	}
 	rest := s[start+1:]
-	next := strings.Index(rest[len("  "+service+":\n"):], "\n  ")
-	if next == -1 {
-		return rest
+	offset := len("  " + service + ":\n")
+	for {
+		next := strings.Index(rest[offset:], "\n  ")
+		if next == -1 {
+			return rest
+		}
+		next += offset
+		if next+3 < len(rest) && rest[next+3] != ' ' {
+			return rest[:next]
+		}
+		offset = next + 1
 	}
-	return rest[:len("  "+service+":\n")+next]
 }

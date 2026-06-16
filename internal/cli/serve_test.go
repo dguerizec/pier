@@ -17,6 +17,17 @@ func TestResolveBindsExplicit(t *testing.T) {
 	}
 }
 
+func TestServeRejectsPositionalArgs(t *testing.T) {
+	cmd := newServeCmd()
+	err := cmd.Args(cmd, []string{"restart"})
+	if err == nil {
+		t.Fatal("serve restart should be rejected before runServe starts another daemon")
+	}
+	if !strings.Contains(err.Error(), `unknown command "restart"`) {
+		t.Fatalf("serve restart error = %q, want unknown command", err)
+	}
+}
+
 func TestResolveBindsLocalIncludesLoopback(t *testing.T) {
 	cfg := &infra.Config{Mode: infra.ModeLocal}
 	got := resolveBinds("", cfg, "")

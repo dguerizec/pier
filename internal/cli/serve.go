@@ -48,6 +48,7 @@ func newServeCmd() *cobra.Command {
 		Use:     "serve",
 		Aliases: []string{"web"},
 		Short:   "Serve the pier HTTP surface (dashboard at /, REST API at /api/v1/)",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runServe(cmd, bind, port, corsOrigins, dashboardFQDN)
 		},

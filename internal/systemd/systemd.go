@@ -21,6 +21,8 @@ import (
 	"strings"
 )
 
+var systemUnitPath = "/etc/systemd/system/" + unitFilename
+
 // UnitName is the systemd unit name without extension. Kept stable so
 // install/uninstall/status all agree.
 const UnitName = "pier"
@@ -35,6 +37,7 @@ type Status struct {
 	Active  bool
 	Enabled bool
 	Detail  string // raw `is-active` output for the human (e.g. "activating", "failed")
+	Path    string // unit file path when known
 }
 
 // Render builds the unit file body. Caller passes the absolute path to
@@ -161,12 +164,34 @@ func Query() Status {
 		return st
 	}
 	st.Loaded = true
+	st.Path = path
 
 	out, _ := exec.Command("systemctl", "--user", "is-active", UnitName).Output()
 	st.Detail = strings.TrimSpace(string(out))
 	st.Active = st.Detail == "active"
 
 	out, _ = exec.Command("systemctl", "--user", "is-enabled", UnitName).Output()
+	enabled := strings.TrimSpace(string(out))
+	st.Enabled = enabled == "enabled" || enabled == "static" || enabled == "alias"
+	return st
+}
+
+// QuerySystem reports the old system-scope pier.service, if present. Pier now
+// uses a --user unit; a system unit runs without the user's HOME/XDG env and can
+// get stuck in Restart=on-failure loops.
+func QuerySystem() Status {
+	path := systemUnitPath
+	st := Status{Path: path}
+	if _, err := os.Stat(path); err != nil {
+		return st
+	}
+	st.Loaded = true
+
+	out, _ := exec.Command("systemctl", "is-active", UnitName).Output()
+	st.Detail = strings.TrimSpace(string(out))
+	st.Active = st.Detail == "active" || strings.HasPrefix(st.Detail, "activating")
+
+	out, _ = exec.Command("systemctl", "is-enabled", UnitName).Output()
 	enabled := strings.TrimSpace(string(out))
 	st.Enabled = enabled == "enabled" || enabled == "static" || enabled == "alias"
 	return st

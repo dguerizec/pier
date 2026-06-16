@@ -29,6 +29,7 @@ drop dead workload rows).`,
 			report := infra.Diagnose()
 			if !fix {
 				appendServeUnitChecks(&report)
+				appendLegacySystemUnitCheck(&report)
 				appendStateChecks(&report)
 				report.Print(out)
 				if report.HasFailures() {
@@ -45,6 +46,7 @@ drop dead workload rows).`,
 			rea := reattachLeakyAliases()
 			fixed.Actions = append(fixed.Actions, rea...)
 			appendServeUnitChecks(&fixed)
+			appendLegacySystemUnitCheck(&fixed)
 			appendStateChecks(&fixed)
 			fixed.Print(out)
 			if fixed.HasFailures() {
@@ -83,6 +85,31 @@ func appendServeUnitChecks(r *infra.Report) {
 			FixHint: "systemctl --user start pier",
 		})
 	}
+}
+
+// appendLegacySystemUnitCheck reports the pre-user-unit system service. It is
+// not auto-fixed because removing files under /etc/systemd requires sudo.
+func appendLegacySystemUnitCheck(r *infra.Report) {
+	st := systemd.QuerySystem()
+	if !st.Loaded {
+		return
+	}
+	status := infra.StatusWarn
+	detail := "legacy system unit found at " + st.Path + "; pier now uses `systemctl --user`"
+	if st.Active {
+		status = infra.StatusFail
+		if st.Detail != "" {
+			detail += " and the system unit is " + st.Detail
+		}
+	} else if st.Enabled {
+		detail += " and is enabled"
+	}
+	r.Checks = append(r.Checks, infra.Check{
+		Name:    "legacy systemd unit pier.service (system)",
+		Status:  status,
+		Detail:  detail,
+		FixHint: "sudo systemctl disable --now pier.service && sudo rm -f /etc/systemd/system/pier.service && sudo systemctl daemon-reload",
+	})
 }
 
 // appendStateChecks adds one check per workload row, marking rows whose

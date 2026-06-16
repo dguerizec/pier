@@ -1,6 +1,7 @@
 package systemd
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -18,6 +19,20 @@ func TestRender(t *testing.T) {
 	// Cross-scope dep would be rejected — stay scoped to default.target.
 	mustNotContain(t, body, "After=docker.service")
 	mustNotContain(t, body, "WantedBy=multi-user.target")
+}
+
+func TestQuerySystem_Missing(t *testing.T) {
+	oldPath := systemUnitPath
+	systemUnitPath = filepath.Join(t.TempDir(), "pier.service")
+	defer func() { systemUnitPath = oldPath }()
+
+	st := QuerySystem()
+	if st.Loaded || st.Active || st.Enabled {
+		t.Fatalf("QuerySystem missing = %+v, want empty status", st)
+	}
+	if st.Path != systemUnitPath {
+		t.Fatalf("QuerySystem path = %q, want %q", st.Path, systemUnitPath)
+	}
 }
 
 func mustContain(t *testing.T, body, want string) {

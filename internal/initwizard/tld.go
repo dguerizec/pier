@@ -1,6 +1,6 @@
 package initwizard
 
-import "github.com/LeoPartt/pier/internal/infra"
+import "github.com/dguerizec/pier/internal/infra"
 
 // InstalledTLD returns the TLD pier was installed with so the default
 // base_domain is coherent with the host (e.g. `<name>.nebula` when pier

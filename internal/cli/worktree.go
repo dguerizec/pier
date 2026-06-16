@@ -11,12 +11,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/LeoPartt/pier/internal/adapter"
-	"github.com/LeoPartt/pier/internal/infra"
-	"github.com/LeoPartt/pier/internal/manifest"
-	"github.com/LeoPartt/pier/internal/materialize"
-	sluglib "github.com/LeoPartt/pier/internal/slug"
-	"github.com/LeoPartt/pier/internal/worktree"
+	"github.com/dguerizec/pier/internal/adapter"
+	"github.com/dguerizec/pier/internal/infra"
+	"github.com/dguerizec/pier/internal/manifest"
+	"github.com/dguerizec/pier/internal/materialize"
+	sluglib "github.com/dguerizec/pier/internal/slug"
+	"github.com/dguerizec/pier/internal/worktree"
 )
 
 func newWorktreeCmd() *cobra.Command {

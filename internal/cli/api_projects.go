@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/LeoPartt/pier/internal/initwizard"
-	"github.com/LeoPartt/pier/internal/manifest"
-	"github.com/LeoPartt/pier/internal/state"
-	"github.com/LeoPartt/pier/internal/worktree"
+	"github.com/dguerizec/pier/internal/initwizard"
+	"github.com/dguerizec/pier/internal/manifest"
+	"github.com/dguerizec/pier/internal/state"
+	"github.com/dguerizec/pier/internal/worktree"
 )
 
 // JSON shapes for /api/v1/projects/*. Same contract rules as api.go:

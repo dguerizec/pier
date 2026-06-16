@@ -18,8 +18,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/LeoPartt/pier/internal/headscale"
-	"github.com/LeoPartt/pier/internal/infra"
+	"github.com/dguerizec/pier/internal/headscale"
+	"github.com/dguerizec/pier/internal/infra"
 )
 
 // SPA assets — three flat files served as-is. No build step, no Go

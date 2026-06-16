@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/LeoPartt/pier/internal/manifest"
+	"github.com/dguerizec/pier/internal/manifest"
 )
 
 func TestApply_CreatesSymlinks(t *testing.T) {

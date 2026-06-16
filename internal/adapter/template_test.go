@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LeoPartt/pier/internal/manifest"
+	"github.com/dguerizec/pier/internal/manifest"
 )
 
 func TestExpandEnv(t *testing.T) {

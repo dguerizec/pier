@@ -16,9 +16,9 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
-      - -X github.com/LeoPartt/pier/internal/cli.version={{.Version}}
-      - -X github.com/LeoPartt/pier/internal/cli.commit={{.ShortCommit}}
-      - -X github.com/LeoPartt/pier/internal/cli.date={{.Date}}
+      - -X github.com/dguerizec/pier/internal/cli.version={{.Version}}
+      - -X github.com/dguerizec/pier/internal/cli.commit={{.ShortCommit}}
+      - -X github.com/dguerizec/pier/internal/cli.date={{.Date}}
     goos:
       - linux
       - darwin

@@ -3,7 +3,7 @@ package cli
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/LeoPartt/pier/internal/adapter"
+	"github.com/dguerizec/pier/internal/adapter"
 )
 
 type logsOpts struct {

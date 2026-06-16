@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/LeoPartt/pier/internal/infra"
+	"github.com/dguerizec/pier/internal/infra"
 )
 
 func newServeUpgradeCmd() *cobra.Command {

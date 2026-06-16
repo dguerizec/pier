@@ -21,7 +21,7 @@ const sysctlDropinPath = "/etc/sysctl.d/99-pier.conf"
 // port mapping (visible in `docker inspect`, absent from `docker port`).
 // Standard pattern used by keepalived / HAProxy for VIPs.
 func renderNonlocalBindSysctl() []byte {
-	return []byte(`# Written by pier — see https://github.com/LeoPartt/pier
+	return []byte(`# Written by pier — see https://github.com/dguerizec/pier
 # Allows bind() to non-local IPs so docker-proxy can bind the
 # tailscale IP at boot before tailscaled has assigned it.
 net.ipv4.ip_nonlocal_bind = 1

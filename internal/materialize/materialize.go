@@ -14,7 +14,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/LeoPartt/pier/internal/manifest"
+	"github.com/dguerizec/pier/internal/manifest"
 )
 
 // Apply runs both passes (symlinks then snapshots). Idempotent. No-op when

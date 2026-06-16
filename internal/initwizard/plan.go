@@ -246,16 +246,16 @@ func Derive(toplevel string, opts Opts) (*Plan, []Ambiguity, error) {
 	}
 
 	return &Plan{
-		Toplevel:       toplevel,
-		ManifestPath:   manifestPath,
-		Name:           name,
-		Domain:         domain,
-		ComposeFile:    composeFile,
-		Candidates:     candidates,
-		Selected:       selected,
-		DefaultService: defaultService,
-		WorktreeDir:    worktreeDir,
-		BaseRef:        baseRef,
+		Toplevel:            toplevel,
+		ManifestPath:        manifestPath,
+		Name:                name,
+		Domain:              domain,
+		ComposeFile:         composeFile,
+		Candidates:          candidates,
+		Selected:            selected,
+		DefaultService:      defaultService,
+		WorktreeDir:         worktreeDir,
+		BaseRef:             baseRef,
 		Share:               !opts.Private,
 		MatchHostUID:        matchHostUID,
 		Existing:            existing,
@@ -390,9 +390,10 @@ func existingBaseRef(m *manifest.Manifest) string {
 
 // SelectedExposes materialises the [[expose]] rules from Selected.
 //
-// On re-init, host and port from the existing manifest win for services
-// that survive: the user may have customised host="backend" or pinned a
-// specific container port, and the wizard shouldn't clobber that.
+// On re-init, host, port, and preserve_ports from the existing manifest win
+// for services that survive: the user may have customised host="backend",
+// pinned a specific container port, or kept TCP host bindings, and the wizard
+// shouldn't clobber that.
 func (p *Plan) SelectedExposes() []manifest.ExposeRule {
 	prior := map[string]manifest.ExposeRule{}
 	if p.Existing != nil {
@@ -411,6 +412,7 @@ func (p *Plan) SelectedExposes() []manifest.ExposeRule {
 				rule.Port = e.Port
 			}
 			rule.Host = e.Host
+			rule.PreservePorts = e.PreservePorts
 		}
 		out = append(out, rule)
 	}

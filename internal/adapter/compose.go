@@ -327,8 +327,10 @@ type envEntry struct {
 // container_name reset to avoid colliding with sibling worktrees.
 type serviceOverride struct {
 	Service            string
+	User               string
 	Exposed            *exposedDetails
 	ResetPorts         bool
+	OverridePorts      string
 	ResetContainerName bool
 	Env                []envEntry
 }
@@ -340,6 +342,8 @@ func renderOverride(c Ctx) ([]byte, error) {
 	if len(c.Expose) == 0 {
 		return nil, errors.New("compose: at least one [[expose]] entry is required")
 	}
+	composeServices := scanComposeServices(c)
+	user := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 
 	blocks := map[string]*serviceOverride{}
 	get := func(name string) *serviceOverride {
@@ -357,6 +361,9 @@ func renderOverride(c Ctx) ([]byte, error) {
 			alias = AliasHost(c.Slug, c.BaseDomain)
 		}
 		b := get(e.Service)
+		if c.Stack.MatchHostUID || c.Service[e.Service].MatchHostUID {
+			b.User = user
+		}
 		b.Exposed = &exposedDetails{
 			ContainerName: ServiceName(c.Project, c.Slug, e.Service),
 			RouterID:      ServiceName(c.Project, c.Slug, e.Service),
@@ -366,12 +373,33 @@ func renderOverride(c Ctx) ([]byte, error) {
 		}
 		// Exposed services always have their host ports stripped — traefik
 		// routes via the pier network, host bindings would collide between
-		// worktrees. ResetContainerName isn't needed because Exposed sets
-		// container_name to a pier-managed value that takes precedence.
-		b.ResetPorts = true
+		// worktrees. Selected preserve_ports are the explicit TCP escape hatch.
+		// ResetContainerName isn't needed because Exposed sets container_name to
+		// a pier-managed value that takes precedence.
+		if len(e.PreservePorts) == 0 {
+			b.ResetPorts = true
+		} else {
+			ports, err := preservedComposePorts(composeServices[e.Service], e.PreservePorts)
+			if err != nil {
+				return nil, fmt.Errorf("expose[%s].preserve_ports: %w", e.Service, err)
+			}
+			b.OverridePorts = ports
+		}
 	}
 
-	for name, info := range scanComposeServices(c) {
+	for name, cfg := range c.Service {
+		if !cfg.MatchHostUID {
+			continue
+		}
+		if _, exists := blocks[name]; !exists && len(composeServices) > 0 {
+			if _, exists := composeServices[name]; !exists {
+				return nil, fmt.Errorf("service[%s].match_host_uid: compose service %q not found", name, name)
+			}
+		}
+		get(name).User = user
+	}
+
+	for name, info := range composeServices {
 		b, exists := blocks[name]
 		if !exists && !info.hasPorts && !info.hasContainerName {
 			continue
@@ -404,11 +432,11 @@ func renderOverride(c Ctx) ([]byte, error) {
 services:
 {{- range .Blocks}}
   {{.Service}}:
+{{- if .User}}
+    user: "{{.User}}"
+{{- end}}
 {{- with .Exposed}}
     container_name: {{.ContainerName}}
-{{- if $.User}}
-    user: "{{$.User}}"
-{{- end}}
     labels:
       - traefik.enable=true
       - traefik.http.routers.{{.RouterID}}.rule=Host(` + "`{{.HostRule}}`" + `)
@@ -428,6 +456,10 @@ services:
 {{- if .ResetPorts}}
     ports: !reset []
 {{- end}}
+{{- if .OverridePorts}}
+    ports: !override
+{{.OverridePorts}}
+{{- end}}
 {{- if .Env}}
     environment:
 {{- range .Env}}
@@ -436,16 +468,11 @@ services:
 {{- end}}
 {{- end}}
 `))
-	user := ""
-	if c.Stack.MatchHostUID {
-		user = fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
-	}
 	data := struct {
-		Network, User string
-		Blocks        []*serviceOverride
+		Network string
+		Blocks  []*serviceOverride
 	}{
 		Network: c.TraefikNetwork,
-		User:    user,
 		Blocks:  ordered,
 	}
 	var buf bytes.Buffer
@@ -469,11 +496,117 @@ func sortedEnv(env map[string]string) []envEntry {
 	return out
 }
 
+func preservedComposePorts(info composeServiceInfo, ports []int) (string, error) {
+	if len(info.ports) == 0 {
+		return "", errors.New("compose service has no ports to preserve")
+	}
+	want := make(map[int]bool, len(ports))
+	for _, port := range ports {
+		want[port] = true
+	}
+	matched := map[int]bool{}
+	seq := yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	for _, portNode := range info.ports {
+		entryPorts := composePortNumbers(portNode)
+		keep := false
+		for port := range want {
+			if entryPorts[port] {
+				keep = true
+				matched[port] = true
+			}
+		}
+		if keep {
+			copy := portNode
+			seq.Content = append(seq.Content, &copy)
+		}
+	}
+	if len(seq.Content) == 0 {
+		return "", fmt.Errorf("compose service has no matching port bindings for %v", ports)
+	}
+	if len(matched) != len(want) {
+		missing := make([]int, 0, len(want)-len(matched))
+		for port := range want {
+			if !matched[port] {
+				missing = append(missing, port)
+			}
+		}
+		sort.Ints(missing)
+		return "", fmt.Errorf("compose service is missing port bindings for %v", missing)
+	}
+	body, err := yaml.Marshal(&seq)
+	if err != nil {
+		return "", err
+	}
+	return indentYAMLList(string(body)), nil
+}
+
+func composePortNumbers(n yaml.Node) map[int]bool {
+	out := map[int]bool{}
+	switch n.Kind {
+	case yaml.ScalarNode:
+		addPortSpecNumbers(out, n.Value)
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			key := n.Content[i].Value
+			if key != "published" && key != "target" {
+				continue
+			}
+			addPortSpecNumbers(out, n.Content[i+1].Value)
+		}
+	}
+	return out
+}
+
+func addPortSpecNumbers(out map[int]bool, spec string) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return
+	}
+	if before, _, ok := strings.Cut(spec, "/"); ok {
+		spec = before
+	}
+	if strings.HasPrefix(spec, "[") {
+		if _, rest, ok := strings.Cut(spec, "]:"); ok {
+			spec = rest
+		}
+	}
+	for _, part := range strings.Split(spec, ":") {
+		part = strings.Trim(part, ` "'`)
+		if part == "" || strings.Contains(part, ".") {
+			continue
+		}
+		if start, end, ok := strings.Cut(part, "-"); ok {
+			first, err1 := strconv.Atoi(start)
+			last, err2 := strconv.Atoi(end)
+			if err1 != nil || err2 != nil || first <= 0 || last < first {
+				continue
+			}
+			for port := first; port <= last; port++ {
+				out[port] = true
+			}
+			continue
+		}
+		port, err := strconv.Atoi(part)
+		if err == nil && port > 0 {
+			out[port] = true
+		}
+	}
+}
+
+func indentYAMLList(body string) string {
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = "      " + line
+	}
+	return strings.Join(lines, "\n")
+}
+
 // composeServiceInfo records what we need from a compose service to decide
 // whether the override must reset ports / container_name on it.
 type composeServiceInfo struct {
 	hasPorts         bool
 	hasContainerName bool
+	ports            []yaml.Node
 }
 
 // ListComposeServices returns the service names declared in the compose
@@ -514,8 +647,8 @@ func scanComposeServices(c Ctx) map[string]composeServiceInfo {
 	}
 	var doc struct {
 		Services map[string]struct {
-			Ports         []any  `yaml:"ports"`
-			ContainerName string `yaml:"container_name"`
+			Ports         []yaml.Node `yaml:"ports"`
+			ContainerName string      `yaml:"container_name"`
 		} `yaml:"services"`
 	}
 	if err := yaml.Unmarshal(body, &doc); err != nil {
@@ -526,6 +659,7 @@ func scanComposeServices(c Ctx) map[string]composeServiceInfo {
 		out[name] = composeServiceInfo{
 			hasPorts:         len(svc.Ports) > 0,
 			hasContainerName: svc.ContainerName != "",
+			ports:            svc.Ports,
 		}
 	}
 	return out

@@ -115,6 +115,17 @@ port            = 3000
 match_host_uid  = true                  # opt-in: container runs as host UID/GID
                                         #   (resolves EACCES on bind-mounts when
                                         #    the image uses distroless/nonroot)
+                                        #   applies to every exposed service
+
+[[expose]]
+service = "web"
+port = 3000
+preserve_ports = [2223]                 # optional: keep selected TCP host
+                                        # bindings from compose
+
+[service.worker]
+match_host_uid = true                   # same override for one compose service,
+                                        # exposed or not
 
 [materialize]
 symlinks  = [".env", "secrets/"]        # symlinked from primary on first up

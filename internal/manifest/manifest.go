@@ -36,6 +36,7 @@ type Manifest struct {
 	Project     Project                      `toml:"project"               json:"project"`
 	Stack       Stack                        `toml:"stack"                 json:"stack"`
 	Expose      []ExposeRule                 `toml:"expose"                json:"expose"`
+	Service     map[string]ServiceConfig     `toml:"service,omitempty"     json:"service,omitempty"`
 	Env         map[string]map[string]string `toml:"env,omitempty"         json:"env,omitempty"`
 	Materialize Materialize                  `toml:"materialize,omitempty" json:"materialize,omitempty"`
 	Hooks       Hooks                        `toml:"hooks,omitempty"       json:"hooks,omitempty"`
@@ -86,8 +87,9 @@ type Stack struct {
 // pointed at by Stack.Service additionally gets `http://<slug>.<base_domain>`
 // as an alias.
 type ExposeRule struct {
-	Service string `toml:"service" json:"service"`
-	Port    int    `toml:"port"    json:"port"`
+	Service       string `toml:"service"                 json:"service"`
+	Port          int    `toml:"port"                    json:"port"`
+	PreservePorts []int  `toml:"preserve_ports,omitempty" json:"preserve_ports,omitempty"`
 	// Host is the sub-domain label. Defaults to Service when empty.
 	Host string `toml:"host,omitempty" json:"host,omitempty"`
 }
@@ -98,6 +100,14 @@ func (e ExposeRule) Hostname() string {
 		return e.Host
 	}
 	return e.Service
+}
+
+// ServiceConfig carries optional per-compose-service overrides. It applies
+// to both exposed and non-exposed services.
+type ServiceConfig struct {
+	// MatchHostUID, when true, makes pier inject `user: "<uid>:<gid>"`
+	// for this compose service in the generated override.
+	MatchHostUID bool `toml:"match_host_uid,omitempty" json:"match_host_uid,omitempty"`
 }
 
 type Materialize struct {
@@ -311,6 +321,16 @@ func (m *Manifest) Validate() error {
 		if e.Port <= 0 {
 			return fmt.Errorf("manifest: expose[%d].port must be > 0", i)
 		}
+		seenPreservePort := map[int]bool{}
+		for _, port := range e.PreservePorts {
+			if port <= 0 {
+				return fmt.Errorf("manifest: expose[%d].preserve_ports must contain ports > 0", i)
+			}
+			if seenPreservePort[port] {
+				return fmt.Errorf("manifest: expose[%d].preserve_ports contains duplicate port %d", i, port)
+			}
+			seenPreservePort[port] = true
+		}
 		host := e.Hostname()
 		if !dnsLabel.MatchString(host) {
 			return fmt.Errorf("manifest: expose[%d].host %q is not a valid DNS label", i, host)
@@ -319,6 +339,11 @@ func (m *Manifest) Validate() error {
 			return fmt.Errorf("manifest: expose: host %q listed twice", host)
 		}
 		seenHost[host] = true
+	}
+	for service := range m.Service {
+		if strings.TrimSpace(service) == "" {
+			return errors.New("manifest: service table name is required")
+		}
 	}
 
 	if oc := m.Watch.OnChange; oc != "" && oc != "rebuild" && oc != "restart" {

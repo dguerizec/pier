@@ -268,6 +268,7 @@ match_host_uid = true
 service = "web"
 port = 80
 host = "frontend"
+preserve_ports = [2223]
 
 [worktree]
 dir = "trees"
@@ -311,8 +312,8 @@ API_URL = "{url.api}"
 	}
 	// Existing customisations preserved on the rule.
 	rules := p.SelectedExposes()
-	if len(rules) != 1 || rules[0].Host != "frontend" {
-		t.Errorf("custom host not preserved: %+v", rules)
+	if len(rules) != 1 || rules[0].Host != "frontend" || len(rules[0].PreservePorts) != 1 || rules[0].PreservePorts[0] != 2223 {
+		t.Errorf("custom expose fields not preserved: %+v", rules)
 	}
 	// match_host_uid kept on Existing.
 	if !p.Existing.Stack.MatchHostUID {

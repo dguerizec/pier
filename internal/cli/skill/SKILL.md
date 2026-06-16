@@ -182,11 +182,18 @@ workload lifecycle (`pre_up`, `post_up`, `pre_down`, `post_down`). All
 six phases share the same `sh -c` execution model and `PIER_*` env. See
 [reference/materialize.md](reference/materialize.md).
 
-**`[stack].match_host_uid`** controls whether containers run as the
-host UID. `pier init` prompts for this; default is `true` (safe for
-distroless / nonroot images). See
+**`[stack].match_host_uid`** controls whether exposed containers run as
+the host UID. `pier init` prompts for this; default is `true` (safe for
+distroless / nonroot images). **`[service.<name>].match_host_uid`**
+enables the same override for one compose service, including non-exposed
+workers/backends. See
 [reference/manifest.md](reference/manifest.md) "when to set true vs
 false".
+
+**`[[expose]].preserve_ports = [2223, ...]`** keeps selected TCP host
+bindings from the compose service instead of stripping every `ports`
+entry. Use only for non-HTTP protocols where traefik virtual hosts cannot
+help; fixed host ports still collide between simultaneous worktrees.
 
 **`[worktree].dir`** is a per-user preference, not a project setting.
 Don't write it into `.pier.toml` proactively. See

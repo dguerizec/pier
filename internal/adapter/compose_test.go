@@ -130,6 +130,88 @@ func TestRenderOverride_MatchHostUID(t *testing.T) {
 	if strings.Contains(string(got), "user:") {
 		t.Errorf("user: line should be absent when MatchHostUID is false, got:\n%s", got)
 	}
+
+	c.Service = map[string]manifest.ServiceConfig{
+		"web": {MatchHostUID: true},
+	}
+	got, err = renderOverride(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), expected) {
+		t.Errorf("per-service match_host_uid should inject %q, got:\n%s", expected, got)
+	}
+}
+
+func TestRenderOverride_MatchHostUIDNonExposedService(t *testing.T) {
+	dir := t.TempDir()
+	stack := filepath.Join(dir, "docker-compose.yml")
+	if err := os.WriteFile(stack, []byte(`services:
+  front:
+    image: node:20-alpine
+  worker:
+    image: python:3.12-slim
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := Ctx{
+		Project:        "myapp",
+		Slug:           "x",
+		BaseDomain:     "myapp.test",
+		WorktreePath:   dir,
+		TraefikNetwork: "pier",
+		Stack: manifest.Stack{
+			Kind: manifest.KindCompose,
+			File: "docker-compose.yml",
+		},
+		Expose: []manifest.ExposeRule{{Service: "front", Port: 3000}},
+		Service: map[string]manifest.ServiceConfig{
+			"worker": {MatchHostUID: true},
+		},
+	}
+	got, err := renderOverride(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	expected := fmt.Sprintf(`user: "%d:%d"`, os.Getuid(), os.Getgid())
+	if !strings.Contains(s, "  worker:\n    "+expected) {
+		t.Errorf("non-exposed worker should get user override, got:\n%s", s)
+	}
+	if strings.Contains(sectionForService(s, "worker"), "traefik.enable=true") {
+		t.Errorf("non-exposed worker should not get traefik labels, got:\n%s", s)
+	}
+}
+
+func TestRenderOverride_MatchHostUIDUnknownService(t *testing.T) {
+	dir := t.TempDir()
+	stack := filepath.Join(dir, "docker-compose.yml")
+	if err := os.WriteFile(stack, []byte(`services:
+  front:
+    image: node:20-alpine
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := Ctx{
+		Project:        "myapp",
+		Slug:           "x",
+		BaseDomain:     "myapp.test",
+		WorktreePath:   dir,
+		TraefikNetwork: "pier",
+		Stack: manifest.Stack{
+			Kind: manifest.KindCompose,
+			File: "docker-compose.yml",
+		},
+		Expose: []manifest.ExposeRule{{Service: "front", Port: 3000}},
+		Service: map[string]manifest.ServiceConfig{
+			"ghost": {MatchHostUID: true},
+		},
+	}
+	if _, err := renderOverride(c); err == nil {
+		t.Fatal("renderOverride should reject service.match_host_uid for unknown compose service")
+	}
 }
 
 func TestRenderOverride_StripsHostBindings(t *testing.T) {
@@ -193,6 +275,92 @@ func TestRenderOverride_StripsHostBindings(t *testing.T) {
 	}
 	if strings.Contains(s, "  redis:\n") {
 		t.Errorf("redis should not appear in override, got:\n%s", s)
+	}
+}
+
+func TestRenderOverride_PreserveSelectedHostBindings(t *testing.T) {
+	dir := t.TempDir()
+	stack := filepath.Join(dir, "docker-compose.yml")
+	if err := os.WriteFile(stack, []byte(`services:
+  front:
+    image: node:20-alpine
+    ports:
+      - "60180:8080"
+      - "2223:2223"
+      - target: 2224
+        published: 2224
+        protocol: tcp
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := Ctx{
+		Project:        "w3t",
+		Slug:           "x",
+		BaseDomain:     "w3t.test",
+		TraefikNetwork: "pier",
+		WorktreePath:   dir,
+		Stack: manifest.Stack{
+			Kind: manifest.KindCompose,
+			File: "docker-compose.yml",
+		},
+		Expose: []manifest.ExposeRule{
+			{Service: "front", Port: 8080, PreservePorts: []int{2223, 2224}},
+		},
+	}
+	got, err := renderOverride(c)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	front := sectionForService(string(got), "front")
+	for _, want := range []string{
+		"ports: !override",
+		`"2223:2223"`,
+		"target: 2224",
+		"published: 2224",
+	} {
+		if !strings.Contains(front, want) {
+			t.Errorf("front override missing %q:\n%s", want, front)
+		}
+	}
+	for _, bad := range []string{
+		"ports: !reset []",
+		"60180:8080",
+	} {
+		if strings.Contains(front, bad) {
+			t.Errorf("front override should not contain %q:\n%s", bad, front)
+		}
+	}
+}
+
+func TestRenderOverride_PreserveHostBindingMissingPort(t *testing.T) {
+	dir := t.TempDir()
+	stack := filepath.Join(dir, "docker-compose.yml")
+	if err := os.WriteFile(stack, []byte(`services:
+  front:
+    image: node:20-alpine
+    ports:
+      - "2223:2223"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := Ctx{
+		Project:        "w3t",
+		Slug:           "x",
+		BaseDomain:     "w3t.test",
+		TraefikNetwork: "pier",
+		WorktreePath:   dir,
+		Stack: manifest.Stack{
+			Kind: manifest.KindCompose,
+			File: "docker-compose.yml",
+		},
+		Expose: []manifest.ExposeRule{
+			{Service: "front", Port: 8080, PreservePorts: []int{2224}},
+		},
+	}
+	if _, err := renderOverride(c); err == nil {
+		t.Fatal("renderOverride should reject preserve_ports when the compose binding is missing")
 	}
 }
 
@@ -325,5 +493,25 @@ func TestNameAndService(t *testing.T) {
 	}
 	if ServiceName("myapp", "x", "api") != "myapp-x-api" {
 		t.Errorf("ServiceName = %q", ServiceName("myapp", "x", "api"))
+	}
+}
+
+func sectionForService(s, service string) string {
+	start := strings.Index(s, "\n  "+service+":\n")
+	if start == -1 {
+		return ""
+	}
+	rest := s[start+1:]
+	offset := len("  " + service + ":\n")
+	for {
+		next := strings.Index(rest[offset:], "\n  ")
+		if next == -1 {
+			return rest
+		}
+		next += offset
+		if next+3 < len(rest) && rest[next+3] != ' ' {
+			return rest[:next]
+		}
+		offset = next + 1
 	}
 }

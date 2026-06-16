@@ -449,6 +449,7 @@
           "project":     { "$ref": "#/components/schemas/ManifestProject" },
           "stack":       { "$ref": "#/components/schemas/ManifestStack" },
           "expose":      { "type": "array", "items": { "$ref": "#/components/schemas/ManifestExpose" } },
+          "service":     { "type": "object", "additionalProperties": { "$ref": "#/components/schemas/ManifestService" }, "description": "compose service -> per-service overrides" },
           "env":         { "type": "object", "additionalProperties": { "type": "object", "additionalProperties": { "type": "string" } }, "description": "service -> key -> value" },
           "materialize": { "$ref": "#/components/schemas/ManifestMaterialize" },
           "hooks":       { "$ref": "#/components/schemas/ManifestHooks" },
@@ -481,7 +482,14 @@
         "properties": {
           "service": { "type": "string" },
           "port":    { "type": "integer" },
+          "preserve_ports": { "type": "array", "items": { "type": "integer" }, "description": "TCP host bindings to preserve from the compose service ports list instead of resetting them" },
           "host":    { "type": "string", "description": "Sub-domain label, defaults to service when empty" }
+        }
+      },
+      "ManifestService": {
+        "type": "object",
+        "properties": {
+          "match_host_uid": { "type": "boolean", "description": "Inject user: <uid>:<gid> for this compose service, exposed or not" }
         }
       },
       "ManifestMaterialize": {

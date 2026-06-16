@@ -241,6 +241,7 @@ func dailyForWorktree(info *worktree.Info, slug string, out, errW io.Writer) (*d
 			WorktreePath:   info.Toplevel,
 			Stack:          m.Stack,
 			Expose:         m.Expose,
+			Service:        m.Service,
 			DefaultService: defaultService,
 			Env:            m.Env,
 			TraefikNetwork: cfg.EffectiveTraefikNetwork(),

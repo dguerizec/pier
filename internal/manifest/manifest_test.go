@@ -29,6 +29,10 @@ service = "app"
 [[expose]]
 service = "app"
 port    = 3000
+preserve_ports = [2223, 2224]
+
+[service.worker]
+match_host_uid = true
 
 [materialize]
 symlinks  = [".env", "secrets/"]
@@ -47,8 +51,14 @@ snapshots = ["data-dev/"]
 	if len(m.Expose) != 1 || m.Expose[0].Service != "app" || m.Expose[0].Port != 3000 {
 		t.Errorf("expose = %+v", m.Expose)
 	}
+	if len(m.Expose[0].PreservePorts) != 2 || m.Expose[0].PreservePorts[0] != 2223 || m.Expose[0].PreservePorts[1] != 2224 {
+		t.Errorf("expose[0].preserve_ports = %v", m.Expose[0].PreservePorts)
+	}
 	if d := m.DefaultExpose(); d == nil || d.Service != "app" {
 		t.Errorf("default expose = %+v", d)
+	}
+	if !m.Service["worker"].MatchHostUID {
+		t.Errorf("service.worker.match_host_uid = false, want true")
 	}
 	if len(m.Materialize.Symlinks) != 2 || m.Materialize.Symlinks[0] != ".env" {
 		t.Errorf("symlinks = %v", m.Materialize.Symlinks)
@@ -216,6 +226,16 @@ func TestValidate_Errors(t *testing.T) {
 			"expose[0].port",
 		},
 		{
+			"expose bad preserve port",
+			Manifest{Project: Project{Name: "x", BaseDomain: "x.test"}, Stack: Stack{Kind: KindCompose, File: "a"}, Expose: []ExposeRule{{Service: "a", Port: 1, PreservePorts: []int{0}}}},
+			"preserve_ports",
+		},
+		{
+			"expose duplicate preserve port",
+			Manifest{Project: Project{Name: "x", BaseDomain: "x.test"}, Stack: Stack{Kind: KindCompose, File: "a"}, Expose: []ExposeRule{{Service: "a", Port: 1, PreservePorts: []int{2223, 2223}}}},
+			"duplicate port",
+		},
+		{
 			"expose bad host",
 			Manifest{Project: Project{Name: "x", BaseDomain: "x.test"}, Stack: Stack{Kind: KindCompose, File: "a"}, Expose: []ExposeRule{{Service: "a", Port: 1, Host: "Bad_Host"}}},
 			"is not a valid DNS label",
@@ -229,6 +249,18 @@ func TestValidate_Errors(t *testing.T) {
 				Watch:   Watch{OnChange: "bogus"},
 			},
 			"on_change",
+		},
+		{
+			"empty service override name",
+			Manifest{
+				Project: Project{Name: "x", BaseDomain: "x.test"},
+				Stack:   Stack{Kind: KindCompose, File: "a"},
+				Expose:  okExpose,
+				Service: map[string]ServiceConfig{
+					" ": {MatchHostUID: true},
+				},
+			},
+			"service table name",
 		},
 	}
 	for _, c := range cases {
@@ -249,7 +281,10 @@ func TestWriteRoundTrip(t *testing.T) {
 	original := &Manifest{
 		Project: Project{Name: "myapp", BaseDomain: "myapp.test"},
 		Stack:   Stack{Kind: KindCompose, File: "docker-compose.yml", Service: "app"},
-		Expose:  []ExposeRule{{Service: "app", Port: 3000}},
+		Expose:  []ExposeRule{{Service: "app", Port: 3000, PreservePorts: []int{2223, 2224}}},
+		Service: map[string]ServiceConfig{
+			"worker": {MatchHostUID: true},
+		},
 		Materialize: Materialize{
 			Symlinks:   []string{".env"},
 			Snapshots:  []string{"data-dev/"},
@@ -268,8 +303,17 @@ func TestWriteRoundTrip(t *testing.T) {
 	if loaded.Project != original.Project || loaded.Stack != original.Stack {
 		t.Errorf("round-trip mismatch:\noriginal=%+v\nloaded=  %+v", original, loaded)
 	}
-	if len(loaded.Expose) != 1 || loaded.Expose[0] != original.Expose[0] {
+	if len(loaded.Expose) != 1 ||
+		loaded.Expose[0].Service != original.Expose[0].Service ||
+		loaded.Expose[0].Port != original.Expose[0].Port ||
+		loaded.Expose[0].Host != original.Expose[0].Host ||
+		len(loaded.Expose[0].PreservePorts) != 2 ||
+		loaded.Expose[0].PreservePorts[0] != 2223 ||
+		loaded.Expose[0].PreservePorts[1] != 2224 {
 		t.Errorf("expose round-trip mismatch:\noriginal=%+v\nloaded=  %+v", original.Expose, loaded.Expose)
+	}
+	if !loaded.Service["worker"].MatchHostUID {
+		t.Errorf("service.worker.match_host_uid = false, want true")
 	}
 	if len(loaded.Materialize.PostCreate) != 1 || loaded.Materialize.PostCreate[0] != "./scripts/seed.sh" {
 		t.Errorf("post_create round-trip mismatch: %v", loaded.Materialize.PostCreate)

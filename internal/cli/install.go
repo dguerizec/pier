@@ -61,7 +61,7 @@ func newInstallCmd() *cobra.Command {
 			}); err != nil {
 				return err
 			}
-			installUserSkill(cmd.OutOrStdout())
+			installUserSkill(cmd.InOrStdin(), cmd.OutOrStdout(), opts.yes)
 			return nil
 		},
 	}
@@ -164,7 +164,7 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 		return err
 	}
 
-	installUserSkill(out)
+	installUserSkill(cmd.InOrStdin(), out, base.yes)
 	askWorktreeDirPref(cmd, base.yes)
 
 	if env.Headscale.Found && env.Tailscale.Active && env.Headscale.ConfigPath != "" {
@@ -192,12 +192,11 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 	return nil
 }
 
-// installUserSkill drops the embedded skill tree under
-// ~/.claude/skills/pier/. Best-effort: a failure here doesn't block the
-// install — the user may not run Claude Code, or may be on a machine
-// where $HOME isn't writable. pier install is idempotent; we always
-// overwrite to keep the skill in sync with the installed binary version.
-func installUserSkill(out io.Writer) {
+// installUserSkill drops the embedded skill tree under ~/.agents/skills/pier/
+// and links detected agent-specific skill dirs to it. Best-effort: a failure
+// here doesn't block the infra install, but conflicts are never overwritten
+// without an explicit interactive confirmation.
+func installUserSkill(stdin interface{ Read([]byte) (int, error) }, out io.Writer, yes bool) {
 	dir, err := skill.UserDir()
 	if err != nil {
 		fmt.Fprintf(out, "! skill: %v (skipped)\n", err)
@@ -208,6 +207,44 @@ func installUserSkill(out io.Writer) {
 		return
 	}
 	fmt.Fprintf(out, "✓ AI skill installed: %s\n", dir)
+
+	targets, err := skill.DetectedLinkTargets()
+	if err != nil {
+		fmt.Fprintf(out, "! skill links: %v (skipped)\n", err)
+		return
+	}
+	for _, target := range targets {
+		status, err := skill.LinkState(target.Dir, dir)
+		if err != nil {
+			fmt.Fprintf(out, "! %s skill link check failed: %v\n", target.Agent, err)
+			continue
+		}
+		switch status {
+		case skill.LinkCurrent:
+			fmt.Fprintf(out, "✓ %s skill already linked: %s\n", target.Agent, target.Dir)
+		case skill.LinkMissing:
+			if err := skill.Link(target.Dir, dir); err != nil {
+				fmt.Fprintf(out, "! %s skill link failed: %v\n", target.Agent, err)
+				continue
+			}
+			fmt.Fprintf(out, "✓ %s skill linked: %s → %s\n", target.Agent, target.Dir, dir)
+		case skill.LinkConflict:
+			if yes {
+				fmt.Fprintf(out, "! %s skill exists and is not a pier symlink: %s (skipped)\n", target.Agent, target.Dir)
+				continue
+			}
+			prompt := fmt.Sprintf("Replace existing %s skill at %s with a symlink to %s?", target.Agent, target.Dir, dir)
+			if !confirm(stdin, out, prompt, false) {
+				fmt.Fprintf(out, "! %s skill link skipped: %s\n", target.Agent, target.Dir)
+				continue
+			}
+			if err := skill.Link(target.Dir, dir); err != nil {
+				fmt.Fprintf(out, "! %s skill link failed: %v\n", target.Agent, err)
+				continue
+			}
+			fmt.Fprintf(out, "✓ %s skill linked: %s → %s\n", target.Agent, target.Dir, dir)
+		}
+	}
 }
 
 // tldIsUnder reports whether tld is the same as base or a sub-domain of it.
@@ -445,6 +482,9 @@ func newUninstallCmd() *cobra.Command {
 
 			skillRemoved := false
 			if dir, err := skill.UserDir(); err == nil {
+				if removed := removeSkillLinks(out, dir); removed {
+					skillRemoved = true
+				}
 				if removed, err := skill.Uninstall(dir); err != nil {
 					fmt.Fprintf(out, "! skill removal failed: %v\n", err)
 				} else if removed {
@@ -470,6 +510,32 @@ func newUninstallCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&manualDNS, "manual-dns", false, "do not touch host DNS, print revert instructions instead")
 	cmd.Flags().BoolVar(&purge, "purge", false, "also remove the pier binary itself (skipped when installed by a package manager)")
 	return cmd
+}
+
+func removeSkillLinks(out io.Writer, canonical string) bool {
+	targets, err := skill.DetectedLinkTargets()
+	if err != nil {
+		fmt.Fprintf(out, "! skill links: %v (skipped)\n", err)
+		return false
+	}
+	removedAny := false
+	for _, target := range targets {
+		status, err := skill.LinkState(target.Dir, canonical)
+		if err != nil {
+			fmt.Fprintf(out, "! %s skill link check failed: %v\n", target.Agent, err)
+			continue
+		}
+		if status != skill.LinkCurrent {
+			continue
+		}
+		if err := os.Remove(target.Dir); err != nil {
+			fmt.Fprintf(out, "! remove %s skill link: %v\n", target.Agent, err)
+			continue
+		}
+		removedAny = true
+		fmt.Fprintf(out, "✓ %s skill link removed: %s\n", target.Agent, target.Dir)
+	}
+	return removedAny
 }
 
 // revertHeadscalePatch reverts the split-DNS rule pier added at install

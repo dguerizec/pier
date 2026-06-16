@@ -1,6 +1,16 @@
 ---
 name: pier
-description: MUST invoke whenever the repo root has a `.pier.toml`, OR before running `git worktree add`, `docker compose up/down/logs`, or `pier init` in such a repo. Without this skill, agents fall back to raw `git worktree add` / `docker compose` and BREAK pier projects — they skip materialize (per-worktree symlinks/snapshots), the lifecycle hooks (post_create / pre_remove / pre_up / post_up / pre_down / post_down), and the per-worktree slug DNS, leaving the worktree with no URL and no seeded data. Also invoke when the user asks to add pier to a docker-compose project (run `pier init`, never hand-write the manifest). Trigger on: any `.pier.toml` at cwd-or-ancestor, any user mention of pier / worktree / `*.test`,`*.dev` URL.
+description: >-
+  MUST invoke whenever the repo root has a `.pier.toml`, OR before running
+  `git worktree add`, `docker compose up/down/logs`, or `pier init` in such a
+  repo. Without this skill, agents fall back to raw `git worktree add` /
+  `docker compose` and BREAK pier projects — they skip materialize
+  (per-worktree symlinks/snapshots), the lifecycle hooks (post_create /
+  pre_remove / pre_up / post_up / pre_down / post_down), and the per-worktree
+  slug DNS, leaving the worktree with no URL and no seeded data. Also invoke
+  when the user asks to add pier to a docker-compose project (run `pier init`,
+  never hand-write the manifest). Trigger on: any `.pier.toml` at
+  cwd-or-ancestor, any user mention of pier / worktree / `*.test`,`*.dev` URL.
 ---
 
 # pier — workflow for AI coding assistants

@@ -1,5 +1,5 @@
-// Package worktree resolves git worktree metadata via plumbing commands
-// (DESIGN §5.2). All detection is shelling out to git; no libgit2 dep.
+// Package worktree resolves git worktree metadata via plumbing commands.
+// All detection is shelling out to git; no libgit2 dep.
 package worktree
 
 import (

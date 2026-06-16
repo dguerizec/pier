@@ -1,7 +1,7 @@
 // Package adapter abstracts how a workload is brought up, taken down, and
-// inspected. compose is the only kind in v0.2; dockerfile (synthesized
-// compose) lands in Phase 3. The process kind from DESIGN §5.5 was
-// dropped — pier is intentionally docker-coupled, even for raw-process
+// inspected. compose is the only supported kind today; dockerfile
+// (synthesized compose) lands in Phase 3. The process kind was dropped:
+// pier is intentionally docker-coupled, even for raw-process
 // stacks (uv/npm/cargo), because it keeps a single execution path,
 // avoids host port/PID/log management, and works on any platform docker
 // supports. See README's "minimal compose" example.

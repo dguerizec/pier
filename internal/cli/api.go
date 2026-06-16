@@ -199,7 +199,7 @@ func (h *apiHandler) getConfig(w http.ResponseWriter, r *http.Request) {
 		TraefikNetwork:   h.cfg.EffectiveTraefikNetwork(),
 		ExternalTraefik:  h.cfg.ExternalTraefik,
 		HeadscaleRecords: h.cfg.HeadscaleRecordsPath,
-		Version:          version,
+		Version:          buildVersion(),
 	})
 }
 

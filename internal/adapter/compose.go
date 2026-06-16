@@ -45,6 +45,10 @@ func (compose) Up(c Ctx) (*Handle, error) {
 		return nil, fmt.Errorf("compose up: %w", err)
 	}
 
+	if err := AttachToTraefikNetwork(c); err != nil {
+		return nil, fmt.Errorf("attach to %s network: %w", c.TraefikNetwork, err)
+	}
+
 	// We track the default exposed service's container id (or the first
 	// expose when no default is set) as the workload's "primary" container.
 	// state stays single-row per workload, sufficient for ls/down today.
@@ -238,6 +242,55 @@ func isExternal(v any) bool {
 	return false
 }
 
+// AttachToTraefikNetwork connects each exposed container to the shared
+// traefik network with ONLY the FQDN aliases pier owns — never the
+// compose service short name (`backend`, `frontend`, …) which would
+// collide across projects and worktrees sharing the same network.
+//
+// Why this isn't done via compose: `docker compose` auto-registers the
+// service short name as a network alias on every connected network and
+// offers no way to suppress that default. `docker network connect
+// --alias` lets us declare exactly the aliases we want.
+//
+// The exposed container stays on its project's `default` network (via
+// compose's auto-attach), so the short name `backend` keeps resolving
+// inside the same compose project — collisions only disappear on the
+// shared network.
+func AttachToTraefikNetwork(c Ctx) error {
+	for _, e := range c.Expose {
+		container := ServiceName(c.Project, c.Slug, e.Service)
+		aliases := []string{HostFor(e, c.Slug, c.BaseDomain)}
+		if e.Service == c.DefaultService {
+			aliases = append(aliases, AliasHost(c.Slug, c.BaseDomain))
+		}
+		if err := reconnectWithAliases(c.TraefikNetwork, container, aliases); err != nil {
+			return fmt.Errorf("%s: %w", container, err)
+		}
+	}
+	return nil
+}
+
+// reconnectWithAliases makes the container's membership on `network`
+// idempotent: any prior attachment (with its auto-added short aliases)
+// is dropped, then a fresh attach is made with the explicit aliases
+// we want.
+func reconnectWithAliases(network, container string, aliases []string) error {
+	// Best-effort disconnect — fails silently when the container isn't
+	// on the network, which is the common case on a fresh `pier up`.
+	_ = exec.Command("docker", "network", "disconnect", network, container).Run()
+
+	args := []string{"network", "connect"}
+	for _, a := range aliases {
+		args = append(args, "--alias", a)
+	}
+	args = append(args, network, container)
+	out, err := exec.Command("docker", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker network connect: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 func ensureDockerNetwork(name string) error {
 	out, err := exec.Command("docker", "network", "ls",
 		"--filter", "name=^"+name+"$", "--format", "{{.Name}}").Output()
@@ -368,7 +421,6 @@ services:
 {{- end}}
       - traefik.docker.network={{$.Network}}
       - traefik.http.services.{{.RouterID}}.loadbalancer.server.port={{.Port}}
-    networks: [default, {{$.Network}}]
 {{- end}}
 {{- if and (not .Exposed) .ResetContainerName}}
     container_name: !reset null
@@ -383,10 +435,6 @@ services:
 {{- end}}
 {{- end}}
 {{- end}}
-
-networks:
-  {{$.Network}}:
-    external: true
 `))
 	user := ""
 	if c.Stack.MatchHostUID {

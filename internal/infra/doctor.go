@@ -103,6 +103,7 @@ func Diagnose() Report {
 	r.Checks = append(r.Checks, checkContainerRunning(DnsmasqContainer))
 	r.Checks = append(r.Checks, checkDNSResolution(cfg.TLD, cfg.BindIP, cfg.EffectiveAnswerIP()))
 	r.Checks = append(r.Checks, checkResolvedDropin(cfg.TLD))
+	r.Checks = append(r.Checks, checkNonlocalBind(cfg.BindIP))
 	return r
 }
 
@@ -165,6 +166,15 @@ func Fix() Report {
 	if needsResolvedRewrite(cfg.TLD, cfg.BindIP) {
 		if changed, err := configureHostDNS(cfg.TLD, cfg.BindIP); err == nil && changed {
 			report.Actions = append(report.Actions, "rewrote systemd-resolved drop-in")
+		}
+	}
+
+	// Step 3 — kernel sysctl drop-in. Same idempotent strategy as DNS:
+	// only re-run when the file is missing or stale, so a no-op `doctor
+	// --fix` doesn't prompt for sudo.
+	if needsNonlocalBindRewrite(cfg.BindIP) {
+		if changed, err := configureNonlocalBind(cfg.BindIP); err == nil && changed {
+			report.Actions = append(report.Actions, "rewrote kernel sysctl drop-in")
 		}
 	}
 

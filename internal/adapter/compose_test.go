@@ -40,13 +40,23 @@ func TestRenderOverride_SingleExpose(t *testing.T) {
 		"traefik.http.routers.myapp-feat-x-web-default.service=myapp-feat-x-web",
 		"traefik.docker.network=pier",
 		"traefik.http.services.myapp-feat-x-web.loadbalancer.server.port=3000",
-		"networks: [default, pier]",
-		"  pier:",
-		"    external: true",
 	}
 	for _, w := range want {
 		if !strings.Contains(s, w) {
 			t.Errorf("override missing %q\n--- rendered ---\n%s", w, s)
+		}
+	}
+	// Pier network attachment is no longer declared in the compose
+	// override — pier attaches it post-`compose up` with explicit
+	// aliases so the short service name doesn't leak onto the shared
+	// network. See attachToTraefikNetwork.
+	for _, bad := range []string{
+		"networks: [default, pier]",
+		"networks:\n  pier:",
+		"external: true",
+	} {
+		if strings.Contains(s, bad) {
+			t.Errorf("override unexpectedly contains %q\n--- rendered ---\n%s", bad, s)
 		}
 	}
 }

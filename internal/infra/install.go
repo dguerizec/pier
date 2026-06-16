@@ -200,6 +200,22 @@ func Install(opts InstallOptions) error {
 		fmt.Fprintf(out, "! --manual-dns set; configure host DNS yourself:\n\n%s\n", manualDNSInstructions(opts.TLD, opts.BindIP))
 	}
 
+	// Server mode binds traefik on a specific (typically tailscale) IP.
+	// At boot, docker may try to publish the port before tailscaled has
+	// assigned the IP, silently lose the mapping, and leave the container
+	// running with a ghost binding. The sysctl drop-in lets bind() succeed
+	// against IPs that aren't yet on an interface — once tailscale brings
+	// the IP up, packets flow normally. No-op for loopback/wildcard binds.
+	changed, err := configureNonlocalBind(opts.BindIP)
+	switch {
+	case err == nil && changed:
+		fmt.Fprintf(out, "✓ kernel: net.ipv4.ip_nonlocal_bind enabled (lets docker bind %s before tailscale assigns it)\n", opts.BindIP)
+	case err == nil:
+		// not applicable (loopback/wildcard) or already current — stay terse
+	default:
+		return err
+	}
+
 	cfg := &Config{
 		Mode:                      opts.Mode,
 		TLD:                       opts.TLD,
@@ -330,6 +346,17 @@ func Uninstall(out io.Writer, manualDNS bool) (bool, error) {
 			touched = true
 			fmt.Fprintf(out, "✓ host DNS reverted\n")
 		}
+	}
+
+	// Mirror of the install-time sysctl drop-in. Removing the file +
+	// re-reading sysctl from --system lets any other source (keepalived,
+	// HAProxy, …) keep ownership of the setting; if nothing else sets it,
+	// the kernel default reapplies on next boot.
+	if removed, err := unconfigureNonlocalBind(); err != nil {
+		fmt.Fprintf(out, "! unconfigure kernel sysctl: %v\n", err)
+	} else if removed {
+		touched = true
+		fmt.Fprintf(out, "✓ removed kernel sysctl drop-in\n")
 	}
 
 	if _, err := os.Stat(paths.Root); err == nil {

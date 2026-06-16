@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/LeoPartt/pier/internal/initwizard"
 	"github.com/LeoPartt/pier/internal/manifest"
@@ -16,13 +18,13 @@ import (
 // add freely, never remove or rename without bumping to /v2.
 
 type apiProject struct {
-	Name             string             `json:"name"`
-	RepoPath         string             `json:"repo_path"`
-	RegisteredAt     string             `json:"registered_at"`
-	HasManifest      bool               `json:"has_manifest"`
-	Manifest         *manifest.Manifest `json:"manifest,omitempty"`
-	ActiveWorkloads  int                `json:"active_workloads"`
-	WorktreeCount    int                `json:"worktree_count"`
+	Name            string             `json:"name"`
+	RepoPath        string             `json:"repo_path"`
+	RegisteredAt    string             `json:"registered_at"`
+	HasManifest     bool               `json:"has_manifest"`
+	Manifest        *manifest.Manifest `json:"manifest,omitempty"`
+	ActiveWorkloads int                `json:"active_workloads"`
+	WorktreeCount   int                `json:"worktree_count"`
 }
 
 type apiProjectListItem struct {
@@ -47,14 +49,14 @@ type apiScanService struct {
 // apiScanResponse describes what a fresh `pier init` would propose for
 // the given repo. Pure read — no files are written.
 type apiScanResponse struct {
-	Repo             string             `json:"repo"`
-	Toplevel         string             `json:"toplevel"`
-	ManifestPath     string             `json:"manifest_path"`
-	ComposeFile      string             `json:"compose_file,omitempty"`
-	Services         []apiScanService   `json:"services"`
-	ExistingManifest *manifest.Manifest `json:"existing_manifest,omitempty"`
+	Repo              string             `json:"repo"`
+	Toplevel          string             `json:"toplevel"`
+	ManifestPath      string             `json:"manifest_path"`
+	ComposeFile       string             `json:"compose_file,omitempty"`
+	Services          []apiScanService   `json:"services"`
+	ExistingManifest  *manifest.Manifest `json:"existing_manifest,omitempty"`
 	SuggestedManifest *manifest.Manifest `json:"suggested_manifest,omitempty"`
-	IsReinit         bool               `json:"is_reinit"`
+	IsReinit          bool               `json:"is_reinit"`
 }
 
 // apiProjectCreateRequest is the body of POST /api/v1/projects. The
@@ -82,11 +84,12 @@ type apiProjectCreateResponse struct {
 }
 
 type apiWorktreeListItem struct {
-	Path     string `json:"path"`
-	Slug     string `json:"slug"` // basename of path
-	Branch   string `json:"branch"`
-	HasWorkload bool `json:"has_workload"`
-	Workload *apiWorkload `json:"workload,omitempty"`
+	Path        string       `json:"path"`
+	Slug        string       `json:"slug"` // basename of path
+	Branch      string       `json:"branch"`
+	Missing     bool         `json:"missing,omitempty"`
+	HasWorkload bool         `json:"has_workload"`
+	Workload    *apiWorkload `json:"workload,omitempty"`
 }
 
 func (h *apiHandler) registerProjects(mux *http.ServeMux) {
@@ -377,6 +380,7 @@ func (h *apiHandler) listProjectWorktrees(w http.ResponseWriter, r *http.Request
 	// worktree_path is stable on every state row.
 	workloads, _ := store.List()
 	byPath := map[string]*state.Workload{}
+	seenWorkloads := map[string]bool{}
 	for _, wl := range workloads {
 		if wl.Project == p.Name {
 			byPath[wl.WorktreePath] = wl
@@ -395,11 +399,40 @@ func (h *apiHandler) listProjectWorktrees(w http.ResponseWriter, r *http.Request
 			// `pier up` and what the action endpoints expect.
 			item.Slug = wl.Slug
 			item.HasWorkload = true
+			seenWorkloads[wl.Project+"/"+wl.Slug] = true
 			view := buildAPIWorkload(h.cfg, wl)
 			item.Workload = &view
 		}
+		if _, err := os.Stat(e.Path); errors.Is(err, os.ErrNotExist) {
+			item.Missing = true
+		}
 		out = append(out, item)
 	}
+
+	for _, wl := range workloads {
+		if wl.Project != p.Name || seenWorkloads[wl.Project+"/"+wl.Slug] {
+			continue
+		}
+		view := buildAPIWorkload(h.cfg, wl)
+		missing := false
+		if _, err := os.Stat(wl.WorktreePath); errors.Is(err, os.ErrNotExist) {
+			missing = true
+		}
+		out = append(out, apiWorktreeListItem{
+			Path:        wl.WorktreePath,
+			Slug:        wl.Slug,
+			Branch:      wl.Branch,
+			Missing:     missing,
+			HasWorkload: true,
+			Workload:    &view,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Missing != out[j].Missing {
+			return !out[i].Missing
+		}
+		return out[i].Slug < out[j].Slug
+	})
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -422,4 +455,3 @@ func (h *apiHandler) resolveProjectRepo(name string) (string, error) {
 	}
 	return p.RepoPath, nil
 }
-

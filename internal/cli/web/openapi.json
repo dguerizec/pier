@@ -257,6 +257,7 @@
           "urls": { "type": "array", "items": { "$ref": "#/components/schemas/URL" } },
           "containers": { "type": "array", "items": { "$ref": "#/components/schemas/Container" } },
           "worktree_path": { "type": "string" },
+          "worktree_missing": { "type": "boolean", "description": "True when the recorded worktree path no longer exists on disk" },
           "container_id": { "type": "string" },
           "started_at": { "type": "string", "format": "date-time" },
           "uptime_seconds": { "type": "integer" },
@@ -360,6 +361,7 @@
           "path":         { "type": "string", "description": "Absolute worktree path" },
           "slug":         { "type": "string", "description": "Workload slug when has_workload, otherwise basename of path" },
           "branch":       { "type": "string", "description": "Empty when detached" },
+          "missing":      { "type": "boolean", "description": "True when the path is no longer present on disk but pier still has state to clean up" },
           "has_workload": { "type": "boolean" },
           "workload":     { "$ref": "#/components/schemas/Workload" }
         }

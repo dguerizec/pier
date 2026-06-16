@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/LeoPartt/pier/internal/manifest"
+	"github.com/dguerizec/pier/internal/manifest"
 )
 
 // Ctx carries everything an adapter needs to run a command.

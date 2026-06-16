@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LeoPartt/pier/internal/detect"
+	"github.com/dguerizec/pier/internal/detect"
 )
 
 func TestValidateDashboardFQDN(t *testing.T) {

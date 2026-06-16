@@ -7,7 +7,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/LeoPartt/pier/internal/manifest"
+	"github.com/dguerizec/pier/internal/manifest"
 )
 
 type testWriter struct{ b []byte }

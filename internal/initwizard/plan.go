@@ -9,8 +9,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/LeoPartt/pier/internal/infra"
-	"github.com/LeoPartt/pier/internal/manifest"
+	"github.com/dguerizec/pier/internal/infra"
+	"github.com/dguerizec/pier/internal/manifest"
 )
 
 // Opts is the wizard's parameter bag, populated by CLI flags. Empty

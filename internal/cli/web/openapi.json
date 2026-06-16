@@ -3,7 +3,7 @@
   "info": {
     "title": "pier API",
     "version": "v1",
-    "description": "REST API exposed by `pier serve`. Drives the same workload + worktree lifecycle as the pier CLI. Source: https://github.com/LeoPartt/pier",
+    "description": "REST API exposed by `pier serve`. Drives the same workload + worktree lifecycle as the pier CLI. Source: https://github.com/dguerizec/pier",
     "license": { "name": "MIT" }
   },
   "servers": [

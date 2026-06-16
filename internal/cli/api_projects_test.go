@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LeoPartt/pier/internal/state"
+	"github.com/dguerizec/pier/internal/state"
 )
 
 func TestAPIScanProjectMissingRepo(t *testing.T) {

@@ -2,16 +2,16 @@
 # pier installer — POSIX sh, no bashisms.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/LeoPartt/pier/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/dguerizec/pier/main/install.sh | sh
 #
 # Environment:
 #   PIER_VERSION   tag to install (default: latest release). Examples: v0.1.0, v0.0.1-rc1
 #   PIER_INSTALL_DIR  override install directory (default: ~/.local/bin if writable, else /usr/local/bin via sudo)
-#   PIER_REPO      override repo slug (default: LeoPartt/pier)
+#   PIER_REPO      override repo slug (default: dguerizec/pier)
 
 set -eu
 
-REPO="${PIER_REPO:-LeoPartt/pier}"
+REPO="${PIER_REPO:-dguerizec/pier}"
 VERSION="${PIER_VERSION:-}"
 
 log()  { printf '==> %s\n' "$*"; }

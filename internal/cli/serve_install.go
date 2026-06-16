@@ -10,9 +10,9 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
-	"github.com/LeoPartt/pier/internal/detect"
-	"github.com/LeoPartt/pier/internal/infra"
-	"github.com/LeoPartt/pier/internal/systemd"
+	"github.com/dguerizec/pier/internal/detect"
+	"github.com/dguerizec/pier/internal/infra"
+	"github.com/dguerizec/pier/internal/systemd"
 )
 
 func newServeInstallCmd() *cobra.Command {

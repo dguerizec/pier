@@ -1,4 +1,4 @@
-module github.com/LeoPartt/pier
+module github.com/dguerizec/pier
 
 go 1.26.2
 

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LeoPartt/pier/internal/infra"
-	"github.com/LeoPartt/pier/internal/state"
+	"github.com/dguerizec/pier/internal/infra"
+	"github.com/dguerizec/pier/internal/state"
 )
 
 func TestClassifyTransition(t *testing.T) {

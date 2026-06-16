@@ -15,7 +15,7 @@ description: >-
 
 # pier — workflow for AI coding assistants
 
-You are working in a repository that uses [pier](https://github.com/LeoPartt/pier).
+You are working in a repository that uses [pier](https://github.com/dguerizec/pier).
 The presence of `.pier.toml` at the repo root means workloads in this project
 are meant to run under pier's local dev domain (`*.test`, `*.dev`, etc.) with
 one URL per git worktree.

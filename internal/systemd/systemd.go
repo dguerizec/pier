@@ -44,7 +44,7 @@ func Render(binary string) string {
 	var sb strings.Builder
 	sb.WriteString("[Unit]\n")
 	sb.WriteString("Description=pier — local dev domain orchestrator\n")
-	sb.WriteString("Documentation=https://github.com/LeoPartt/pier\n")
+	sb.WriteString("Documentation=https://github.com/dguerizec/pier\n")
 	// User units can't depend on system units (cross-scope After= is
 	// rejected by systemd). docker.service is system-scope, so we
 	// just race; the daemon retries against docker until it's up.

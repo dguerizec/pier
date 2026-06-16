@@ -1,8 +1,8 @@
 package cli
 
 import (
-	"github.com/LeoPartt/pier/internal/infra"
-	"github.com/LeoPartt/pier/internal/manifest"
+	"github.com/dguerizec/pier/internal/infra"
+	"github.com/dguerizec/pier/internal/manifest"
 )
 
 // defaultWorktreeDir is what `pier worktree add <name>` resolves bare

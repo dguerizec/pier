@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/LeoPartt/pier/internal/infra"
-	"github.com/LeoPartt/pier/internal/manifest"
+	"github.com/dguerizec/pier/internal/infra"
+	"github.com/dguerizec/pier/internal/manifest"
 )
 
 func ensureEnv(m *manifest.Manifest, service string) {

@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/LeoPartt/pier/internal/adapter"
-	"github.com/LeoPartt/pier/internal/materialize"
-	"github.com/LeoPartt/pier/internal/state"
+	"github.com/dguerizec/pier/internal/adapter"
+	"github.com/dguerizec/pier/internal/materialize"
+	"github.com/dguerizec/pier/internal/state"
 )
 
 type upOpts struct {

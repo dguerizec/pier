@@ -10,10 +10,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/LeoPartt/pier/internal/cli/skill"
-	"github.com/LeoPartt/pier/internal/detect"
-	"github.com/LeoPartt/pier/internal/headscale"
-	"github.com/LeoPartt/pier/internal/infra"
+	"github.com/dguerizec/pier/internal/cli/skill"
+	"github.com/dguerizec/pier/internal/detect"
+	"github.com/dguerizec/pier/internal/headscale"
+	"github.com/dguerizec/pier/internal/infra"
 )
 
 type installOpts struct {

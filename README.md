@@ -24,7 +24,7 @@ Pier is intentionally **docker-coupled** — even projects that aren't otherwise
 ### One-liner (Linux, macOS — amd64 or arm64)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LeoPartt/pier/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/dguerizec/pier/main/install.sh | sh
 ```
 
 The script picks the right archive from the latest GitHub release, verifies its
@@ -38,13 +38,13 @@ in this repo at [`install.sh`](install.sh).
 ### From source
 
 ```bash
-git clone https://github.com/LeoPartt/pier.git
+git clone https://github.com/dguerizec/pier.git
 cd pier
 go build -o ~/.local/bin/pier ./cmd/pier
 pier --version
 ```
 
-Go 1.26+ required. Homebrew tap (`brew install LeoPartt/pier/pier`) will follow.
+Go 1.26+ required. Homebrew tap (`brew install dguerizec/pier/pier`) will follow.
 
 ## Bootstrap (once per machine)
 
@@ -222,6 +222,8 @@ Test peer resolution with `resolvectl query <slug>.<base_domain>` rather than `d
 - **Compose only.** Even raw-process stacks (uv/npm/cargo) declare a `docker-compose.dev.yml` — see the minimal snippet below. The dockerfile adapter (which synthesizes a compose file from a Dockerfile) lands in Phase 3.
 
 ## Contributing
+
+Pier was originally created by [@LeoPartt](https://github.com/LeoPartt).
 
 Pier is built around a sharp three-layer separation (CLI / infra / workload — see DESIGN.md §4). Adding a new adapter is `internal/adapter/<kind>.go` implementing the four-method interface. Adding a new infra component goes in `internal/infra/`. The CLI surface in `internal/cli/` should stay a thin shim over those packages.
 

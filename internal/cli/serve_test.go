@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LeoPartt/pier/internal/infra"
+	"github.com/dguerizec/pier/internal/infra"
 )
 
 func TestResolveBindsExplicit(t *testing.T) {

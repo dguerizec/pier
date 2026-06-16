@@ -81,7 +81,7 @@ func TestResolveBindsServerRecordsAddsTailnet(t *testing.T) {
 }
 
 func TestResolveBindsServerSplitDNSAddsAnswerIP(t *testing.T) {
-	// Split-DNS server install (no records mode) — AnswerIP is the
+	// Split-DNS server install: AnswerIP is the
 	// externally-reachable address peers will dial for pier.<tld>, so
 	// pier serve must bind there for the dashboard route to land.
 	cfg := &infra.Config{Mode: infra.ModeServer, AnswerIP: "100.64.0.10"}

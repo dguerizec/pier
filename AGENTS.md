@@ -4,7 +4,7 @@ Context for AI coding agents working on this repository. Follows the [AGENTS.md]
 
 ## What pier is
 
-A Go CLI that gives every git worktree a stable URL on a local dev TLD by orchestrating traefik + dnsmasq (or, in some modes, tailscale/headscale records). Read [DESIGN.md](DESIGN.md) before any non-trivial change — it pins architecture, the layer separation, and explicit non-goals. The [README.md](README.md) covers user-facing behaviour.
+A Go CLI that gives every git worktree a stable URL on a local dev TLD by orchestrating traefik + dnsmasq, with split-DNS support for tailnet access. Read [DESIGN.md](DESIGN.md) before any non-trivial change — it pins architecture, the layer separation, and explicit non-goals. The [README.md](README.md) covers user-facing behaviour.
 
 ## Where things live
 
@@ -29,14 +29,14 @@ The CLI layer is intentionally thin: complex logic belongs in `internal/<package
 
 ```bash
 go build ./...                          # whole tree builds
-go test ./...                           # unit tests (skips I/O-heavy infra/cli)
+go test ./...                           # unit tests
 go build -o ~/.local/bin/pier ./cmd/pier   # install locally
 go vet ./...
 ```
 
 There is no formal lint config yet — vet + go fmt + the existing test suite are the gates.
 
-`internal/infra` and most of `internal/cli` have no unit tests; they are validated through smoke tests on real Linux hosts (the user runs them in a terminal). Don't pretend that test gaps mean "nothing to validate" — write tests where I/O can be faked, smoke-test the rest with the user.
+I/O-heavy `internal/infra` and `internal/cli` paths have targeted unit tests, but they still need smoke tests on real Linux hosts (the user runs them in a terminal). Don't pretend that test gaps mean "nothing to validate" — write tests where I/O can be faked, smoke-test the rest with the user.
 
 ## Dependencies
 
@@ -64,7 +64,7 @@ Branches in flight should not have revert-revert thrashing once a hypothesis is 
 These are real bugs that have already cost a session — don't re-learn them.
 
 - **`dig` lies on Linux with tailscale split-DNS.** It hits `/etc/resolv.conf` → 127.0.0.53 stub which doesn't always honour systemd-resolved per-link routing. Test resolution with `resolvectl query` instead. Browsers via `getaddrinfo()` agree with resolvectl.
-- **MagicDNS preempts split-DNS for sub-domains of the headscale `base_domain`.** A split-DNS rule for `pier.nebula` (under base `nebula`) never reaches peers as routing — only as a search domain. Use a TLD outside `base_domain`, or use the `extra_records_path` JSON (the records adapter).
+- **MagicDNS preempts split-DNS for sub-domains of the headscale `base_domain`.** A split-DNS rule for `pier.nebula` (under base `nebula`) never reaches peers as routing — only as a search domain. Workload TLDs must live outside `base_domain`; `extra_records_path` is reserved for the dashboard FQDN.
 - **Docker bind-mounts auto-create source dirs as root** when the host path is missing. A subsequent `pier up` then can't write the data. `materialize.ensureSnapshot` rmdirs an empty dst before copying; if rmdir fails (root-owned, user can't), it surfaces a `! skipping ...` warning with a `sudo rm -rf` recovery hint.
 - **Distroless / nonroot images break on bind-mounted host paths.** The image's default UID (typically 65532) can't write to host paths owned by UID 1000. The escape hatch is `[stack].match_host_uid = true` in the manifest — pier injects `user: "<uid>:<gid>"` into the compose override.
 - **`docker ps --filter ancestor=traefik` doesn't match versioned tags.** Use `docker ps --format '{{.Image}}'` and filter client-side.
@@ -84,15 +84,15 @@ The pattern that works:
 
 When the feature touches a new infra component (e.g. dockerfile adapter, MCP shim), add a new sub-package under `internal/`. Don't pollute existing packages. The doctor + install + uninstall paths likely need a new branch — keep them obvious with a `cfg.<NewMode> != ""` guard.
 
-Pier is **intentionally docker-coupled**. Even raw-process workloads (uv/npm/cargo) declare a `docker-compose.dev.yml`; this keeps the codebase to a single execution path, avoids host port/PID/log management, and works on any platform docker supports. The process adapter from DESIGN §5.5 was explicitly dropped — don't reintroduce it without revisiting the decision.
+Pier is **intentionally docker-coupled**. Even raw-process workloads (uv/npm/cargo) declare a `docker-compose.dev.yml`; this keeps the codebase to a single execution path, avoids host port/PID/log management, and works on any platform docker supports. The process adapter was explicitly dropped — don't reintroduce it without revisiting the decision.
 
 ## What NOT to do
 
 - Don't generate documentation files (`.md`) unless the user asks. README.md, AGENTS.md, CLAUDE.md, DESIGN.md are the four — anything else is noise.
 - Don't run `sudo` via Bash. The user runs sudo steps themselves.
 - Don't push branches without the user asking. Don't merge without a green smoke test.
-- Don't auto-create LICENSE — that's a user decision pinned to v1.
-- Don't normalize `main` → `dev` (or any other slug rewriting beyond the conventional-prefix strip + DNS sanitization). The branch name is the slug; DESIGN §5.1 was wrong about this and was corrected.
+- Don't change LICENSE without an explicit user decision.
+- Don't normalize `main` → `dev` (or any other slug rewriting beyond the conventional-prefix strip + DNS sanitization). The branch name is the slug.
 
 ## References
 

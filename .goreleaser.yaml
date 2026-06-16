@@ -38,6 +38,8 @@ archives:
     files:
       - LICENSE*
       - README.md
+      - THIRD_PARTY_NOTICES.md
+      - third_party_licenses/**
 
 checksum:
   name_template: "checksums.txt"

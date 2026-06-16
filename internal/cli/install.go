@@ -540,7 +540,7 @@ func removeSkillLinks(out io.Writer, canonical string) bool {
 
 // revertHeadscalePatch reverts the split-DNS rule pier added at install
 // time and restarts the headscale container so peers re-sync. No-op
-// when cfg is nil or HeadscaleConfigPath is unset (records mode, or
+// when cfg is nil or HeadscaleConfigPath is unset (for example, a
 // pre-existing install before this field was persisted). Best-effort:
 // individual failures print a warning and a manual recovery hint
 // rather than aborting the rest of uninstall.

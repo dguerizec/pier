@@ -1,555 +1,449 @@
 # pier — design document
 
-> Project-agnostic CLI that gives every git worktree a stable URL on a local
-> dev domain, with zero per-project DNS or proxy plumbing. Designed for the
-> agentic workflow: each agent works on its own worktree, deploys to its own
-> ephemeral environment, returns a clickable URL.
+Pier is a Go CLI that gives each git worktree a stable HTTP URL on a
+local or tailnet-routed dev TLD. It bootstraps a shared reverse-proxy/DNS
+layer once, then each project contributes a small `.pier.toml` manifest
+that tells Pier how to run the workload with Docker Compose.
 
-## Status & decisions made post-DESIGN
-
-This document captures the original design. Some decisions were revised during implementation; the README and AGENTS.md reflect the current behaviour, and these notes reconcile the two:
-
-- **Process adapter (§5.5) was dropped.** Pier is intentionally docker-coupled — even raw-process stacks (uv/npm/cargo) declare a `docker-compose.dev.yml`. Single execution path, no host port/PID/log management, works on any platform docker supports. `kind = "process"` is no longer accepted; `auto-detect` for non-compose projects errors with instructions for a 10-line minimal compose.
-- **`main`/`master` slug.** §5.1's "force `dev`" rule was a convention that collides with real-world setups where `dev.<project>.<tld>` is already taken (e.g. a hand-managed prod-dev container). The branch name now passes through as-is; users who want `dev` pass `--slug dev`.
-- **Headscale records adapter** — added beyond the original DESIGN. When a host runs headscale with `extra_records_path` configured, pier writes per-slug A records to that file (file-locked, atomic-rename) and skips pier-dnsmasq + host DNS entirely. MagicDNS does the routing.
-- **Wizard install (`pier install` no flags)** — added beyond the original DESIGN. Auto-detects tailscale + existing traefik + headscale and proposes one concrete plan.
+This is the current design. Older sketches, including the dropped process
+adapter, live in git history.
 
 ## 1. Goals
 
-- **One install, all projects.** Bootstrap reverse proxy + wildcard DNS once
-  per machine. Every project on the machine benefits.
-- **Worktree-native.** Branch name → DNS-safe slug → URL. No manual
-  `compose project name` or port juggling.
-- **Stack-agnostic.** Works for `docker compose`, raw processes (`uv run`,
-  `npm run dev`, `cargo run`), Dockerfile-only repos, devcontainers.
-- **Headless-friendly.** Every command machine-readable, no TTY prompts in
-  daily use. Wizard prompts confined to `install` and `init`.
-- **Local or VPN.** Same UX whether the dev environment runs on the laptop
-  itself or on a shared homelab server reached over Tailscale/WireGuard.
+- **One install, all projects.** A machine gets one Pier infra layer:
+  traefik, dnsmasq, config, state, and the optional dashboard daemon.
+- **One URL per worktree.** A git branch maps to a DNS-safe slug; every
+  exposed compose service gets a stable URL scoped to that slug.
+- **Worktree-safe lifecycle.** `pier worktree add/rm` wraps git worktrees
+  with materialization, hooks, cleanup, and optional workload start.
+- **Docker-coupled execution.** Compose is the single runtime path. Even
+  raw-process stacks such as uv/npm/cargo use a minimal
+  `docker-compose.dev.yml`.
+- **Headless daily use.** Daily commands (`up`, `down`, `url`, `logs`,
+  `worktree`, API calls) are non-interactive. Prompts are limited to setup
+  commands such as `install`, `init`, and `serve install`.
+- **Local or tailnet.** The same project manifest works on a laptop-only
+  `.test` install or a shared server reached through Tailscale/headscale.
 
 ## 2. Non-goals
 
-- **Not a PaaS.** No web UI, no team management, no GitHub integration, no
-  preview-deploy webhook. (That's Coolify/Dokploy territory.)
-- **Not a build system.** Pier orchestrates an existing dev stack; it does
-  not replace cargo/npm/uv.
-- **No production hosting.** Pier targets dev/preview only. Prod stays on
-  whatever runner/CI you already use.
-- **No multi-user authn/authz.** VPN trust is the access boundary. Optional
-  basic-auth middleware is a post-MVP nice-to-have.
-- **No TLS in v1.** HTTP-only on a reserved TLD. mkcert / Let's Encrypt
-  comes later if needed.
+- **Not a PaaS.** Pier has a local dashboard/API, but it is not a hosted
+  platform, team-management layer, deployment system, or GitHub integration.
+- **Not a build system.** Pier orchestrates a dev stack; the stack itself
+  still owns npm/uv/cargo/go commands, hot reload, migrations, etc.
+- **No production hosting.** URLs are for development and agent previews.
+- **No process adapter.** Host process management was dropped to keep one
+  execution model and avoid host port/PID/log semantics.
+- **No multi-user authorization in v1.** The trust boundary is the local
+  machine or VPN peer set. Optional basic-auth middleware is a future
+  escape hatch.
+- **No TLS in v1.** HTTP-only on reserved/local/tailnet names. mkcert or
+  ACME can be added later if needed.
 
-## 3. User-facing surface
+## 3. User-Facing Surface
 
-Three commands cover the whole UX.
+### `pier install`
 
-### 3.1 `pier install` (once per machine)
+Bootstraps machine-wide infrastructure and writes Pier's install config.
 
-Interactive wizard. Bootstraps the shared infra layer.
+The wizard inspects the host:
 
-```
-$ pier install
-? Mode:
-  ▸ local      (laptop only, traefik binds 127.0.0.1)
-    server    (shared host, traefik binds 0.0.0.0)
-? Base TLD: test
-? Reverse proxy: traefik
-? DNS resolver: dnsmasq (auto-configured)
+- Tailscale active → suggest server mode and tailnet `--answer-ip`.
+- Existing dockerized traefik → BYO-traefik mode, using its docker network.
+- Headscale detected → refuse Pier TLDs under `base_domain`, then offer to
+  patch headscale split-DNS for a safe TLD such as `.test`.
+- Otherwise → local mode on loopback with Pier-managed traefik + dnsmasq.
 
-✓ traefik container up on :80
-✓ dnsmasq container up, *.test → 127.0.0.1
-✓ system DNS configured (/etc/resolver/test on macOS,
-  systemd-resolved per-domain on Linux)
-✓ verified: curl http://anything.test → 200 (default backend)
-```
+The install path also:
 
-Sub-flags:
-- `--mode {local|server}`
-- `--tld <name>` (default `test`, RFC2606 reserved)
-- `--manual-dns` — skip system DNS modification, print instructions instead
-- `--no-sudo` — alias of `--manual-dns`
-- `--bind-ip <ip>` (server mode, default `0.0.0.0`)
+- installs the bundled AI-agent skill to `~/.agents/skills/pier`;
+- links detected agent-specific skill directories when safe;
+- asks for a per-user default worktree directory in `prefs.toml`.
 
-`pier uninstall` reverses everything: stops containers, removes resolver
-files, removes its config dir.
+Explicit infra flags skip wizard planning. Important flags:
 
-### 3.2 `pier init` (once per repo)
+- `--mode local|server`
+- `--tld <name>`
+- `--bind-ip <ip>`
+- `--answer-ip <ip>`
+- `--manual-dns` / `--no-sudo`
+- `--use-existing-traefik <container>`
+- `--traefik-network <network>`
+- `--traefik-dynamic-dir <host-path>`
+- `--yes`
 
-Detects the project type, generates a manifest.
+`pier uninstall` removes Pier-owned infra, host DNS config, headscale split-DNS
+patches, dashboard records/routes, skill installs, and optionally the binary
+with `--purge`. BYO-traefik containers and networks are left alone.
 
-```
-$ cd ~/dev/myapp
-$ pier init
-Detected: docker-compose.dev.yml (service `app`, port 3000)
-? Project name [myapp]:
-? Subdomain base [myapp.test]:
-? Share manifest with team (commit to git)? [y/N]:
-✓ .pier.toml written
-```
+### `pier serve`
 
-Detection rules (first match wins):
-1. `docker-compose.dev.yml` or `docker-compose.yml` → `kind=compose`
-2. `Dockerfile` only → `kind=dockerfile`
-3. `package.json` with `dev` script → `kind=process` (`npm run dev`)
-4. `pyproject.toml` with `[tool.uv]` → `kind=process` (`uv run …`)
-5. `Cargo.toml` → `kind=process` (`cargo run`)
-6. fallback → ask user
+`pier serve` is the optional long-running HTTP surface:
 
-If the user answers "no" to sharing, `.pier.toml` is added to `.gitignore`.
+- dashboard at `/`;
+- REST API under `/api/v1/`;
+- SSE events for dashboard refresh;
+- dashboard traefik route registration.
 
-### 3.3 Daily use
+`pier serve install` writes a `systemctl --user` unit and starts it. The
+dashboard defaults to `pier.<tld>`, which the normal Pier wildcard resolves.
+If headscale `extra_records_path` exists, the user may choose a dashboard FQDN
+under headscale `base_domain`:
 
-```
-$ git worktree add ../myapp-feat-x -b feat/x
-$ cd ../myapp-feat-x
-
-$ pier up
-✓ slug=x derived from branch feat/x
-✓ materialized .env, secrets/ (symlinks from primary worktree)
-✓ materialized data-dev/ (snapshot from primary worktree)
-✓ container started: myapp-x
-→ http://x.myapp.test
-
-$ pier ls
-PROJECT   SLUG    URL                       STATUS    UPTIME
-myapp     x       http://x.myapp.test       running   2m
-myapp     y       http://y.myapp.test       running   1h
-otherapp  dev     http://dev.otherapp.test  running   3h
-
-$ pier url           # current worktree URL
-http://x.myapp.test
-
-$ pier logs          # tail container/process logs
-
-$ pier down          # stop, free the slot, keep data
-$ pier down --purge  # also wipe materialized snapshots
-
-$ pier gc            # remove orphans (worktrees deleted, containers
-                     # whose branch no longer exists)
-
-$ pier watch         # foreground: re-up on file change
-                     # (opt-in, see §6.4)
+```bash
+pier serve install --dashboard-fqdn pier.nebula
 ```
 
-All daily commands run from inside a worktree. Pier autodetects project
-and slug from `git rev-parse`. No flags needed in the common case.
+The headscale records adapter is only for the dashboard FQDN. Workload URLs
+use Pier's TLD and split-DNS route.
 
-### 3.4 Client mode (multi-machine access)
+`pier serve upgrade` asks the running daemon to re-exec the current binary
+with `SIGUSR2`. Listener file descriptors are preserved so the dashboard/API
+does not drop during upgrade.
 
-For accessing a `server`-mode pier installation from a different machine:
+### `pier init`
 
+Creates or updates `.pier.toml` in a project. The wizard detects Compose
+files, exposed services, env interpolations, default branch, and a good
+`match_host_uid` default.
+
+Default manifest behavior:
+
+- `.pier.toml` is versioned unless `--private` is used.
+- `.pier.local.toml` and generated `.pier/` state are always gitignored.
+- `base_domain` defaults to `<project>.{pier.tld}` so the same manifest works
+  across contributor machines.
+- `[worktree].base_ref` is recorded so `pier worktree add` forks from the
+  intended branch.
+
+Re-running `pier init` is expected. Wizard-owned fields are refreshed while
+user-curated sections (`env`, `materialize`, `hooks`, `watch`) are preserved.
+
+### Daily Worktree And Workload Commands
+
+Use Pier's worktree wrapper instead of raw git worktree commands:
+
+```bash
+pier worktree add ../myapp-feat-x -b feat/x --up
+pier url
+pier logs -f
+pier down
+pier worktree rm ../myapp-feat-x --purge
 ```
-$ pier client add --tld test --resolver 100.64.0.10
-✓ /etc/resolver/test → 100.64.0.10  (macOS)
-✓ verified: nslookup foo.test → 100.64.0.10
 
-$ pier client tailscale
-Detected tailscale, resolver suggested: 100.64.0.10
-Apply split-DNS rule for `.test`? [Y/n]:
-✓ tailscale set --accept-dns ... (or headscale config patch)
-```
+`pier worktree add`:
 
-`pier client` configures the laptop. The server-mode install runs on the
-remote box. The VPN must already make the resolver IP reachable; pier does
-not bring its own VPN.
+- resolves the target under `[worktree].dir`, `prefs.toml`, or `.pier/worktrees`;
+- creates or checks out the branch;
+- pre-creates snapshot dirs as the host user;
+- applies materialization;
+- runs `[materialize].post_create`;
+- rolls back the worktree and branch on failure unless hook errors are ignored;
+- optionally chains `pier up`.
+
+`pier worktree rm`:
+
+- runs `[materialize].pre_remove`;
+- runs `pier down` unless skipped;
+- optionally purges snapshots;
+- removes the git worktree.
+
+`pier up/down/url/logs/ps/ls/doctor` are the core daily workload commands.
+`pier gc` and `pier watch` exist as command stubs but are not implemented yet.
 
 ## 4. Architecture
 
-Three layers, sharply separated.
+Pier has four cooperating layers.
 
-```
-┌──────────────────────────────────────────────────────────┐
-│  CLI (pier binary)                                       │
-│  install / uninstall / init / up / down / ls / url /     │
-│  logs / watch / gc / client                              │
-└────────────┬─────────────────────────────────────────────┘
-             │ orchestrates
-             ▼
-┌──────────────────────────────────────────────────────────┐
-│  Infra layer (bootstrapped once, lives in containers)    │
-│  ├─ traefik (reverse proxy, :80, file + docker provider) │
-│  └─ dnsmasq (wildcard *.<tld> → <bind-ip>)               │
-│                                                          │
-│  Plus host-side: /etc/resolver/<tld> or systemd-resolved │
-│  per-domain rule pointing at dnsmasq.                    │
-└────────────┬─────────────────────────────────────────────┘
-             │ hosts
-             ▼
-┌──────────────────────────────────────────────────────────┐
-│  Workload layer (one entry per active worktree)          │
-│  ├─ compose adapter   → labels on container              │
-│  ├─ process adapter   → traefik file provider entry      │
-│  └─ dockerfile adapter→ wraps in temporary compose       │
-└──────────────────────────────────────────────────────────┘
+```text
+CLI layer
+  cobra commands, REST handlers, dashboard daemon entrypoint
+
+Infra layer
+  Pier-managed or BYO traefik, dnsmasq, host DNS config, headscale patching,
+  config.toml, prefs.toml
+
+Workload layer
+  docker compose adapter, generated .pier/compose.override.yml,
+  materialization, hooks, state rows
+
+Dashboard/API layer
+  pier serve, static dashboard assets, /api/v1, SSE, systemd --user unit,
+  dashboard traefik route and optional headscale record
 ```
 
-Critically: **the CLI is not a long-running process.** Once `pier up`
-returns, only traefik + dnsmasq + the workload itself are running. Pier
-binary can be deleted/upgraded with no impact on running envs.
-
-### 4.1 Why this split
-
-- **Infra layer is shared and stable.** No per-project config touches it.
-  Adding a project = labeling/registering a workload, nothing more.
-- **Workload layer is per-worktree and disposable.** Lifecycle bound to
-  `pier up` / `pier down`. Crashes don't take infra down.
-- **CLI layer is stateless** (modulo a tiny state file, see §5.3). All
-  source of truth lives in: git (worktree info), docker (container state),
-  filesystem (manifest, materialized files), traefik dynamic config.
+The CLI binary is normally short-lived. `pier serve` is the exception: it is a
+long-running user service, but it is only the dashboard/API surface. Workloads,
+traefik, and dnsmasq keep running without the CLI process.
 
 ## 5. Internals
 
-### 5.1 Slug derivation
+### 5.1 Slug Derivation
 
-```
-branch                       → slug
-─────────────────────────────────────
-main / master                → "dev"
-feat/foo-bar                 → "foo-bar"
-fix/CROPS-42                 → "crops-42"
-chore/update-deps            → "update-deps"
-worktree-quickfix            → "quickfix"
-release/v1.2                 → "release-v1-2"
+Branch names are converted to DNS labels:
+
+```text
+branch                       slug
+feat/foo-bar                 foo-bar
+fix/CROPS-42                 crops-42
+chore/update-deps            update-deps
+worktree-quickfix            quickfix
+release/v1.2                 release-v1-2
+main                         main
+master                       master
 ```
 
 Algorithm:
-1. Strip Conventional Branch prefix (`feat/`, `fix/`, `chore/`, `docs/`,
-   `perf/`, `refactor/`, `style/`, `test/`, `ci/`, `build/`, `revert/`,
-   `release/`).
-2. Strip `worktree-` prefix.
-3. Lowercase, replace `[A-Z_/.]` with `-`, collapse repeats.
-4. Validate `^[a-z0-9][a-z0-9-]*$` (DNS label).
-5. If primary worktree on `main`/`master` → force `"dev"`.
 
-Override via `PIER_SLUG=<slug>` env or `--slug <slug>` flag.
+1. Strip one conventional prefix:
+   `feat/`, `fix/`, `chore/`, `docs/`, `perf/`, `refactor/`, `style/`,
+   `test/`, `ci/`, `build/`, `revert/`.
+2. Strip `worktree-`.
+3. Lowercase.
+4. Replace non-alphanumeric runs with `-`.
+5. Trim leading/trailing `-`.
+6. Validate as a DNS label.
 
-### 5.2 Worktree detection
+`main` and `master` are not special-cased. Use `--slug` or `PIER_SLUG` when a
+specific slug is needed.
 
-Pure `git rev-parse`, no fancy logic:
+### 5.2 Manifest
 
-```
-toplevel  = git rev-parse --show-toplevel       # current worktree path
-gitdir    = git rev-parse --git-dir             # .git/ or .git/worktrees/<name>/
-common    = git rev-parse --git-common-dir      # always primary's .git
-branch    = git rev-parse --abbrev-ref HEAD
-primary   = first entry of `git worktree list --porcelain`
-
-is_primary = (gitdir == common)
-project    = manifest.name  (loaded from <toplevel>/.pier.toml)
-```
-
-If no manifest is found, `pier up` errors with a hint to run `pier init`.
-
-### 5.3 State
-
-Pier keeps a tiny SQLite file at `~/.config/pier/state.db` with one table:
-
-```sql
-CREATE TABLE workloads (
-    project       TEXT NOT NULL,
-    slug          TEXT NOT NULL,
-    worktree_path TEXT NOT NULL,
-    branch        TEXT NOT NULL,
-    kind          TEXT NOT NULL,   -- compose | process | dockerfile
-    container_id  TEXT,            -- compose / dockerfile
-    pid           INTEGER,         -- process kind
-    port          INTEGER,         -- process kind
-    started_at    INTEGER NOT NULL,
-    PRIMARY KEY (project, slug)
-);
-```
-
-Used by `ls`, `gc`, `down` (when invoked outside a worktree). Truth source
-remains docker/process/git; the DB is a cache and is rebuildable from
-inspection.
-
-### 5.4 Manifest schema
+Minimal shape:
 
 ```toml
-# .pier.toml — minimal example
 [project]
 name = "myapp"
-base_domain = "myapp.test"
+base_domain = "myapp.{pier.tld}"
 
 [stack]
-kind = "compose"             # compose | process | dockerfile
+kind = "compose"
 file = "docker-compose.dev.yml"
-service = "app"
+service = "web"
+match_host_uid = true
+
+[[expose]]
+service = "web"
 port = 3000
 
 [materialize]
-symlinks  = [".env", "secrets/"]
+symlinks = [".env"]
 snapshots = ["data-dev/"]
 
-[hooks]
-pre_up    = ["cargo build --release"]   # optional shell hook chain
-post_up   = []
-pre_down  = []
-post_down = []
-
-[watch]
-paths     = ["src/", "Cargo.toml"]
-on_change = "rebuild"        # rebuild | restart
+[worktree]
+base_ref = "main"
 ```
 
-Two layers, compose-style:
-- `.pier.toml` — versioned (if user opted in) or gitignored. Project defaults.
-- `.pier.local.toml` — always gitignored. Per-developer overrides
-  (alternate ports, extra hooks, custom slug).
+Current adapter support:
 
-### 5.5 Adapters
+- `kind = "compose"` is supported.
+- `kind = "dockerfile"` is validated but rejected at runtime with a Phase 3
+  hint to add a minimal compose file.
+- `kind = "process"` is not supported.
 
-Each adapter implements:
+Important fields:
 
+- `[stack].service` marks the exposed service that also receives the bare
+  `http://<slug>.<base_domain>` alias.
+- `[[expose]].host` customizes the service subdomain; default is service name.
+- `[[expose]].preserve_ports` keeps selected TCP host bindings from the
+  original compose service. Use sparingly; fixed host ports can collide across
+  simultaneous worktrees.
+- `[stack].match_host_uid` injects `user: "<uid>:<gid>"` into exposed services.
+- `[service.<name>].match_host_uid` applies the same override to any compose
+  service, exposed or not.
+- `[env.<service>]` values support Pier tokens such as `{slug}`,
+  `{pier.tld}`, `{base_domain}`, `{host.<service>}`, and `{url.<service>}`.
+- `[hooks]` covers `pre_up`, `post_up`, `pre_down`, `post_down`.
+- `[materialize]` covers `post_create` and `pre_remove` worktree hooks.
+- `[watch]` parses and is preserved, but `pier watch` is not implemented.
+
+### 5.3 Compose Adapter
+
+The compose adapter is the single workload runtime path.
+
+At `pier up`:
+
+1. Resolve worktree, manifest, slug, install config, and state DB.
+2. Run `pre_up`.
+3. Apply symlinks/snapshots from the primary worktree.
+4. Generate `.pier/compose.override.yml`.
+5. Run `docker compose -f <file> -f .pier/compose.override.yml -p <project>-<slug> up -d --build`.
+6. Connect exposed containers to the traefik discovery network with
+   worktree-scoped aliases.
+7. Persist the workload row in state.
+8. Run `post_up`.
+9. Print URLs.
+
+The generated override owns:
+
+- container names scoped by project, slug, and service;
+- traefik labels for each exposed service;
+- the bare-slug alias for `[stack].service`;
+- port stripping, except selected `preserve_ports`;
+- `user: "<uid>:<gid>"` where requested;
+- templated environment variables.
+
+Do not edit `.pier/compose.override.yml`; it is regenerated.
+
+### 5.4 DNS And Routing
+
+Pier workload URLs are always under the Pier TLD after token expansion:
+
+```text
+http://<slug>.<project>.<tld>
+http://<service>.<slug>.<project>.<tld>
 ```
-trait Adapter {
-    fn up(ctx: &Ctx) -> Result<WorkloadHandle>;
-    fn down(ctx: &Ctx) -> Result<()>;
-    fn logs(ctx: &Ctx) -> Result<()>;
-    fn status(ctx: &Ctx) -> Result<Status>;
-}
+
+Local mode:
+
+- traefik listens on loopback;
+- dnsmasq answers `*.<tld>` with `127.0.0.1`;
+- Linux systemd-resolved gets a per-domain drop-in.
+
+Server mode:
+
+- traefik listens on the chosen bind IP;
+- dnsmasq answers `*.<tld>` with `answer_ip`;
+- peers use split-DNS to send `.<tld>` queries to the Pier server.
+
+Headscale:
+
+- Pier refuses a workload TLD under headscale `base_domain` because MagicDNS
+  owns that zone and preempts split-DNS routing.
+- For safe TLDs outside `base_domain`, `pier install` can patch
+  `dns.nameservers.split.<tld>` in headscale config and restart headscale.
+- `extra_records_path` is only used for dashboard FQDNs under
+  `base_domain`, configured by `pier serve install`.
+
+Use `resolvectl query` when validating Linux resolution. `dig` can bypass
+systemd-resolved per-link routing and produce false negatives.
+
+### 5.5 State And Config Files
+
+Pier stores machine state under the user config directory:
+
+```text
+~/.config/pier/config.toml   install config
+~/.config/pier/prefs.toml    user workflow preferences
+~/.config/pier/state.db      SQLite cache
+~/.config/pier/traefik/      Pier-managed traefik config
 ```
 
-#### compose adapter
+`config.toml` includes mode, TLD, bind/answer IPs, BYO-traefik settings,
+headscale config paths, and dashboard FQDN state.
 
-1. Read `manifest.stack.file`.
-2. Generate temporary override file `.pier/compose.override.yml`:
-   ```yaml
-   services:
-     <service>:
-       container_name: <project>-<slug>
-       labels:
-         - traefik.enable=true
-         - traefik.http.routers.<project>-<slug>.rule=Host(`<slug>.<base_domain>`)
-         - traefik.http.routers.<project>-<slug>.entrypoints=web
-         - traefik.docker.network=pier
-         - traefik.http.services.<project>-<slug>.loadbalancer.server.port=<port>
-       networks: [default, pier]
-   networks:
-     pier:
-       external: true
-   ```
-3. `docker compose -f <file> -f .pier/compose.override.yml -p <project>-<slug> up -d --build`.
-4. Record `container_id` in state.
+`prefs.toml` currently holds the default worktree directory.
 
-#### process adapter
+`state.db` tracks registered projects and running workloads. Workload state is
+a cache; docker, git, and filesystem reality win. `doctor --fix` can drop dead
+rows. `gc` is reserved for broader orphan cleanup but is not implemented yet.
 
-1. Allocate a free TCP port (bind ephemeral, close, reuse).
-2. Launch `manifest.stack.cmd` with `PORT=<port>` (or `manifest.stack.port_env`).
-3. Write `~/.config/pier/traefik/dynamic/<project>-<slug>.yml`:
-   ```yaml
-   http:
-     routers:
-       <project>-<slug>:
-         rule: "Host(`<slug>.<base_domain>`)"
-         entryPoints: [web]
-         service: <project>-<slug>
-     services:
-       <project>-<slug>:
-         loadBalancer:
-           servers:
-             - url: "http://host.docker.internal:<port>"
-   ```
-4. Traefik file provider hot-reloads, route is live.
-5. Record `pid` and `port` in state.
+### 5.6 Materialization And Hooks
 
-#### dockerfile adapter
+Materialization exists so secondary worktrees inherit enough local state to run.
 
-Synthesizes a one-service compose file on the fly, then delegates to the
-compose adapter. Manifest fields needed: `dockerfile` path and `port`.
+- `symlinks`: link from primary into secondary if missing.
+- `snapshots`: copy from primary into secondary if missing.
+- Empty destination snapshot directories are removed before copy so Docker
+  does not leave root-owned empty dirs that block writes.
+- `pier down --purge` removes snapshots, not symlinks.
 
-### 5.6 Materialization
+Hooks run through `sh -c` with a stable set of `PIER_*` environment variables.
+They are used for migrations, seed data, DB dumps, and per-worktree setup.
 
-Run before adapter `up`. Idempotent. For each entry:
-- **symlink**: if path doesn't exist in worktree, `ln -s
-  <primary>/<path> <worktree>/<path>`.
-- **snapshot**: if path doesn't exist in worktree, `cp -r
-  <primary>/<path> <worktree>/<path>` (or `mkdir` if `--fresh`).
+### 5.7 Dashboard/API
 
-Skipped on the primary worktree itself.
+The REST API drives the same code paths as the CLI:
 
-`pier down --purge` removes the snapshot copies (not the symlinks; those
-point at primary and must not be deleted).
+- list workloads and projects;
+- run up/down;
+- stream logs;
+- create/delete worktrees;
+- run doctor;
+- stream state events.
 
-### 5.7 Infra bootstrap (`pier install`)
+The dashboard is static HTML/CSS/JS embedded into the binary. It is intentionally
+small: no build step, no frontend package manager, no external runtime.
 
-Idempotent, safe to re-run.
+`pier serve` binds to enough addresses for both browser access and traefik
+access:
 
-1. Create network: `docker network create pier` (if missing).
-2. Pull and run traefik:
-   - `traefik:v3` (or pinned to whatever's stable at MVP time)
-   - Static config: docker provider (network=pier) + file provider
-     (`~/.config/pier/traefik/dynamic/`) + entrypoint web on `:80`.
-   - Bind: `127.0.0.1:80` (local mode) or `0.0.0.0:80` (server mode).
-   - Container name: `pier-traefik`.
-3. Pull and run dnsmasq:
-   - `4km3/dnsmasq` or hand-rolled minimal image.
-   - Config: `address=/.test/127.0.0.1` (local) or `address=/.test/<bind-ip>` (server).
-   - Listen on 53/udp and 53/tcp on `127.0.0.1` (local) or `0.0.0.0` (server).
-   - Container name: `pier-dnsmasq`.
-4. Configure host DNS:
-   - **macOS**: write `/etc/resolver/<tld>` (sudo) with `nameserver 127.0.0.1`.
-   - **Linux + systemd-resolved**: drop a unit file `/etc/systemd/resolved.conf.d/pier.conf` adding the per-domain rule, then `systemctl restart systemd-resolved`. Sudo.
-   - **Linux without systemd-resolved**: detect, suggest `--manual-dns`.
-5. Verify: `dig @127.0.0.1 anything.<tld>` returns the bind IP.
+- loopback;
+- the Pier docker bridge gateway when available;
+- `answer_ip` in server mode when needed.
 
-### 5.8 Garbage collection (`pier gc`)
+In BYO-traefik mode, `pier serve` writes `pier-dashboard.yml` into the detected
+or configured file-provider directory. In Pier-managed mode it writes the same
+route into Pier's dynamic config directory.
 
-Walks state DB. For each entry:
-- If `worktree_path` no longer in `git worktree list` → orphan.
-- If container ID no longer running and no snapshot exists → orphan.
-- If branch no longer exists locally and remotely → candidate.
+## 6. Operational Invariants
 
-Prompts before removal unless `--yes`. Removes container, dynamic traefik
-file, state row. Optionally also runs `git worktree remove`.
+- Do not run raw `docker compose up/down/restart` for Pier workloads. Pier must
+  regenerate overrides, attach the shared traefik network, and update state.
+- Do not remove worktrees with raw `git worktree remove` unless `pier down`
+  has already run. Prefer `pier worktree rm`.
+- Keep `{pier.tld}` in committed manifests unless a project intentionally needs
+  a fixed domain.
+- Keep runtime-generated `.pier/` files out of git.
+- Trust internal callers; validate user input and external system state at the
+  boundary.
+- Keep CLI code thin. Complex behavior belongs in `internal/<package>` with
+  unit tests where I/O can be faked.
 
-## 6. Cross-cutting concerns
+## 7. Known Platform Constraints
 
-### 6.1 Local vs server mode
-
-| Concern | local mode | server mode |
-|---|---|---|
-| traefik bind | `127.0.0.1:80` | `0.0.0.0:80` |
-| dnsmasq bind | `127.0.0.1:53` | `0.0.0.0:53` |
-| dnsmasq answer | `127.0.0.1` | `<server-ip>` |
-| Client config | host's own resolver | `pier client add` on each laptop |
-| VPN | not involved | VPN must reach `<server-ip>` |
-| Auth boundary | OS user | VPN peer set |
-
-### 6.2 VPN integration (server mode)
-
-Pier itself is VPN-agnostic. The server-mode install only assumes that
-clients can reach `<server-ip>` somehow. Three concrete paths:
-
-- **Tailscale**: clients run `pier client tailscale`, which sets up the
-  per-domain resolver via `tailscale set --accept-dns` plus a split-DNS
-  ACL on the admin side (or `extra_records` on a self-hosted headscale).
-- **WireGuard plain**: clients add a search-domain + `nameserver
-  <server-ip>` rule manually or via `pier client add`.
-- **LAN only**: same as WireGuard, just no tunnel.
-
-### 6.3 Authentication
-
-VPN trust is the boundary in v1. Documented limitation: any peer in the
-VPN can reach any worktree URL. Acceptable for solo + agent workflows; not
-acceptable for shared dev pools.
-
-Post-MVP escape hatch: optional `[security] basic_auth = "user:hash"` in
-manifest, which generates a traefik basic-auth middleware label.
-
-### 6.4 File watching
-
-Two modes, both opt-in:
-
-- **`pier watch`** — foreground command. Watches `manifest.watch.paths`,
-  triggers `docker compose up -d --build` (compose) or kills+restarts the
-  process (process kind). Simple `notify-rs` poll.
-- **Native HMR** — for stacks with their own watcher (Vite, Next, Django
-  runserver, uvicorn `--reload`, cargo-watch), pier just mounts the source
-  as a volume and lets the stack handle reload. No pier intervention.
-
-Niveau 3 Tilt-grade live update (sync-only, no rebuild) is out of scope
-for v1.
-
-### 6.5 Concurrency
-
-- Multiple worktrees of the same project: each gets a unique slug, hence
-  unique container name, traefik router, and DNS entry. No collision.
-- Multiple projects: separated by `<project>` namespace in container names
-  and router IDs.
-- Two `pier up` invocations on the same worktree: second one is a no-op
-  (container already running) or rebuilds in place (idempotent compose up).
-
-### 6.6 Failure modes
-
-- **traefik down**: all URLs 502. `pier doctor` (post-MVP) detects and
-  offers restart.
-- **dnsmasq down**: all DNS resolution for `.<tld>` fails. Same recovery.
-- **Workload crashes**: traefik returns 502, container exits, state DB
-  still shows it. `pier gc` cleans up.
-- **State DB corrupt**: pier inspects docker/git directly to rebuild;
-  state is a cache.
-
-## 7. Tech choices
-
-| Concern | Choice | Why |
-|---|---|---|
-| Language | Go | Static binary, `goreleaser` for cross-OS distribution, mature CLI ecosystem (`cobra`), good fsnotify and docker SDK. |
-| Manifest format | TOML | Less indentation surprise than YAML, idiomatic for CLI tooling, comments allowed. |
-| Reverse proxy | Traefik v3 | Native docker label discovery + file provider, mature. |
-| DNS | dnsmasq | Single-line wildcard config, tiny, well-understood. |
-| TLD default | `.test` | RFC2606 reserved, will never collide with public DNS. |
-| Storage | SQLite (modernc/sqlite, no CGO) | Zero deps, file-based, easy to inspect. |
-| Distribution | GitHub Releases (binaries) + Homebrew tap + curl-pipe-sh installer | Standard CLI patterns. |
+- Linux is the only platform with automatic host DNS setup today. Non-Linux
+  builds can print manual guidance but do not mutate host DNS.
+- Docker is required. Pier does not manage host processes.
+- Server mode assumes peers can reach `answer_ip` over LAN/VPN.
+- Fixed preserved host ports collide across worktrees; they are an escape hatch
+  for non-HTTP protocols.
+- Containers with non-root default users often need `match_host_uid = true` on
+  bind-mounted host paths.
+- dnsmasq in container networking can drop UDP replies on some Linux kernels;
+  Pier runs its dnsmasq container on host networking.
+- dnsmasq must not use `bind-interfaces` with `--listen-address=0.0.0.0`.
 
 ## 8. Roadmap
 
-### v0.1 — MVP
+Implemented:
 
-**Phase 1 — local mode end-to-end**
-- CLI scaffold (cobra), command stubs.
-- `install` (local mode only): traefik + dnsmasq containers, `/etc/resolver/<tld>`.
-- compose adapter: override file generation, label injection.
-- `init` with auto-detection for compose projects.
-- `up` / `down` / `url` / `ls` / `logs`.
-- State DB.
-- Tested on one real compose project.
+- Compose adapter.
+- Local and server installs.
+- BYO-traefik.
+- Headscale split-DNS patch/unpatch.
+- Dashboard/API daemon with systemd --user install and upgrade.
+- Dashboard FQDN via headscale `extra_records_path`.
+- Worktree add/rm/clean wrappers.
+- Materialization and hooks.
+- AI-agent skill installation.
+- Doctor checks and selected fix paths.
+- Curl-pipe installer and GoReleaser config.
 
-**Phase 2 — server mode + process adapter + polish**
-- `install --mode server`: bind 0.0.0.0, expose dnsmasq.
-- `client add`: configure remote machine resolver.
-- process adapter: port allocation, traefik file provider.
-- `gc`: orphan detection.
-- Cross-project test (compose + uv + npm).
-- README, install one-liner.
+Not implemented yet:
 
-### v0.2 — short follow-ups
+- `pier gc` beyond the command stub.
+- `pier watch` beyond the command stub.
+- Dockerfile adapter.
+- TLS.
+- Optional basic auth.
+- Automatic host DNS setup outside Linux.
+- Health-check-based workload readiness.
 
-- `dockerfile` adapter (synthesize compose).
-- `pier watch` (file watching, level 1).
-- `pier doctor` (infra health check + auto-recover).
-- Linux-without-systemd-resolved support (NetworkManager / dnsmasq host).
-- `pier client tailscale` for one-shot tailscale split-DNS setup.
-- `--shared` flag in `init` (commits manifest).
+Open design questions:
 
-### v1 — production-ready
+- How far the dashboard/API should go before it becomes a real control plane.
+- Whether monorepo support should walk up to the nearest `.pier.toml` or require
+  explicit project registration.
+- Whether preserved TCP ports need per-user allocation helpers.
+- Whether future Dockerfile support should synthesize compose or only generate
+  a starter compose file.
 
-- TLS option (mkcert auto-trust, optional).
-- Optional basic-auth middleware.
-- Manifest schema validation with helpful errors.
-- Telemetry (opt-in).
-- Tests + CI (cross-OS).
+## 9. References
 
-### Post-v1 — explorations
-
-- Live-update / sync-only file copy (Tilt-grade).
-- Health-check based readiness in `up`.
-- Multi-tenant on shared server (per-user namespace).
-- Plugin system for custom adapters.
-
-## 9. Open questions
-
-1. **Manifest discovery in monorepos**: nearest `.pier.toml` walking up,
-   or hard-fail at root? (Lean: nearest, with explicit `pier --root <dir>`
-   override.)
-2. **Slug collision across projects**: `feat/x` exists in two repos at
-   once. Currently namespaced by `<project>` → no collision. URLs:
-   `x.app1.test` vs `x.app2.test`. Confirm this satisfies all use cases.
-3. **Snapshot vs symlink for dotfiles**: `.env` symlinked is convenient
-   but can leak secrets between worktrees if any worktree mutates the
-   file. Consider `mode = "ro"` for symlinks.
-4. **Bring-your-own infra**: should pier accept a pre-existing traefik
-   instance (e.g. user already runs one)? Probably yes via
-   `install --use-existing-traefik <name>`.
-5. **State DB location vs worktree**: do we need a per-worktree state
-   alongside the global one? Currently no — global keyed by `(project,
-   slug)` is enough.
-
-## 10. References
-
-- DDEV — closest comparable tool (PHP-centric historically): https://ddev.com/
-- Traefik file provider: https://doc.traefik.io/traefik/providers/file/
+- README.md — user-facing usage.
+- AGENTS.md — contributor and agent workflow constraints.
 - RFC2606 (`.test` reserved TLD): https://datatracker.ietf.org/doc/html/rfc2606
 - systemd-resolved per-domain DNS: https://www.freedesktop.org/software/systemd/man/systemd-resolved.html
 - Tailscale split-DNS: https://tailscale.com/kb/1054/dns

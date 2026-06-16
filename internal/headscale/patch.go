@@ -1,6 +1,7 @@
 // Package headscale patches and reverts a headscale config.yaml to
 // register/deregister a pier-managed TLD as a split-DNS domain, and
-// maintains the extra_records JSON file when records mode is active.
+// maintains the extra_records JSON file for dashboard FQDNs under the
+// headscale base_domain.
 // All edits are surgical: existing `dns:` keys, comments, and unrelated
 // config (ACL, derp, log, ...) are preserved through yaml.Node.
 package headscale

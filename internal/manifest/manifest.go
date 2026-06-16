@@ -1,5 +1,5 @@
 // Package manifest parses, validates, and writes .pier.toml files
-// described in DESIGN §5.4. Per-developer overrides in .pier.local.toml
+// described in DESIGN §5.2. Per-developer overrides in .pier.local.toml
 // are merged on top of the project manifest.
 package manifest
 

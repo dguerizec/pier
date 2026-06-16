@@ -4,7 +4,8 @@ package infra
 
 import "errors"
 
-// configureHostDNS is a stub on non-Linux platforms; macOS support lands in v0.2.
+// configureHostDNS is a stub on non-Linux platforms; automatic host DNS setup
+// is Linux-only today.
 func configureHostDNS(tld, dnsIP string) (bool, error) {
 	return false, errors.New("infra: host DNS configuration only supported on Linux for MVP (use --manual-dns elsewhere)")
 }
@@ -12,7 +13,7 @@ func configureHostDNS(tld, dnsIP string) (bool, error) {
 func unconfigureHostDNS() (bool, error) { return false, nil }
 
 func manualDNSInstructions(tld, dnsIP string) string {
-	return "macOS/Windows host DNS instructions: see DESIGN §5.7 (post-MVP)."
+	return "macOS/Windows host DNS setup is manual today; configure a resolver for ." + tld + " pointing at " + dnsIP + "."
 }
 
 func checkResolvedDropin(tld string) Check {

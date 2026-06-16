@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test ./...
+
+  artifacts:
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            artifact: pier_Linux_x86_64
+          - goos: linux
+            goarch: arm64
+            artifact: pier_Linux_arm64
+          - goos: darwin
+            goarch: amd64
+            artifact: pier_Darwin_x86_64
+          - goos: darwin
+            goarch: arm64
+            artifact: pier_Darwin_arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build archive
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          ARTIFACT: ${{ matrix.artifact }}
+          VERSION: ci-${{ github.run_number }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -eu
+          mkdir -p "dist/${ARTIFACT}"
+          date -u +%Y-%m-%dT%H:%M:%SZ > dist/build-date.txt
+          read -r build_date < dist/build-date.txt
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/dguerizec/pier/internal/cli.version=${VERSION} -X github.com/dguerizec/pier/internal/cli.commit=${COMMIT} -X github.com/dguerizec/pier/internal/cli.date=${build_date}" \
+            -o "dist/${ARTIFACT}/pier" \
+            ./cmd/pier
+          cp README.md "dist/${ARTIFACT}/"
+          if ls LICENSE* >/dev/null 2>&1; then
+            cp LICENSE* "dist/${ARTIFACT}/"
+          fi
+          tar -C dist -czf "dist/${ARTIFACT}.tar.gz" "${ARTIFACT}"
+          sha256sum "dist/${ARTIFACT}.tar.gz" > "dist/${ARTIFACT}.tar.gz.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/${{ matrix.artifact }}.tar.gz
+            dist/${{ matrix.artifact }}.tar.gz.sha256

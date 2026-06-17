@@ -20,6 +20,24 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
+download_json() {
+    out="$1"
+    url="$2"
+    attempts=3
+    attempt=1
+    while [ "$attempt" -le "$attempts" ]; do
+        if $DL_OUT "$out" "$url"; then
+            return 0
+        fi
+        if [ "$attempt" -lt "$attempts" ]; then
+            warn "download failed, retrying ($attempt/$attempts): $url"
+            sleep 2
+        fi
+        attempt=$((attempt + 1))
+    done
+    return 1
+}
+
 # tar is non-negotiable.
 need tar
 
@@ -59,14 +77,23 @@ case "$uname_m" in
     *) die "unsupported arch: $uname_m (pier supports x86_64 and arm64)" ;;
 esac
 
+# Stage in a temp dir; clean up on exit (success or failure).
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT INT TERM
+
 # Resolve version.
 if [ -z "$VERSION" ]; then
     log "resolving latest release for $REPO"
-    VERSION="$(
-        $DL "https://api.github.com/repos/${REPO}/releases/latest" \
-            | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
-            | head -n1
-    )"
+    VERSION_JSON="$TMP/release.json"
+    if download_json "$VERSION_JSON" "https://api.github.com/repos/${REPO}/releases/latest"; then
+        VERSION="$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$VERSION_JSON" | head -n1)"
+    fi
+    if [ -z "$VERSION" ]; then
+        warn "latest release endpoint failed; falling back to release list"
+        download_json "$VERSION_JSON" "https://api.github.com/repos/${REPO}/releases?per_page=1" \
+            || die "could not resolve latest release tag"
+        VERSION="$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$VERSION_JSON" | head -n1)"
+    fi
     [ -n "$VERSION" ] || die "could not resolve latest release tag"
 fi
 
@@ -76,9 +103,6 @@ BASE="https://github.com/${REPO}/releases/download/${VERSION}"
 
 log "installing pier $VERSION ($OS/$ARCH)"
 
-# Stage in a temp dir; clean up on exit (success or failure).
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT INT TERM
 cd "$TMP"
 
 log "downloading $ARCHIVE"

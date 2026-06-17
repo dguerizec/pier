@@ -137,7 +137,8 @@ match_host_uid  = true                  # opt-in: container runs as host UID/GID
 service = "web"
 port = 3000
 preserve_ports = [2223]                 # optional: keep selected TCP host
-                                        # bindings from compose
+                                        # bindings from compose (for SSH,
+                                        # databases, or other non-HTTP TCP)
 
 [service.worker]
 match_host_uid = true                   # same override for one compose service,
@@ -148,7 +149,23 @@ symlinks  = [".env", "secrets/"]        # symlinked from primary on first up
 snapshots = ["data-dev/"]               # copied per worktree (own mutable copy)
 ```
 
-`.pier.local.toml` next to it is always gitignored — per-developer overrides (alternate ports, custom slug, etc.).
+`.pier.local.toml` next to it is always gitignored — per-developer overrides (custom slug, worktree dir, etc.).
+
+`preserve_ports` keeps a matching Compose `ports:` entry for protocols that cannot
+go through Traefik's HTTP routing. It does not allocate a different host port by
+itself; make the Compose published port configurable when multiple worktrees must
+run at once:
+
+```yaml
+services:
+  web:
+    ports:
+      - "${SSH_HOST_PORT:-2223}:2223"
+```
+
+Then set `SSH_HOST_PORT=2224` in that worktree's local `.env`. The manifest can
+stay shared as `preserve_ports = [2223]` because pier matches either side of the
+Compose binding and keeps the resolved `2224:2223` entry.
 
 ### Minimal compose for raw-process stacks
 

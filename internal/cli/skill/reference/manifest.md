@@ -165,6 +165,30 @@ Use this sparingly: preserved host ports are global on the machine, so
 two worktrees cannot run the same fixed binding at once unless the
 compose file uses per-worktree interpolation for the published port.
 
+For simultaneous worktrees, keep the container-side port stable and make
+only the published host port local to the worktree:
+
+```yaml
+services:
+  app:
+    ports:
+      - "${APP_SSH_HOST_PORT:-2223}:2223"
+```
+
+```toml
+[[expose]]
+service = "app"
+port = 8080
+preserve_ports = [2223]
+```
+
+Then set `APP_SSH_HOST_PORT=2224` in the secondary worktree's gitignored
+`.env`. Pier preserves the Compose binding because it matches the target
+port `2223`; Compose resolves the host side from `.env` before the
+container starts. Do not put `"${APP_SSH_HOST_PORT}"` in
+`preserve_ports`: the manifest field is an integer list, and pier does
+not read `.env` when parsing it.
+
 **Symptom that says "you should have set true"**: container starts but
 fails with `Permission denied` writing to a path that's bind-mounted
 from the host. The host directory is owned by your user; the container

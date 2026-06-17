@@ -193,7 +193,10 @@ false".
 **`[[expose]].preserve_ports = [2223, ...]`** keeps selected TCP host
 bindings from the compose service instead of stripping every `ports`
 entry. Use only for non-HTTP protocols where traefik virtual hosts cannot
-help; fixed host ports still collide between simultaneous worktrees.
+help; fixed host ports still collide between simultaneous worktrees. For
+parallel worktrees, keep `preserve_ports` on the stable container port and
+make the Compose published port configurable through a gitignored `.env`
+(for example `"${SSH_HOST_PORT:-2223}:2223"`).
 
 **`[worktree].dir`** is a per-user preference, not a project setting.
 Don't write it into `.pier.toml` proactively. See

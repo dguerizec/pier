@@ -48,6 +48,9 @@ func (compose) Up(c Ctx) (*Handle, error) {
 	if err := AttachToTraefikNetwork(c); err != nil {
 		return nil, fmt.Errorf("attach to %s network: %w", c.TraefikNetwork, err)
 	}
+	if err := RefreshTraefikRoutes(c); err != nil {
+		return nil, fmt.Errorf("refresh traefik routes: %w", err)
+	}
 
 	// We track the default exposed service's container id (or the first
 	// expose when no default is set) as the workload's "primary" container.
@@ -265,6 +268,32 @@ func AttachToTraefikNetwork(c Ctx) error {
 		}
 		if err := reconnectWithAliases(c.TraefikNetwork, container, aliases); err != nil {
 			return fmt.Errorf("%s: %w", container, err)
+		}
+	}
+	return nil
+}
+
+// RefreshTraefikRoutes nudges the docker provider after pier's post-compose
+// network attach. Traefik can process the compose-created container before it
+// has joined the shared pier network, cache the first compose-private network,
+// and then keep proxying to an unreachable IP even after docker network connect.
+// A container restart after the pier network exists makes Traefik rebuild the
+// service against traefik.docker.network.
+func RefreshTraefikRoutes(c Ctx) error {
+	seen := map[string]bool{}
+	for _, e := range c.Expose {
+		container := ServiceName(c.Project, c.Slug, e.Service)
+		if seen[container] {
+			continue
+		}
+		seen[container] = true
+		ctx := c.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		out, err := exec.CommandContext(ctx, "docker", "restart", container).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%s: docker restart: %w: %s", container, err, strings.TrimSpace(string(out)))
 		}
 	}
 	return nil

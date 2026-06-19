@@ -3,8 +3,10 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -45,6 +47,8 @@ drop dead workload rows).`,
 			fixed.Actions = append(fixed.Actions, pruned...)
 			rea := reattachLeakyAliases()
 			fixed.Actions = append(fixed.Actions, rea...)
+			refreshed := refreshDeadRoutes()
+			fixed.Actions = append(fixed.Actions, refreshed...)
 			appendServeUnitChecks(&fixed)
 			appendLegacySystemUnitCheck(&fixed)
 			appendStateChecks(&fixed)
@@ -168,6 +172,15 @@ func appendStateChecks(r *infra.Report) {
 			})
 			continue
 		}
+		if detail := workloadRouteFailure(w, cfg.TLD); detail != "" {
+			r.Checks = append(r.Checks, infra.Check{
+				Name:    name,
+				Status:  infra.StatusFail,
+				Detail:  detail,
+				FixHint: "pier doctor --fix  (will refresh traefik routes)",
+			})
+			continue
+		}
 		r.Checks = append(r.Checks, infra.Check{Name: name, Status: infra.StatusPass})
 	}
 }
@@ -274,6 +287,90 @@ func reattachLeakyAliases() []string {
 		}
 	}
 	return actions
+}
+
+func refreshDeadRoutes() []string {
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		return nil
+	}
+	cfg, err := infra.LoadConfig(paths)
+	if err != nil {
+		return nil
+	}
+	store, err := state.Open(paths.StateDB)
+	if err != nil {
+		return nil
+	}
+	defer store.Close()
+
+	workloads, err := store.List()
+	if err != nil {
+		return nil
+	}
+	var actions []string
+	for _, w := range workloads {
+		if w.ContainerID == "" || !containerAlive(w.ContainerID) {
+			continue
+		}
+		if workloadRouteFailure(w, cfg.TLD) == "" {
+			continue
+		}
+		m, err := manifest.Load(w.WorktreePath)
+		if err != nil {
+			continue
+		}
+		baseDomain := m.Project.BaseDomain
+		if baseDomain == "" {
+			baseDomain = m.Project.Name + "." + cfg.TLD
+		} else {
+			expanded, err := adapter.ExpandPierTokens(baseDomain, cfg.TLD)
+			if err != nil {
+				continue
+			}
+			baseDomain = expanded
+		}
+		defaultService := ""
+		if d := m.DefaultExpose(); d != nil {
+			defaultService = d.Service
+		}
+		c := adapter.Ctx{
+			Project:        m.Project.Name,
+			Slug:           w.Slug,
+			BaseDomain:     baseDomain,
+			TraefikNetwork: cfg.EffectiveTraefikNetwork(),
+			Expose:         m.Expose,
+			DefaultService: defaultService,
+		}
+		if err := adapter.RefreshTraefikRoutes(c); err == nil {
+			actions = append(actions, fmt.Sprintf("refreshed traefik routes for %s/%s", w.Project, w.Slug))
+		}
+	}
+	return actions
+}
+
+func workloadRouteFailure(w *state.Workload, tld string) string {
+	url := workloadURL(w, tld)
+	if url == "" {
+		return ""
+	}
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		Transport: &http.Transport{
+			Proxy: nil,
+		},
+	}
+	resp, err := client.Get(url)
+	if err != nil {
+		return fmt.Sprintf("route %s did not answer through traefik: %v", url, err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return fmt.Sprintf("route %s returned %s through traefik", url, resp.Status)
+	default:
+		return ""
+	}
 }
 
 // pruneDeadWorkloads removes state rows whose backing container is gone.

@@ -439,6 +439,13 @@ func (h *apiHandler) postWorkloadUp(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "worktree at "+path+": "+err.Error())
 		return
 	}
+	if targetInfo, resolvedSlug, err := resolveTarget(info, slug); err == nil {
+		info = targetInfo
+		slug = resolvedSlug
+	} else {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	d, err := dailyForWorktree(info, slug, io.Discard, io.Discard)
 	if err != nil {

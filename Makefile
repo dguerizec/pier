@@ -3,7 +3,7 @@ BIN    := $(PREFIX)/bin/pier
 PKG    := ./cmd/pier
 VERSION_FILE := internal/cli/root.go
 
-.PHONY: all build install uninstall test vet fmt clean major minor patch tag check-clean
+.PHONY: all build install uninstall test vet fmt clean version major minor patch tag check-clean
 
 all: build
 
@@ -30,6 +30,14 @@ fmt:
 
 clean:
 	rm -f pier
+
+version:
+	@set -eu; \
+	tree_version=$$(sed -n 's/^[[:space:]]*version = "\(.*\)"/\1/p' "$(VERSION_FILE)"); \
+	published_tag=$$(git tag --list 'v*' --sort=-version:refname | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$$/ { print; exit }'); \
+	[ -n "$$tree_version" ] || { echo "error: could not read tree version from $(VERSION_FILE)" >&2; exit 1; }; \
+	[ -n "$$published_tag" ] || published_tag="(none)"; \
+	printf 'tree: %s\npublished: %s\n' "$$tree_version" "$$published_tag"
 
 check-clean:
 	@test -z "$$(git status --porcelain)" || { echo "error: git worktree must be clean" >&2; exit 1; }

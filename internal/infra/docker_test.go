@@ -84,3 +84,32 @@ func TestDockerPull_ExitErrorPreservesChain(t *testing.T) {
 		t.Errorf("error message missing 'docker pull' prefix: %v", err)
 	}
 }
+
+func TestContainerAttachedToNetwork(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script docker stub is POSIX-only")
+	}
+
+	stub := t.TempDir()
+	script := `#!/bin/sh
+if [ "$1" = inspect ]; then
+  if [ "$PIER_TEST_ATTACHED" = true ]; then
+    echo true
+  fi
+fi
+`
+	if err := os.WriteFile(filepath.Join(stub, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	d := newDocker()
+	t.Setenv("PIER_TEST_ATTACHED", "true")
+	if !d.containerAttachedToNetwork(TraefikContainer, NetworkName) {
+		t.Fatal("containerAttachedToNetwork() = false, want true")
+	}
+	t.Setenv("PIER_TEST_ATTACHED", "false")
+	if d.containerAttachedToNetwork(TraefikContainer, NetworkName) {
+		t.Fatal("containerAttachedToNetwork() = true, want false")
+	}
+}

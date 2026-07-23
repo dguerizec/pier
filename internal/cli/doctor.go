@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -15,6 +17,11 @@ import (
 	"github.com/dguerizec/pier/internal/manifest"
 	"github.com/dguerizec/pier/internal/state"
 	"github.com/dguerizec/pier/internal/systemd"
+)
+
+const (
+	routeRecoveryTimeout  = 20 * time.Second
+	routeRecoveryInterval = 250 * time.Millisecond
 )
 
 func newDoctorCmd() *cobra.Command {
@@ -172,7 +179,7 @@ func appendStateChecks(r *infra.Report) {
 			})
 			continue
 		}
-		if detail := workloadRouteFailure(w, cfg.TLD); detail != "" {
+		if detail := workloadRouteFailure(w, cfg.TLD, net.JoinHostPort(cfg.EffectiveAnswerIP(), "80")); detail != "" {
 			r.Checks = append(r.Checks, infra.Check{
 				Name:    name,
 				Status:  infra.StatusFail,
@@ -313,7 +320,8 @@ func refreshDeadRoutes() []string {
 		if w.ContainerID == "" || !containerAlive(w.ContainerID) {
 			continue
 		}
-		if workloadRouteFailure(w, cfg.TLD) == "" {
+		traefikAddr := net.JoinHostPort(cfg.EffectiveAnswerIP(), "80")
+		if workloadRouteFailure(w, cfg.TLD, traefikAddr) == "" {
 			continue
 		}
 		m, err := manifest.Load(w.WorktreePath)
@@ -343,22 +351,33 @@ func refreshDeadRoutes() []string {
 			DefaultService: defaultService,
 		}
 		if err := adapter.RefreshTraefikRoutes(c); err == nil {
-			actions = append(actions, fmt.Sprintf("refreshed traefik routes for %s/%s", w.Project, w.Slug))
+			action := fmt.Sprintf("refreshed traefik routes for %s/%s", w.Project, w.Slug)
+			if waitForWorkloadRoute(w, cfg.TLD, traefikAddr, routeRecoveryTimeout) {
+				action += " (route healthy)"
+			} else {
+				action += " (route did not recover within 20s)"
+			}
+			actions = append(actions, action)
 		}
 	}
 	return actions
 }
 
-func workloadRouteFailure(w *state.Workload, tld string) string {
+func workloadRouteFailure(w *state.Workload, tld, traefikAddr string) string {
 	url := workloadURL(w, tld)
 	if url == "" {
 		return ""
 	}
+	dialer := &net.Dialer{}
+	transport := &http.Transport{Proxy: nil}
+	if traefikAddr != "" {
+		transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, traefikAddr)
+		}
+	}
 	client := &http.Client{
-		Timeout: 2 * time.Second,
-		Transport: &http.Transport{
-			Proxy: nil,
-		},
+		Timeout:   2 * time.Second,
+		Transport: transport,
 	}
 	resp, err := client.Get(url)
 	if err != nil {
@@ -371,6 +390,26 @@ func workloadRouteFailure(w *state.Workload, tld string) string {
 	default:
 		return ""
 	}
+}
+
+func waitForWorkloadRoute(w *state.Workload, tld, traefikAddr string, timeout time.Duration) bool {
+	return waitForHealthy(func() bool {
+		return workloadRouteFailure(w, tld, traefikAddr) == ""
+	}, timeout, routeRecoveryInterval)
+}
+
+func waitForHealthy(check func() bool, timeout, interval time.Duration) bool {
+	if check() {
+		return true
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(interval)
+		if check() {
+			return true
+		}
+	}
+	return false
 }
 
 // pruneDeadWorkloads removes state rows whose backing container is gone.

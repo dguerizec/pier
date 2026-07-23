@@ -98,7 +98,7 @@ func Diagnose() Report {
 	if cfg.ExternalTraefik != "" {
 		r.Checks = append(r.Checks, checkContainerRunning(cfg.ExternalTraefik))
 	} else {
-		r.Checks = append(r.Checks, checkContainerRunning(TraefikContainer))
+		r.Checks = append(r.Checks, checkManagedTraefik())
 	}
 	r.Checks = append(r.Checks, checkContainerRunning(DnsmasqContainer))
 	r.Checks = append(r.Checks, checkDNSResolution(cfg.TLD, cfg.BindIP, cfg.EffectiveAnswerIP()))
@@ -128,6 +128,9 @@ func Fix() Report {
 	if cfg.ExternalTraefik == "" {
 		if err := d.ensureNetwork(NetworkName); err == nil {
 			report.Actions = append(report.Actions, "ensured docker network "+NetworkName)
+		}
+		if reconnected, err := reconnectManagedTraefik(d); err == nil && reconnected {
+			report.Actions = append(report.Actions, "reconnected "+TraefikContainer+" to docker network "+NetworkName)
 		}
 	}
 
@@ -237,9 +240,34 @@ func checkContainerRunning(name string) Check {
 	return Check{Name: "container " + name, Status: StatusPass}
 }
 
+func checkManagedTraefik() Check {
+	if check := checkContainerRunning(TraefikContainer); check.Status != StatusPass {
+		return check
+	}
+	if !newDocker().containerAttachedToNetwork(TraefikContainer, NetworkName) {
+		return Check{
+			Name:    "container " + TraefikContainer,
+			Status:  StatusFail,
+			Detail:  "not attached to docker network " + NetworkName,
+			FixHint: "pier doctor --fix  (will reconnect it to " + NetworkName + ")",
+		}
+	}
+	return Check{Name: "container " + TraefikContainer, Status: StatusPass}
+}
+
 func containerIsRunning(name string) bool {
 	out, err := exec.Command("docker", "inspect", "--format", "{{.State.Running}}", name).Output()
 	return err == nil && strings.TrimSpace(string(out)) == "true"
+}
+
+func reconnectManagedTraefik(d *docker) (bool, error) {
+	if !containerIsRunning(TraefikContainer) || d.containerAttachedToNetwork(TraefikContainer, NetworkName) {
+		return false, nil
+	}
+	if err := d.connectNetwork(NetworkName, TraefikContainer); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func checkDNSResolution(tld, bindIP, answerIP string) Check {
@@ -263,4 +291,3 @@ func dnsProbeIP(bindIP string) string {
 	}
 	return bindIP
 }
-

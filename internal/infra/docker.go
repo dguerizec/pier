@@ -110,3 +110,17 @@ func (d *docker) containerStatus(name string) (running bool, image string) {
 	}
 	return strings.TrimSpace(parts[0]) == "true", strings.TrimSpace(parts[1])
 }
+
+// containerAttachedToNetwork reports whether Docker currently attaches a
+// container to a named network. A running Pier-managed Traefik without the
+// shared network is alive but cannot reach any workload.
+func (d *docker) containerAttachedToNetwork(container, network string) bool {
+	format := fmt.Sprintf(`{{if index .NetworkSettings.Networks %q}}true{{end}}`, network)
+	out, err := d.run("inspect", "--format", format, container)
+	return err == nil && strings.TrimSpace(out) == "true"
+}
+
+func (d *docker) connectNetwork(network, container string) error {
+	_, err := d.run("network", "connect", network, container)
+	return err
+}

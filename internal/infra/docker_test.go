@@ -113,3 +113,45 @@ fi
 		t.Fatal("containerAttachedToNetwork() = true, want false")
 	}
 }
+
+func TestRemoveContainersByLabel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script docker stub is POSIX-only")
+	}
+
+	stub := t.TempDir()
+	log := filepath.Join(stub, "calls")
+	script := `#!/bin/sh
+echo "$*" >> "$PIER_TEST_DOCKER_LOG"
+if [ "$1" = ps ]; then
+  printf 'pier-share-a\npier-share-b\n'
+fi
+`
+	if err := os.WriteFile(filepath.Join(stub, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PIER_TEST_DOCKER_LOG", log)
+
+	removed, err := newDocker().removeContainersByLabel("dev.pier.component=share")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(removed, ",") != "pier-share-a,pier-share-b" {
+		t.Fatalf("removed = %v", removed)
+	}
+	body, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+	for _, want := range []string{
+		"ps -a --filter label=dev.pier.component=share --format {{.Names}}",
+		"rm -f pier-share-a",
+		"rm -f pier-share-b",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("calls missing %q:\n%s", want, got)
+		}
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"github.com/dguerizec/pier/internal/infra"
 	"github.com/dguerizec/pier/internal/manifest"
 	"github.com/dguerizec/pier/internal/materialize"
+	"github.com/dguerizec/pier/internal/share"
 	sluglib "github.com/dguerizec/pier/internal/slug"
 	"github.com/dguerizec/pier/internal/worktree"
 )
@@ -300,7 +301,11 @@ func runWorktreeRm(cmd *cobra.Command, target string, opts wtRmOpts) error {
 		_ = runPierIn(cmd, abs, args...)
 	}
 
-	return removeWorktreeAt(primary, abs, opts.force, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	if err := removeWorktreeAt(primary, abs, opts.force, cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+		return err
+	}
+	removeWorktreeShares(abs, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	return nil
 }
 
 // runPreRemoveHook executes [materialize].pre_remove against the
@@ -384,6 +389,35 @@ func removeWorktreeAt(primary, abs string, force bool, out, errOut io.Writer) er
 	}
 	fmt.Fprintf(out, "✓ removed worktree %s\n", abs)
 	return nil
+}
+
+func removeWorktreeShares(path string, out, errOut io.Writer) {
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		fmt.Fprintf(errOut, "! remove LAN shares for %s: %v\n", path, err)
+		return
+	}
+	cfg, err := infra.LoadConfig(paths)
+	if errors.Is(err, infra.ErrNotInstalled) {
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(errOut, "! remove LAN shares for %s: %v\n", path, err)
+		return
+	}
+	removeWorktreeSharesWith(paths, cfg, path, out, errOut)
+}
+
+func removeWorktreeSharesWith(paths *infra.Paths, cfg *infra.Config, path string, out, errOut io.Writer) {
+	manager := share.NewManager(paths.Root, cfg.EffectiveTraefikNetwork())
+	removed, err := manager.RemoveWorktree(path)
+	if err != nil {
+		fmt.Fprintf(errOut, "! remove LAN shares for %s: %v\n", path, err)
+		return
+	}
+	if removed > 0 {
+		fmt.Fprintf(out, "✓ stopped sharing %d host(s) from removed worktree\n", removed)
+	}
 }
 
 func newWorktreeCleanCmd() *cobra.Command {

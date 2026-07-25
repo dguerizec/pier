@@ -15,7 +15,7 @@ Architecture and roadmap live in [DESIGN.md](DESIGN.md). This README is the prac
 
 ## Status
 
-Phase 1 MVP and most of Phase 2 are shipped. Compose adapter, install wizard, BYO-traefik, server mode, headscale split-DNS patching, dashboard/API server, doctor, materialize, worktree wrapper, and AI agent skill install — all in. Backlog: MCP shim, dockerfile adapter (synthesized compose), gc, watch, macOS DNS support. See [DESIGN.md §8](DESIGN.md#8-roadmap).
+Phase 1 MVP and most of Phase 2 are shipped. Compose adapter, install wizard, BYO-traefik, server mode, selective LAN sharing, headscale split-DNS patching, dashboard/API server, doctor, materialize, worktree wrapper, and AI agent skill install — all in. Backlog: MCP shim, dockerfile adapter (synthesized compose), gc, watch, macOS DNS support. See [DESIGN.md §8](DESIGN.md#8-roadmap).
 
 Pier is intentionally **docker-coupled** — even projects that aren't otherwise containerized declare a minimal `docker-compose.dev.yml`. See the snippet in [Per-repo setup](#per-repo-setup-once-per-project) below.
 
@@ -245,6 +245,45 @@ pier client tailscale     # prints exact split-DNS / extra_records snippets
 The install wizard can auto-apply the Headscale split-DNS rule when the TLD is outside `base_domain`. `extra_records_path` is only needed when you choose a dashboard FQDN under the Headscale `base_domain`.
 
 Test peer resolution with `resolvectl query <slug>.<base_domain>` rather than `dig`. Dig may bypass systemd-resolved per-link routing on Linux and produce false negatives.
+
+## Selective LAN sharing
+
+Pier installs can publish individual workload hosts on a LAN without exposing
+Pier's wildcard DNS or every active worktree. Local mode works directly;
+server mode also works when its main proxy is bound to a distinct, specific
+tailnet address rather than `0.0.0.0`:
+
+```bash
+cd /path/to/jobo
+pier share add backend
+pier share add '*' --persist
+```
+
+With no host or address flags, `share add` interactively asks which exact hosts
+to publish and which assigned LAN address to bind. In scripts, pass
+`--interface enp3s0` or `--bind-ip 192.168.1.42`. Shell globs must be quoted.
+They are expanded once against the current worktree's known URLs; Pier writes
+exact Traefik `Host` rules, so a later `admin` service is not silently shared.
+
+Session shares survive `pier down` / `pier up` but disappear when their
+dedicated LAN gateway restarts. `--persist` saves the route and gives the
+gateway an `unless-stopped` restart policy so it returns after a machine
+restart. This persists the route, not the Compose workload: a stopped workload
+returns an unavailable response until `pier up` (or its own Compose restart
+policy) brings it back.
+
+```bash
+pier share list
+pier share hosts               # paste-ready /etc/hosts lines
+pier share url --default       # exactly one entry-point URL
+pier share url --all
+pier share remove backend
+```
+
+The client needs no router or DNS change. Copy the `pier share hosts` output
+into its `/etc/hosts`; the Pier host firewall must allow inbound TCP/80 on the
+selected interface. Sharing is hostname-selective, not user authentication:
+any LAN peer that knows a shared hostname can request it.
 
 ## Caveats
 

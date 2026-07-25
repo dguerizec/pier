@@ -21,7 +21,8 @@ adapter, live in git history.
   `docker-compose.dev.yml`.
 - **Headless daily use.** Daily commands (`up`, `down`, `url`, `logs`,
   `worktree`, API calls) are non-interactive. Prompts are limited to setup
-  commands such as `install`, `init`, and `serve install`.
+  commands such as `install`, `init`, `serve install`, and `share add/remove`
+  when their host or LAN-address arguments are omitted.
 - **Local or tailnet.** The same project manifest works on a laptop-only
   `.test` install or a shared server reached through Tailscale/headscale.
 
@@ -151,6 +152,34 @@ pier worktree rm ../myapp-feat-x --purge
 `pier up/down/url/logs/ps/ls/doctor` are the core daily workload commands.
 `pier gc` and `pier watch` exist as command stubs but are not implemented yet.
 
+### `pier share`
+
+`pier share` selectively publishes exact hosts from the current worktree on a
+LAN address while the normal Pier proxy remains loopback-only:
+
+```bash
+pier share add [PIER_HOST...] [--interface <name> | --bind-ip <ip>] [--persist]
+pier share remove [PIER_HOST...]
+pier share list [--all]
+pier share hosts [PIER_HOST...] [--all]
+pier share url [PIER_HOST...] [--default | --all]
+```
+
+`add` prompts for hosts and an assigned IPv4 address when omitted. Selectors
+match the finite URL set of the current worktree: short expose host/service
+names, exact FQDNs, and quoted globs such as `'*'`, `'*.myapp'`, or
+`'*.myapp.test'`. Globs expand at command time into exact routes; they are
+never emitted as wildcard Traefik rules.
+
+Session routes survive workload down/up but are deleted when their LAN gateway
+restarts. `--persist` stores the route durably and applies
+`restart=unless-stopped` to that gateway. Persisting a route does not implicitly
+start its Compose workload at boot.
+
+`hosts` writes only active, paste-ready `<ip> <hostname>` lines. `url --default`
+writes exactly the shared entry-point URL, making
+`xdg-open "$(pier share url --default)"` safe for scripts.
+
 ## 4. Architecture
 
 Pier has four cooperating layers.
@@ -161,7 +190,7 @@ CLI layer
 
 Infra layer
   Pier-managed or BYO traefik, dnsmasq, host DNS config, headscale patching,
-  config.toml, prefs.toml
+  config.toml, prefs.toml, selective LAN gateways
 
 Workload layer
   docker compose adapter, generated .pier/compose.override.yml,
@@ -333,6 +362,12 @@ Pier stores machine state under the user config directory:
 `config.toml` includes mode, TLD, bind/answer IPs, BYO-traefik settings,
 headscale config paths, and dashboard FQDN state.
 
+`share/` holds one address-scoped LAN gateway directory per selected bind IP.
+Each gateway has separate session and persistent route files. The gateway
+startup command deletes its session state before Traefik starts, while
+persistent routes remain. A stable sidecar lock serializes concurrent CLI
+updates.
+
 `prefs.toml` currently holds the default worktree directory.
 
 `state.db` tracks registered projects and running workloads. Workload state is
@@ -397,6 +432,10 @@ route into Pier's dynamic config directory.
   builds can print manual guidance but do not mutate host DNS.
 - Docker is required. Pier does not manage host processes.
 - Server mode assumes peers can reach `answer_ip` over LAN/VPN.
+- Selective LAN sharing requires an assigned IPv4 address that is distinct
+  from the main proxy bind. Server mode is supported when the main proxy is
+  bound to a specific tailnet address; a `0.0.0.0` main bind is rejected
+  because it already exposes every Pier host on every LAN interface.
 - Fixed preserved host ports collide across worktrees; they are an escape hatch
   for non-HTTP protocols.
 - Containers with non-root default users often need `match_host_uid = true` on
@@ -418,6 +457,7 @@ Implemented:
 - Worktree add/rm/clean wrappers.
 - Materialization and hooks.
 - AI-agent skill installation.
+- Selective per-host LAN sharing.
 - Doctor checks and selected fix paths.
 - Curl-pipe installer and GoReleaser config.
 

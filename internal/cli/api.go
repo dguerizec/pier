@@ -821,6 +821,7 @@ func (h *apiHandler) deleteWorktree(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	removeWorktreeSharesWith(h.paths, h.cfg, abs, io.Discard, io.Discard)
 
 	writeJSON(w, http.StatusOK, apiActionResponse{
 		Project: project, Slug: slug, Status: "removed",

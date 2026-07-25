@@ -39,6 +39,7 @@ func init() {
 		newUpCmd(),
 		newDownCmd(),
 		newURLCmd(),
+		newShareCmd(),
 		newLsCmd(),
 		newLogsCmd(),
 		newPsCmd(),

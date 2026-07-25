@@ -125,7 +125,7 @@ func resolveDashboardFQDN(cmd *cobra.Command, cfg *infra.Config, env detect.Envi
 	}
 
 	// 2) Non-interactive: --yes flag or piped stdin → take default.
-	if yes || !serveInstallIsInteractive(cmd) {
+	if yes || !commandIsInteractive(cmd) {
 		return defaultFQDN, "", "", nil
 	}
 
@@ -188,10 +188,10 @@ func validateDashboardFQDN(fqdn, tld string, env detect.Environment) (string, st
 	return "", "", "", fmt.Errorf("FQDN %q must live under %s", fqdn, hint)
 }
 
-// serveInstallIsInteractive treats the call as interactive when stdin
-// AND stdout are both terminals. Mirrors initwizard.IsInteractive
-// semantics; kept package-local to avoid the cli → initwizard import.
-func serveInstallIsInteractive(cmd *cobra.Command) bool {
+// commandIsInteractive treats a command as interactive when stdin AND stdout
+// are both terminals. Mirrors initwizard.IsInteractive semantics; kept
+// package-local to avoid the cli → initwizard import.
+func commandIsInteractive(cmd *cobra.Command) bool {
 	in, ok := cmd.InOrStdin().(*os.File)
 	if !ok {
 		return false

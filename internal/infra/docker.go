@@ -69,6 +69,24 @@ func (d *docker) removeContainer(name string) (bool, error) {
 	return true, nil
 }
 
+// removeContainersByLabel force-removes every container matching label. Share
+// gateways use this during `pier uninstall`; their address-derived names are
+// intentionally not known to the core infra package.
+func (d *docker) removeContainersByLabel(label string) ([]string, error) {
+	out, err := d.run("ps", "-a", "--filter", "label="+label, "--format", "{{.Names}}")
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	for _, name := range strings.Fields(out) {
+		if _, err := d.run("rm", "-f", name); err != nil {
+			return removed, err
+		}
+		removed = append(removed, name)
+	}
+	return removed, nil
+}
+
 // pull retrieves an image. Streams progress to stderr by inheriting the
 // caller's stdout/stderr.
 func (d *docker) pull(image string) error {

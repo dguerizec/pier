@@ -296,6 +296,17 @@ func Uninstall(out io.Writer, manualDNS bool) (bool, error) {
 	d := newDocker()
 
 	touched := false
+	// LAN share gateways join the same discovery network, so they must be
+	// removed before the network. Their names are address-derived; the stable
+	// component label is the ownership boundary.
+	if removed, err := d.removeContainersByLabel("dev.pier.component=share"); err != nil {
+		fmt.Fprintf(out, "! remove LAN share gateways: %v\n", err)
+	} else {
+		for _, name := range removed {
+			touched = true
+			fmt.Fprintf(out, "✓ removed container %s\n", name)
+		}
+	}
 	// pier-traefik / pier network only ours to remove when we managed them.
 	// Helpers return (removed, err): we suppress the ✓ line when nothing
 	// was there so a second `pier uninstall` doesn't lie about deleting

@@ -3,8 +3,22 @@ package detect
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
+
+func TestTraefikDockerCandidatesExcludesPierContainers(t *testing.T) {
+	out := "pier-traefik\ttraefik:v3\t\n" +
+		"pier-share-d15a29bba7b2\ttraefik:v3\tshare\n" +
+		"unrelated\tnginx:latest\t\n" +
+		"proxy\ttraefik:v3.3\t\n"
+
+	got := traefikDockerCandidates(out)
+	want := []string{"proxy"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("traefikDockerCandidates() = %v, want %v", got, want)
+	}
+}
 
 func TestExtractTraefikDynamicDir_FlagEquals(t *testing.T) {
 	got := extractTraefikDynamicDir(

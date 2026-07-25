@@ -23,8 +23,8 @@ type Environment struct {
 
 // TailscaleInfo summarizes the local tailscale state.
 type TailscaleInfo struct {
-	Active bool
-	IPv4   string // e.g. 100.64.0.10
+	Active  bool
+	IPv4    string // e.g. 100.64.0.10
 	Tailnet string
 }
 
@@ -121,33 +121,18 @@ func detectTraefik() TraefikInfo {
 }
 
 // detectTraefikDocker walks `docker ps` for a traefik container that
-// isn't pier's own (`pier-traefik`), excluding Found=true when more
-// than one candidate exists so the wizard asks the user.
+// isn't pier's own, excluding Found=true when more than one candidate
+// exists so the wizard asks the user.
 //
 // `docker ps --filter ancestor=traefik` doesn't match versioned tags, so
 // we list all containers and match the image string ourselves.
 func detectTraefikDocker() TraefikInfo {
-	out, err := exec.Command("docker", "ps", "--format", "{{.Names}}\t{{.Image}}").Output()
+	out, err := exec.Command("docker", "ps", "--format",
+		`{{.Names}}{{"\t"}}{{.Image}}{{"\t"}}{{.Label "dev.pier.component"}}`).Output()
 	if err != nil {
 		return TraefikInfo{}
 	}
-	var names []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		name, image := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
-		if name == "" || name == "pier-traefik" {
-			continue
-		}
-		// Match `traefik:<tag>` or bare `traefik`.
-		base := strings.SplitN(image, ":", 2)[0]
-		if base != "traefik" {
-			continue
-		}
-		names = append(names, name)
-	}
+	names := traefikDockerCandidates(string(out))
 	if len(names) != 1 {
 		return TraefikInfo{}
 	}
@@ -174,6 +159,32 @@ func detectTraefikDocker() TraefikInfo {
 		return resolveContainerPath(name, p)
 	})
 	return info
+}
+
+func traefikDockerCandidates(out string) []string {
+	var names []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) < 2 {
+			continue
+		}
+		name, image := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		if name == "" || name == "pier-traefik" {
+			continue
+		}
+		// Selective LAN gateways run the same Traefik image, but they are
+		// Pier-owned route allowlists rather than BYO proxy candidates.
+		if len(parts) == 3 && strings.TrimSpace(parts[2]) == "share" {
+			continue
+		}
+		// Match `traefik:<tag>` or bare `traefik`.
+		base := strings.SplitN(image, ":", 2)[0]
+		if base != "traefik" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
 }
 
 // detectTraefikProcess scans host processes for a traefik binary.

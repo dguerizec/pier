@@ -1,8 +1,9 @@
 // Package state persists pier metadata in a tiny SQLite file (DESIGN
 // §5.5). Two tables: `workloads` is a cache rebuildable from docker/git
 // inspection (the runtime is the truth); `projects` is the authoritative
-// registry of repos pier knows about — populated by `pier init` and the
-// REST API, not derivable from the runtime.
+// registry of repos pier knows about — populated by `pier init`, `pier up`,
+// and the REST API. Workload rows alone cannot recover a moved or missing
+// primary worktree reliably.
 package state
 
 import (

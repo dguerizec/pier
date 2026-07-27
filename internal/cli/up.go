@@ -39,12 +39,14 @@ func newUpCmd() *cobra.Command {
 	return cmd
 }
 
-// runUp materializes files, calls the adapter's Up, persists the workload
-// in state, registers headscale records when configured, and prints URLs.
+// runUp registers the project, materializes files, calls the adapter's Up,
+// persists the workload in state, and prints URLs.
 // Shared between the cobra command and the REST POST /up handler — keep
 // it pure so the API can call it with io.Discard writers without
 // surprising the CLI flow.
 func runUp(d *daily, ignoreHookErrors bool, out, errOut io.Writer) error {
+	registerProjectForUp(d, errOut)
+
 	hc := buildHookContext(d.Worktree.PrimaryPath, d.Worktree.Toplevel, d.Worktree.Branch, d.Manifest, errOut)
 	if err := materialize.RunHooks("pre_up", d.Manifest.Hooks.PreUp, hc, out, errOut); err != nil {
 		if ignoreHookErrors {
@@ -92,4 +94,19 @@ func runUp(d *daily, ignoreHookErrors bool, out, errOut io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// registerProjectForUp makes an existing .pier.toml sufficient for the
+// dashboard/API project surface. The primary worktree is the stable repo
+// identity; registering a secondary path would create one registry row per
+// branch. Registry metadata must never stop the workload lifecycle, so a
+// genuine name/path conflict is surfaced as a warning and up continues.
+func registerProjectForUp(d *daily, errOut io.Writer) {
+	repoPath := d.Worktree.PrimaryPath
+	if repoPath == "" {
+		repoPath = d.Worktree.Toplevel
+	}
+	if _, err := d.State.RegisterProject(d.Manifest.Project.Name, repoPath); err != nil {
+		fmt.Fprintf(errOut, "! registry: %v\n", err)
+	}
 }

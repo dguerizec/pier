@@ -296,7 +296,21 @@ function renderWorkloadRow(w) {
 
 // ----- dashboard (workloads, current behavior) -----
 
-function renderDashboard() {
+async function renderDashboard() {
+  let registryError = null;
+  if (!store.projects) {
+    try { await loadProjects(); }
+    catch (e) { registryError = e; }
+  }
+  const registeredProjects = new Set(
+    (store.projects || []).map((project) => project.name),
+  );
+  if (registryError) {
+    view.appendChild(
+      el("div", { class: "flash error" }, "load project registry failed: " + registryError.message),
+    );
+  }
+
   if (store.workloads.length === 0) {
     view.appendChild(
       el("div", { class: "empty" }, [
@@ -317,10 +331,16 @@ function renderDashboard() {
   const projects = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
   for (const [name, ws] of projects) {
     ws.sort((a, b) => a.slug.localeCompare(b.slug));
+    const registered = registeredProjects.has(name);
+    const projectHash = `#/projects/${encodeURIComponent(name)}`;
     const card = el("section", { class: "card" }, [
       el("header", {}, [
-        el("h2", {}, el("a", { href: `#/projects/${encodeURIComponent(name)}`, style: "color: inherit; text-decoration: none;" }, name)),
-        el("a", { class: "btn", href: `#/projects/${encodeURIComponent(name)}` }, "open project"),
+        el("h2", {}, registered
+          ? el("a", { href: projectHash, style: "color: inherit; text-decoration: none;" }, name)
+          : name),
+        registered
+          ? el("a", { class: "btn", href: projectHash }, "open project")
+          : el("span", { class: "branch" }, "not registered · run pier up"),
       ]),
     ]);
     for (const w of ws) {

@@ -447,30 +447,35 @@ func (h *apiHandler) postWorkloadUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d, err := dailyForWorktree(info, slug, io.Discard, io.Discard)
+	// Preserve idempotent up without running resolve_values on an already
+	// active workload. The resolver may own an external allocation, so a
+	// no-op API retry must not invoke it.
+	store, err := state.Open(h.paths.StateDB)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing, err := store.Get(project, slug); err == nil {
+		if containerStatus(existing) == "running" {
+			store.Close()
+			writeJSON(w, http.StatusOK, buildAPIWorkload(h.cfg, existing))
+			return
+		}
+	}
+	store.Close()
+
+	d, err := dailyForWorktreeFresh(info, slug, io.Discard, io.Discard)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	defer d.State.Close()
-
 	if d.Manifest.Project.Name != project {
 		writeAPIError(w, http.StatusConflict,
 			fmt.Sprintf("manifest at %s declares project=%q, URL says %q",
 				info.Toplevel, d.Manifest.Project.Name, project))
 		return
 	}
-
-	// Idempotent up: if a row already exists and its container is
-	// running, return the current state without touching docker. Mirrors
-	// `docker compose up -d` no-op semantics — sillage retries are safe.
-	if existing, err := d.State.Get(project, slug); err == nil {
-		if containerStatus(existing) == "running" {
-			writeJSON(w, http.StatusOK, buildAPIWorkload(h.cfg, existing))
-			return
-		}
-	}
-
 	if err := runUp(d, false, io.Discard, io.Discard); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "up failed: "+err.Error())
 		return
@@ -711,7 +716,7 @@ func (h *apiHandler) postWorktree(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusInternalServerError, "post-create detect: "+err.Error())
 			return
 		}
-		d, err := dailyForWorktree(info, body.Slug, io.Discard, io.Discard)
+		d, err := dailyForWorktreeFresh(info, body.Slug, io.Discard, io.Discard)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "post-create daily: "+err.Error())
 			return

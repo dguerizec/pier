@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+
+	"github.com/dguerizec/pier/internal/runtimevalues"
 )
 
 // HookContext is the per-worktree context exposed to post_create /
@@ -18,20 +20,27 @@ type HookContext struct {
 	Branch       string // PIER_BRANCH (raw branch name)
 	BaseDomain   string // PIER_BASE_DOMAIN (post-template, may be empty)
 	ProjectName  string // PIER_PROJECT_NAME
+	ValuesFile   string // PIER_VALUES_FILE (per-worktree resolved value cache)
+	RuntimeEnv   map[string]string
 }
 
 // Env returns the PIER_* env vars layered on top of os.Environ().
 // Empty fields are still emitted so scripts can rely on the keys
 // existing (unset vs "" is a footgun for `set -u` users).
 func (h HookContext) Env() []string {
-	return append(os.Environ(),
-		"PIER_WORKTREE_PATH="+h.WorktreePath,
-		"PIER_PRIMARY_PATH="+h.PrimaryPath,
-		"PIER_SLUG="+h.Slug,
-		"PIER_BRANCH="+h.Branch,
-		"PIER_BASE_DOMAIN="+h.BaseDomain,
-		"PIER_PROJECT_NAME="+h.ProjectName,
-	)
+	vars := map[string]string{
+		"PIER_WORKTREE_PATH": h.WorktreePath,
+		"PIER_PRIMARY_PATH":  h.PrimaryPath,
+		"PIER_SLUG":          h.Slug,
+		"PIER_BRANCH":        h.Branch,
+		"PIER_BASE_DOMAIN":   h.BaseDomain,
+		"PIER_PROJECT_NAME":  h.ProjectName,
+		"PIER_VALUES_FILE":   h.ValuesFile,
+	}
+	for key, value := range h.RuntimeEnv {
+		vars[key] = value
+	}
+	return runtimevalues.MergeEnv(os.Environ(), vars)
 }
 
 // RunHooks executes cmds in order via `sh -c`, with cwd set to

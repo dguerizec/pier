@@ -90,6 +90,52 @@ immediately rather than silently producing broken values.
 `project.base_domain` is read at startup (before workload context
 exists), so it accepts `{pier.tld}` only.
 
+### Values resolved by a hook
+
+`[hooks].resolve_values` is a single `sh -c` command whose stdout must
+be one JSON object containing scalar strings, numbers, or booleans.
+Pier runs it from the target worktree before the final manifest parse:
+
+```toml
+[hooks]
+resolve_values = "./scripts/resolve-pier-values"
+
+[[expose]]
+service = "api"
+port = 8000
+preserve_ports = [{value.oauth_callback_port}]
+
+[env.api]
+OAUTH_CALLBACK_URL = "http://127.0.0.1:{value.oauth_callback_port}/callback"
+```
+
+If the hook prints `{"oauth_callback_port":49163}`, the final TOML has
+`preserve_ports = [49163]` and the callback URL contains `49163`.
+Tokens outside TOML strings become typed scalar literals; tokens inside
+strings become escaped text.
+
+Pier exports the same values to Docker Compose as
+`PIER_VALUE_<UPPERCASE_NAME>`. A compose binding can therefore use:
+
+```yaml
+ports:
+  - "127.0.0.1:${PIER_VALUE_OAUTH_CALLBACK_PORT}:8765"
+```
+
+The value object is cached with mode `0600` at
+`.pier/resolved-values.json`. `pier up` refreshes it; `down` and `logs`
+reuse the exact cached values. The resolver receives
+`PIER_VALUES_FILE` and the normal `PIER_*` worktree context, so it can
+reuse a prior assignment. Allocation, locking, and collision policy
+belong to the project hook.
+
+The bootstrap fields `[project]`, `[worktree]`, `[materialize]`, and
+`hooks.resolve_values` itself cannot depend on `{value.*}`. Worktree and
+materialization layout must be known before runtime values are resolved.
+Re-running `pier init` on a templated manifest is refused because the
+typed wizard cannot safely round-trip unresolved TOML; edit the existing
+manifest directly.
+
 ## Common `[env.<service>]` patterns
 
 Two-tier "front calls the API":
@@ -185,9 +231,12 @@ preserve_ports = [2223]
 Then set `APP_SSH_HOST_PORT=2224` in the secondary worktree's gitignored
 `.env`. Pier preserves the Compose binding because it matches the target
 port `2223`; Compose resolves the host side from `.env` before the
-container starts. Do not put `"${APP_SSH_HOST_PORT}"` in
-`preserve_ports`: the manifest field is an integer list, and pier does
-not read `.env` when parsing it.
+container starts.
+
+When a project needs to compute the preserved port instead, use
+`hooks.resolve_values`, put `{value.<name>}` directly in the integer
+list, and reference the corresponding `PIER_VALUE_<NAME>` variable in
+Compose as described above.
 
 **Symptom that says "you should have set true"**: container starts but
 fails with `Permission denied` writing to a path that's bind-mounted

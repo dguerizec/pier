@@ -15,6 +15,8 @@ import (
 	"text/template"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/dguerizec/pier/internal/runtimevalues"
 )
 
 const (
@@ -128,6 +130,7 @@ func composeRun(c Ctx, args []string, overridePath string, stream bool) (string,
 	}
 	cmd := exec.CommandContext(ctx, "docker", full...)
 	cmd.Dir = c.WorktreePath
+	cmd.Env = runtimevalues.MergeEnv(os.Environ(), c.ComposeEnv)
 	if stream {
 		cmd.Stdout = c.Out
 		cmd.Stderr = c.Err
@@ -151,6 +154,7 @@ func composeContainerID(c Ctx, overridePath, service string) (string, error) {
 		"ps", "-q", service,
 	)
 	cmd.Dir = c.WorktreePath
+	cmd.Env = runtimevalues.MergeEnv(os.Environ(), c.ComposeEnv)
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -205,6 +209,7 @@ func ensureExternalNetworks(c Ctx, overridePath string) error {
 		"config", "--format=json",
 	)
 	cmd.Dir = c.WorktreePath
+	cmd.Env = runtimevalues.MergeEnv(os.Environ(), c.ComposeEnv)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -685,6 +690,9 @@ func scanComposeServices(c Ctx) map[string]composeServiceInfo {
 	}
 	out := make(map[string]composeServiceInfo, len(doc.Services))
 	for name, svc := range doc.Services {
+		for i := range svc.Ports {
+			expandResolvedValueRefs(&svc.Ports[i], c.ComposeEnv)
+		}
 		out[name] = composeServiceInfo{
 			hasPorts:         len(svc.Ports) > 0,
 			hasContainerName: svc.ContainerName != "",
@@ -692,4 +700,18 @@ func scanComposeServices(c Ctx) map[string]composeServiceInfo {
 		}
 	}
 	return out
+}
+
+func expandResolvedValueRefs(node *yaml.Node, values map[string]string) {
+	if node == nil || len(values) == 0 {
+		return
+	}
+	if node.Kind == yaml.ScalarNode {
+		for name, value := range values {
+			node.Value = strings.ReplaceAll(node.Value, "${"+name+"}", value)
+		}
+	}
+	for _, child := range node.Content {
+		expandResolvedValueRefs(child, values)
+	}
 }

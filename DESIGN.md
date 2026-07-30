@@ -283,7 +283,10 @@ Important fields:
   service, exposed or not.
 - `[env.<service>]` values support Pier tokens such as `{slug}`,
   `{pier.tld}`, `{base_domain}`, `{host.<service>}`, and `{url.<service>}`.
-- `[hooks]` covers `pre_up`, `post_up`, `pre_down`, `post_down`.
+- `[hooks].resolve_values` computes per-worktree scalar values before the
+  final manifest parse; `{value.<name>}` tokens can therefore occupy typed
+  positions such as `preserve_ports`.
+- `[hooks]` also covers `pre_up`, `post_up`, `pre_down`, `post_down`.
 - `[materialize]` covers `post_create` and `pre_remove` worktree hooks.
 - `[watch]` parses and is preserved, but `pier watch` is not implemented.
 
@@ -293,16 +296,18 @@ The compose adapter is the single workload runtime path.
 
 At `pier up`:
 
-1. Resolve worktree, manifest, slug, install config, and state DB.
-2. Run `pre_up`.
-3. Apply symlinks/snapshots from the primary worktree.
-4. Generate `.pier/compose.override.yml`.
-5. Run `docker compose -f <file> -f .pier/compose.override.yml -p <project>-<slug> up -d --build`.
-6. Connect exposed containers to the traefik discovery network with
+1. Resolve worktree, static manifest bootstrap, slug, and install config.
+2. Run `resolve_values`, render `{value.*}` tokens, cache the JSON object,
+   then parse and validate the final manifest.
+3. Open the state DB and run `pre_up`.
+4. Apply symlinks/snapshots from the primary worktree.
+5. Generate `.pier/compose.override.yml`.
+6. Run `docker compose -f <file> -f .pier/compose.override.yml -p <project>-<slug> up -d --build`.
+7. Connect exposed containers to the traefik discovery network with
    worktree-scoped aliases.
-7. Persist the workload row in state.
-8. Run `post_up`.
-9. Print URLs.
+8. Persist the workload row in state.
+9. Run `post_up`.
+10. Print URLs.
 
 The generated override owns:
 

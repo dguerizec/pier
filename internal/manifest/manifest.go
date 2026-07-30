@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/dguerizec/pier/internal/runtimevalues"
 )
 
 const (
@@ -132,6 +134,12 @@ type Materialize struct {
 // [materialize].post_create / pre_remove — the same script can be reused
 // across the four phases.
 type Hooks struct {
+	// ResolveValues runs before the final manifest parse and returns a JSON
+	// object on stdout. Its scalar values replace {value.<name>} tokens in
+	// the raw manifest and are exported to Compose as PIER_VALUE_<NAME>.
+	// The command itself is part of the static bootstrap and cannot contain
+	// value tokens.
+	ResolveValues string `toml:"resolve_values,omitempty" json:"resolve_values,omitempty"`
 	// PreUp runs before materialize.Apply at `pier up`. A failure
 	// aborts before any container is touched.
 	PreUp []string `toml:"pre_up,omitempty"    json:"pre_up,omitempty"`
@@ -163,32 +171,182 @@ type Worktree struct {
 	BaseRef string `toml:"base_ref,omitempty" json:"base_ref,omitempty"` // e.g. "main"
 }
 
-// Load reads <root>/.pier.toml, then layers <root>/.pier.local.toml on top
-// if present, and validates the result.
+// Bootstrap is the static manifest subset required before resolve_values can
+// run. Value interpolation in these fields would create a resolution cycle.
+type Bootstrap struct {
+	Project  Project        `toml:"project"`
+	Hooks    BootstrapHooks `toml:"hooks,omitempty"`
+	Worktree Worktree       `toml:"worktree,omitempty"`
+}
+
+type BootstrapHooks struct {
+	ResolveValues string `toml:"resolve_values,omitempty"`
+}
+
+type source struct {
+	mainPath  string
+	main      []byte
+	localPath string
+	local     []byte
+}
+
+// Load reads <root>/.pier.toml, then layers <root>/.pier.local.toml on top.
+// When value tokens are present it returns a bootstrap-safe masked manifest;
+// workload commands use LoadResolved after running the resolver.
 func Load(root string) (*Manifest, error) {
+	src, err := readSource(root)
+	if err != nil {
+		return nil, err
+	}
+	mainBody, localBody := src.main, src.local
+	hasTokens := runtimevalues.HasTokens(mainBody) || runtimevalues.HasTokens(localBody)
+	if hasTokens {
+		mainBody = runtimevalues.Mask(mainBody)
+		localBody = runtimevalues.Mask(localBody)
+	}
+	m := &Manifest{}
+	if err := decodeSource(src, mainBody, localBody, m); err != nil {
+		return nil, err
+	}
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	if hasTokens && strings.TrimSpace(m.Hooks.ResolveValues) == "" {
+		return nil, errors.New("manifest: {value.*} tokens require hooks.resolve_values")
+	}
+	if hasTokens {
+		if values, loadErr := runtimevalues.Load(runtimevalues.Path(root)); loadErr == nil {
+			return LoadResolved(root, values)
+		}
+	}
+	return m, nil
+}
+
+// LoadBootstrap decodes only the static fields needed to execute
+// hooks.resolve_values. The rest of the manifest is masked and ignored.
+func LoadBootstrap(root string) (*Bootstrap, error) {
+	src, err := readSource(root)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateStaticTemplates(src.mainPath, src.main); err != nil {
+		return nil, err
+	}
+	if len(src.local) > 0 {
+		if err := validateStaticTemplates(src.localPath, src.local); err != nil {
+			return nil, err
+		}
+	}
+	b := &Bootstrap{}
+	if err := decodeSource(src, runtimevalues.Mask(src.main), runtimevalues.Mask(src.local), b); err != nil {
+		return nil, err
+	}
+	if b.Project.Name == "" {
+		return nil, errors.New("manifest: project.name is required")
+	}
+	if !dnsLabel.MatchString(b.Project.Name) {
+		return nil, fmt.Errorf("manifest: project.name %q is not a valid DNS label", b.Project.Name)
+	}
+	return b, nil
+}
+
+// LoadResolved renders both manifest layers with values, then performs the
+// normal typed decode and validation.
+func LoadResolved(root string, values runtimevalues.Values) (*Manifest, error) {
+	src, err := readSource(root)
+	if err != nil {
+		return nil, err
+	}
+	mainBody, err := runtimevalues.Render(src.main, values)
+	if err != nil {
+		return nil, fmt.Errorf("manifest: render %s: %w", src.mainPath, err)
+	}
+	var localBody []byte
+	if len(src.local) > 0 {
+		localBody, err = runtimevalues.Render(src.local, values)
+		if err != nil {
+			return nil, fmt.Errorf("manifest: render %s: %w", src.localPath, err)
+		}
+	}
+	m := &Manifest{}
+	if err := decodeSource(src, mainBody, localBody, m); err != nil {
+		return nil, err
+	}
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// HasValueTemplates reports whether either manifest layer contains a value
+// token. It is used by editing surfaces that cannot safely round-trip the raw
+// template through the typed Manifest representation.
+func HasValueTemplates(root string) (bool, error) {
+	src, err := readSource(root)
+	if err != nil {
+		return false, err
+	}
+	return runtimevalues.HasTokens(src.main) || runtimevalues.HasTokens(src.local), nil
+}
+
+func readSource(root string) (*source, error) {
 	mainPath := filepath.Join(root, FileName)
-	if _, err := os.Stat(mainPath); errors.Is(err, os.ErrNotExist) {
+	mainBody, err := os.ReadFile(mainPath)
+	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrNotFound
 	} else if err != nil {
 		return nil, err
 	}
 
-	m := &Manifest{}
-	if _, err := toml.DecodeFile(mainPath, m); err != nil {
-		return nil, fmt.Errorf("manifest: parse %s: %w", mainPath, err)
-	}
-
 	localPath := filepath.Join(root, LocalFileName)
-	if _, err := os.Stat(localPath); err == nil {
-		if _, err := toml.DecodeFile(localPath, m); err != nil {
-			return nil, fmt.Errorf("manifest: parse %s: %w", localPath, err)
-		}
-	}
-
-	if err := m.Validate(); err != nil {
+	localBody, err := os.ReadFile(localPath)
+	if errors.Is(err, os.ErrNotExist) {
+		localBody = nil
+	} else if err != nil {
 		return nil, err
 	}
-	return m, nil
+	return &source{
+		mainPath:  mainPath,
+		main:      mainBody,
+		localPath: localPath,
+		local:     localBody,
+	}, nil
+}
+
+func decodeSource(src *source, mainBody, localBody []byte, dst any) error {
+	if _, err := toml.Decode(string(mainBody), dst); err != nil {
+		return fmt.Errorf("manifest: parse %s: %w", src.mainPath, err)
+	}
+	if len(localBody) > 0 {
+		if _, err := toml.Decode(string(localBody), dst); err != nil {
+			return fmt.Errorf("manifest: parse %s: %w", src.localPath, err)
+		}
+	}
+	return nil
+}
+
+func validateStaticTemplates(path string, body []byte) error {
+	section := ""
+	for _, raw := range strings.Split(string(body), "\n") {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.Trim(line, "[] ")
+			continue
+		}
+		if !runtimevalues.HasTokens([]byte(line)) {
+			continue
+		}
+		switch section {
+		case "project", "worktree", "materialize":
+			return fmt.Errorf("manifest: %s cannot contain {value.*} tokens in %s", section, path)
+		case "hooks":
+			key, _, _ := strings.Cut(line, "=")
+			if strings.TrimSpace(key) == "resolve_values" {
+				return fmt.Errorf("manifest: hooks.resolve_values cannot contain {value.*} tokens in %s", path)
+			}
+		}
+	}
+	return nil
 }
 
 // Write serializes m as TOML to path. Overwrites any existing file.

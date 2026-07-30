@@ -23,7 +23,7 @@ func newUpCmd() *cobra.Command {
 		Use:   "up",
 		Short: "Materialize files and start the workload for the current worktree",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			d, err := resolveDaily(cmd, opts.slug)
+			d, err := resolveDailyFresh(cmd, opts.slug)
 			if err != nil {
 				return err
 			}
@@ -48,6 +48,8 @@ func runUp(d *daily, ignoreHookErrors bool, out, errOut io.Writer) error {
 	registerProjectForUp(d, errOut)
 
 	hc := buildHookContext(d.Worktree.PrimaryPath, d.Worktree.Toplevel, d.Worktree.Branch, d.Manifest, errOut)
+	hc.Slug = d.Slug
+	hc.RuntimeEnv = d.Ctx.ComposeEnv
 	if err := materialize.RunHooks("pre_up", d.Manifest.Hooks.PreUp, hc, out, errOut); err != nil {
 		if ignoreHookErrors {
 			fmt.Fprintf(errOut, "! pre_up failed (continuing because --ignore-hook-errors): %v\n", err)

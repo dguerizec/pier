@@ -133,6 +133,13 @@ func Derive(toplevel string, opts Opts) (*Plan, []Ambiguity, error) {
 	var existing *manifest.Manifest
 	var existingMeta toml.MetaData
 	if _, err := os.Stat(manifestPath); err == nil {
+		hasTemplates, err := manifest.HasValueTemplates(toplevel)
+		if err != nil {
+			return nil, nil, fmt.Errorf("re-init: inspect %s: %w", manifestPath, err)
+		}
+		if hasTemplates {
+			return nil, nil, errors.New("re-init: manifests using {value.*} templates must be edited manually because pier init cannot round-trip unresolved TOML")
+		}
 		existing = &manifest.Manifest{}
 		md, err := toml.DecodeFile(manifestPath, existing)
 		if err != nil {

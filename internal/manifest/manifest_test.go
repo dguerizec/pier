@@ -1,9 +1,11 @@
 package manifest
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -160,6 +162,104 @@ port    = 4000
 	}
 	if m.Expose[0].Port != 4000 {
 		t.Errorf("port = %d, want 4000 (override)", m.Expose[0].Port)
+	}
+}
+
+func TestLoadResolved_ValueTemplates(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, FileName), `
+[project]
+name = "pickatube"
+
+[stack]
+kind = "compose"
+file = "docker-compose.dev.yml"
+
+[[expose]]
+service = "backend"
+port = 8000
+preserve_ports = [{value.oauth_callback_port}]
+
+[env.backend]
+GOOGLE_OAUTH_REDIRECT_URI = "http://127.0.0.1:{value.oauth_callback_port}/oauth/google/callback"
+
+[hooks]
+resolve_values = "./scripts/resolve-pier-values"
+`)
+	bootstrap, err := LoadBootstrap(dir)
+	if err != nil {
+		t.Fatalf("LoadBootstrap: %v", err)
+	}
+	if bootstrap.Hooks.ResolveValues != "./scripts/resolve-pier-values" {
+		t.Errorf("resolve_values = %q", bootstrap.Hooks.ResolveValues)
+	}
+
+	masked, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load bootstrap-safe manifest: %v", err)
+	}
+	if got := masked.Expose[0].PreservePorts[0]; got != 1 {
+		t.Errorf("masked preserve port = %d, want 1", got)
+	}
+
+	resolved, err := LoadResolved(dir, map[string]any{
+		"oauth_callback_port": json.Number("49163"),
+	})
+	if err != nil {
+		t.Fatalf("LoadResolved: %v", err)
+	}
+	if got := resolved.Expose[0].PreservePorts[0]; got != 49163 {
+		t.Errorf("preserve port = %d, want 49163", got)
+	}
+	if got := resolved.Env["backend"]["GOOGLE_OAUTH_REDIRECT_URI"]; got != "http://127.0.0.1:49163/oauth/google/callback" {
+		t.Errorf("redirect URI = %q", got)
+	}
+}
+
+func TestLoad_ValueTemplateRequiresResolver(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, FileName), `
+[project]
+name = "demo"
+
+[stack]
+kind = "compose"
+file = "compose.yml"
+
+[[expose]]
+service = "app"
+port = 3000
+preserve_ports = [{value.port}]
+`)
+	_, err := Load(dir)
+	if err == nil || !strings.Contains(err.Error(), "hooks.resolve_values") {
+		t.Fatalf("err = %v, want resolver requirement", err)
+	}
+}
+
+func TestLoadBootstrap_RejectsStaticValueTemplate(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, FileName), `
+[project]
+name = "demo"
+
+[stack]
+kind = "compose"
+file = "compose.yml"
+
+[[expose]]
+service = "app"
+port = 3000
+
+[materialize]
+snapshots = ["data-{value.suffix}"]
+
+[hooks]
+resolve_values = "./scripts/resolve-values"
+`)
+	_, err := LoadBootstrap(dir)
+	if err == nil || !strings.Contains(err.Error(), "materialize cannot contain") {
+		t.Fatalf("err = %v, want static materialize diagnostic", err)
 	}
 }
 

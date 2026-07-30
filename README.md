@@ -167,6 +167,28 @@ Then set `SSH_HOST_PORT=2224` in that worktree's local `.env`. The manifest can
 stay shared as `preserve_ports = [2223]` because pier matches either side of the
 Compose binding and keeps the resolved `2224:2223` entry.
 
+For values that must be computed per worktree, `hooks.resolve_values` prints a
+JSON object before pier performs the final manifest parse:
+
+```toml
+[hooks]
+resolve_values = "./scripts/resolve-pier-values"
+
+[[expose]]
+service = "web"
+port = 3000
+preserve_ports = [{value.oauth_callback_port}]
+
+[env.web]
+OAUTH_CALLBACK_URL = "http://127.0.0.1:{value.oauth_callback_port}/callback"
+```
+
+Each returned scalar is also exported to Compose as
+`PIER_VALUE_<UPPERCASE_NAME>`, so the compose binding can use
+`"${PIER_VALUE_OAUTH_CALLBACK_PORT}:8765"`. Pier caches the resolved object in
+the worktree's `.pier/resolved-values.json`; the hook owns allocation policy
+and collision handling.
+
 ### Minimal compose for raw-process stacks
 
 Pier requires a `docker-compose.dev.yml` even when your project isn't otherwise containerized — same execution path on every host, no host port/PID/log juggling. For Python / Node / Rust projects the file is ~10 lines:

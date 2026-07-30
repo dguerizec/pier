@@ -13,6 +13,8 @@ import (
 	"github.com/dguerizec/pier/internal/adapter"
 	"github.com/dguerizec/pier/internal/infra"
 	"github.com/dguerizec/pier/internal/manifest"
+	"github.com/dguerizec/pier/internal/materialize"
+	"github.com/dguerizec/pier/internal/runtimevalues"
 	sluglib "github.com/dguerizec/pier/internal/slug"
 	"github.com/dguerizec/pier/internal/state"
 	"github.com/dguerizec/pier/internal/worktree"
@@ -116,17 +118,27 @@ func branchExists(toplevel, name string) bool {
 // When the secondary HAS its own `.pier.toml`, that one wins — which is
 // what you want if a branch deliberately overrides the manifest.
 func loadManifestForWorktree(info *worktree.Info) (*manifest.Manifest, error) {
-	m, err := manifest.Load(info.Toplevel)
-	if err == nil {
-		return m, nil
-	}
-	if !errors.Is(err, manifest.ErrNotFound) {
+	root, err := manifestRootForWorktree(info)
+	if err != nil {
 		return nil, err
 	}
-	if info.PrimaryPath == "" || info.PrimaryPath == info.Toplevel {
-		return nil, err
+	return manifest.Load(root)
+}
+
+func manifestRootForWorktree(info *worktree.Info) (string, error) {
+	if _, err := os.Stat(filepath.Join(info.Toplevel, manifest.FileName)); err == nil {
+		return info.Toplevel, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
 	}
-	return manifest.Load(info.PrimaryPath)
+	if info.PrimaryPath != "" && info.PrimaryPath != info.Toplevel {
+		if _, err := os.Stat(filepath.Join(info.PrimaryPath, manifest.FileName)); err == nil {
+			return info.PrimaryPath, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+	}
+	return info.Toplevel, manifest.ErrNotFound
 }
 
 // loadManifestForWorkloadPath is the lookup variant used when we only have
@@ -154,6 +166,14 @@ func loadManifestForWorkloadPath(worktreePath string) (*manifest.Manifest, error
 // and capture everything the worktree-scoped flow prints, including
 // subprocess output.
 func resolveDaily(cmd *cobra.Command, slugOverride string) (*daily, error) {
+	return resolveDailyMode(cmd, slugOverride, false)
+}
+
+func resolveDailyFresh(cmd *cobra.Command, slugOverride string) (*daily, error) {
+	return resolveDailyMode(cmd, slugOverride, true)
+}
+
+func resolveDailyMode(cmd *cobra.Command, slugOverride string, refreshValues bool) (*daily, error) {
 	current, err := worktree.Detect()
 	if err != nil {
 		return nil, err
@@ -167,13 +187,23 @@ func resolveDaily(cmd *cobra.Command, slugOverride string) (*daily, error) {
 	if err != nil {
 		return nil, err
 	}
-	return dailyForWorktree(info, slug, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	return dailyForWorktreeMode(info, slug, cmd.OutOrStdout(), cmd.ErrOrStderr(), refreshValues)
 }
 
 // dailyForWorktree builds a daily for a pre-resolved worktree info. Used
 // by resolveDaily (via cwd) and the REST API (via state-DB path lookup).
 // When slug is empty, derive it from the worktree's branch.
 func dailyForWorktree(info *worktree.Info, slug string, out, errW io.Writer) (*daily, error) {
+	return dailyForWorktreeMode(info, slug, out, errW, false)
+}
+
+// dailyForWorktreeFresh is the up-path variant: it always re-runs
+// hooks.resolve_values before parsing the final manifest.
+func dailyForWorktreeFresh(info *worktree.Info, slug string, out, errW io.Writer) (*daily, error) {
+	return dailyForWorktreeMode(info, slug, out, errW, true)
+}
+
+func dailyForWorktreeMode(info *worktree.Info, slug string, out, errW io.Writer, refreshValues bool) (*daily, error) {
 	if slug == "" {
 		derived, err := sluglib.FromBranch(info.Branch)
 		if err != nil {
@@ -182,7 +212,11 @@ func dailyForWorktree(info *worktree.Info, slug string, out, errW io.Writer) (*d
 		slug = derived
 	}
 
-	m, err := loadManifestForWorktree(info)
+	manifestRoot, err := manifestRootForWorktree(info)
+	if err != nil {
+		return nil, err
+	}
+	bootstrap, err := manifest.LoadBootstrap(manifestRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -198,6 +232,20 @@ func dailyForWorktree(info *worktree.Info, slug string, out, errW io.Writer) (*d
 		return nil, err
 	}
 	if err := paths.EnsureDirs(); err != nil {
+		return nil, err
+	}
+
+	m, composeEnv, err := loadDailyManifest(
+		manifestRoot,
+		info,
+		slug,
+		bootstrap,
+		cfg,
+		refreshValues,
+		out,
+		errW,
+	)
+	if err != nil {
 		return nil, err
 	}
 
@@ -244,9 +292,89 @@ func dailyForWorktree(info *worktree.Info, slug string, out, errW io.Writer) (*d
 			Service:        m.Service,
 			DefaultService: defaultService,
 			Env:            m.Env,
+			ComposeEnv:     composeEnv,
 			TraefikNetwork: cfg.EffectiveTraefikNetwork(),
 			Out:            out,
 			Err:            errW,
 		},
 	}, nil
+}
+
+func loadDailyManifest(
+	manifestRoot string,
+	info *worktree.Info,
+	slug string,
+	bootstrap *manifest.Bootstrap,
+	cfg *infra.Config,
+	refresh bool,
+	out, errW io.Writer,
+) (*manifest.Manifest, map[string]string, error) {
+	command := bootstrap.Hooks.ResolveValues
+	if command == "" {
+		m, err := manifest.Load(manifestRoot)
+		return m, nil, err
+	}
+
+	valuesPath := runtimevalues.Path(info.Toplevel)
+	values, err := runtimevalues.Load(valuesPath)
+	runResolver := refresh || errors.Is(err, os.ErrNotExist)
+	if err != nil && !errors.Is(err, os.ErrNotExist) && !refresh {
+		return nil, nil, err
+	}
+	if err != nil {
+		values = nil
+	}
+
+	if runResolver {
+		baseDomain, err := resolvedBaseDomain(bootstrap.Project, cfg.TLD)
+		if err != nil {
+			return nil, nil, err
+		}
+		hc := materialize.HookContext{
+			WorktreePath: info.Toplevel,
+			PrimaryPath:  info.PrimaryPath,
+			Slug:         slug,
+			Branch:       info.Branch,
+			BaseDomain:   baseDomain,
+			ProjectName:  bootstrap.Project.Name,
+			ValuesFile:   valuesPath,
+		}
+		env := hc.Env()
+		if previousEnv, envErr := runtimevalues.Environment(values); envErr == nil {
+			env = runtimevalues.MergeEnv(env, previousEnv)
+		}
+		if out != nil {
+			fmt.Fprintf(out, "▸ resolve_values: %s\n", command)
+		}
+		values, err = runtimevalues.Resolve(command, info.Toplevel, env, errW)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	m, err := manifest.LoadResolved(manifestRoot, values)
+	if err != nil {
+		return nil, nil, err
+	}
+	composeEnv, err := runtimevalues.Environment(values)
+	if err != nil {
+		return nil, nil, err
+	}
+	if runResolver {
+		if err := runtimevalues.Save(valuesPath, values); err != nil {
+			return nil, nil, err
+		}
+	}
+	return m, composeEnv, nil
+}
+
+func resolvedBaseDomain(project manifest.Project, tld string) (string, error) {
+	if project.BaseDomain == "" {
+		return project.Name + "." + tld, nil
+	}
+	expanded, err := adapter.ExpandPierTokens(project.BaseDomain, tld)
+	if err != nil {
+		return "", fmt.Errorf("project.base_domain: %w", err)
+	}
+	return expanded, nil
 }

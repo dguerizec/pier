@@ -15,6 +15,7 @@ import (
 	"github.com/dguerizec/pier/internal/infra"
 	"github.com/dguerizec/pier/internal/manifest"
 	"github.com/dguerizec/pier/internal/materialize"
+	"github.com/dguerizec/pier/internal/runtimevalues"
 	"github.com/dguerizec/pier/internal/share"
 	sluglib "github.com/dguerizec/pier/internal/slug"
 	"github.com/dguerizec/pier/internal/worktree"
@@ -193,6 +194,7 @@ func buildHookContext(primary, current, branch string, m *manifest.Manifest, err
 		PrimaryPath:  primary,
 		Branch:       branch,
 		ProjectName:  m.Project.Name,
+		ValuesFile:   runtimevalues.Path(current),
 	}
 	if s, err := sluglib.FromBranch(branch); err == nil {
 		hc.Slug = s

@@ -184,6 +184,14 @@ API_URL = "{url.api}"                # → http://api.<slug>.<base> at runtime
 `{host.default}`, `{url.default}`. Full reference + examples in
 [reference/manifest.md](reference/manifest.md).
 
+**`[hooks].resolve_values`** runs a project command before the final
+manifest parse. Its stdout is a scalar JSON object; `{value.<name>}`
+tokens can appear in typed fields such as
+`preserve_ports = [{value.oauth_callback_port}]`, and every scalar is
+also exported to Compose as `PIER_VALUE_<UPPERCASE_NAME>`. Pier caches
+the result per worktree; the hook owns allocation and collision policy.
+See [reference/manifest.md](reference/manifest.md).
+
 **`[materialize]` and `[hooks]`** govern how secondary worktrees inherit
 state from the primary (symlinks vs snapshots) and run shell hooks
 across the worktree lifecycle (`post_create`, `pre_remove`) and the

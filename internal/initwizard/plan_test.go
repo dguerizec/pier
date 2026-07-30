@@ -3,6 +3,7 @@ package initwizard
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -354,6 +355,7 @@ symlinks = [".env"]
 snapshots = ["data/"]
 
 [hooks]
+resolve_values = "./scripts/resolve-values"
 pre_up = ["echo hi"]
 
 [env.api]
@@ -386,6 +388,9 @@ SECRET = "shh"
 	if len(roundtrip.Hooks.PreUp) != 1 || roundtrip.Hooks.PreUp[0] != "echo hi" {
 		t.Errorf("hooks lost: %+v", roundtrip.Hooks)
 	}
+	if roundtrip.Hooks.ResolveValues != "./scripts/resolve-values" {
+		t.Errorf("resolve_values lost: %+v", roundtrip.Hooks)
+	}
 	if roundtrip.Env["api"]["SECRET"] != "shh" {
 		t.Errorf("env.api lost: %+v", roundtrip.Env)
 	}
@@ -399,6 +404,37 @@ func TestDerive_NoPublishedPorts(t *testing.T) {
 `)
 	if _, _, err := Derive(dir, Opts{}); err == nil {
 		t.Error("expected error when no service has published ports")
+	}
+}
+
+func TestDerive_RefusesTemplatedManifestReinit(t *testing.T) {
+	dir := t.TempDir()
+	writeCompose(t, dir, `services:
+  app:
+    image: x
+    ports: ["3000:3000"]
+`)
+	body := `[project]
+name = "demo"
+
+[stack]
+kind = "compose"
+file = "docker-compose.dev.yml"
+
+[[expose]]
+service = "app"
+port = 3000
+preserve_ports = [{value.callback_port}]
+
+[hooks]
+resolve_values = "./scripts/resolve-values"
+`
+	if err := os.WriteFile(filepath.Join(dir, ".pier.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := Derive(dir, Opts{})
+	if err == nil || !strings.Contains(err.Error(), "cannot round-trip") {
+		t.Fatalf("err = %v, want templated re-init refusal", err)
 	}
 }
 

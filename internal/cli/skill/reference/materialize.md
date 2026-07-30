@@ -88,6 +88,7 @@ pre_remove  = ["./scripts/backup-db.sh"]    # run BEFORE pier down (workload sti
 | `PIER_BRANCH` | raw branch name |
 | `PIER_BASE_DOMAIN` | post-template base domain (e.g. `myapp.test`); empty if pier infra not loadable |
 | `PIER_PROJECT_NAME` | `[project].name` |
+| `PIER_VALUES_FILE` | per-worktree `.pier/resolved-values.json` path |
 
 **Failure behaviour:**
 - `post_create` fails → pier force-removes the worktree and (only if it
@@ -133,15 +134,23 @@ vars are identical to `[materialize].post_create` / `pre_remove`.
 
 ```toml
 [hooks]
+resolve_values = "./scripts/resolve-values" # JSON values before final manifest parse
 pre_up    = ["cargo build --release"]   # before materialize.Apply / adapter.Up
 post_up   = ["./scripts/smoke.sh"]      # after URLs are printed, workload running
 pre_down  = ["./scripts/dump.sh"]       # before adapter.Down (workload still up)
 post_down = ["./scripts/notify.sh"]     # after stop + state cleanup
 ```
 
-**Execution model and env vars are identical to `[materialize]`** — same
+`resolve_values` is a special data-producing hook: stdout is captured as
+a scalar JSON object instead of streamed, stderr remains visible, and
+the result is rendered into `{value.<name>}` manifest tokens before
+`pre_up`. See [manifest.md](manifest.md) "Values resolved by a hook".
+
+**Execution model and env vars for the four lifecycle hooks are identical
+to `[materialize]`** — same
 `sh -c`, same `PIER_*` env (`PIER_WORKTREE_PATH`, `PIER_PRIMARY_PATH`,
-`PIER_SLUG`, `PIER_BRANCH`, `PIER_BASE_DOMAIN`, `PIER_PROJECT_NAME`),
+`PIER_SLUG`, `PIER_BRANCH`, `PIER_BASE_DOMAIN`, `PIER_PROJECT_NAME`,
+`PIER_VALUES_FILE`),
 same first-non-zero-aborts sequencing, cwd = current worktree. A single
 script can be reused as `post_create` and `post_up` if both phases
 expect the same env.

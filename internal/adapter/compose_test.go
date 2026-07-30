@@ -333,6 +333,85 @@ func TestRenderOverride_PreserveSelectedHostBindings(t *testing.T) {
 	}
 }
 
+func TestRenderOverride_PreserveResolvedValueHostBinding(t *testing.T) {
+	dir := t.TempDir()
+	stack := filepath.Join(dir, "docker-compose.yml")
+	if err := os.WriteFile(stack, []byte(`services:
+  backend:
+    image: python:3.13-slim
+    ports:
+      - "127.0.0.1:${PIER_VALUE_OAUTH_CALLBACK_PORT}:8765"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := Ctx{
+		Project:        "pickatube",
+		Slug:           "oauth",
+		BaseDomain:     "pickatube.test",
+		TraefikNetwork: "pier",
+		WorktreePath:   dir,
+		Stack: manifest.Stack{
+			Kind: manifest.KindCompose,
+			File: "docker-compose.yml",
+		},
+		Expose: []manifest.ExposeRule{
+			{Service: "backend", Port: 8000, PreservePorts: []int{49163}},
+		},
+		ComposeEnv: map[string]string{
+			"PIER_VALUE_OAUTH_CALLBACK_PORT": "49163",
+		},
+	}
+	got, err := renderOverride(c)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	backend := sectionForService(string(got), "backend")
+	if !strings.Contains(backend, `"127.0.0.1:49163:8765"`) {
+		t.Errorf("resolved host binding missing:\n%s", backend)
+	}
+	if strings.Contains(backend, "PIER_VALUE_OAUTH_CALLBACK_PORT") {
+		t.Errorf("unresolved value reference remains:\n%s", backend)
+	}
+}
+
+func TestComposeRun_PropagatesResolvedValueEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	stubDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(stubDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	capture := filepath.Join(dir, "captured")
+	script := "#!/bin/sh\nprintf '%s' \"$PIER_VALUE_OAUTH_CALLBACK_PORT\" > \"$CAPTURE_FILE\"\n"
+	if err := os.WriteFile(filepath.Join(stubDir, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CAPTURE_FILE", capture)
+
+	c := Ctx{
+		Project:      "pickatube",
+		Slug:         "oauth",
+		WorktreePath: dir,
+		Stack: manifest.Stack{
+			File: "docker-compose.yml",
+		},
+		ComposeEnv: map[string]string{
+			"PIER_VALUE_OAUTH_CALLBACK_PORT": "49163",
+		},
+	}
+	if _, err := composeRun(c, []string{"config"}, filepath.Join(dir, "override.yml"), true); err != nil {
+		t.Fatalf("composeRun: %v", err)
+	}
+	body, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(body); got != "49163" {
+		t.Errorf("captured value = %q, want 49163", got)
+	}
+}
+
 func TestRenderOverride_PreserveHostBindingMissingPort(t *testing.T) {
 	dir := t.TempDir()
 	stack := filepath.Join(dir, "docker-compose.yml")

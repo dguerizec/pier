@@ -43,6 +43,8 @@ func newDownCmd() *cobra.Command {
 // materialized snapshots. Shared with the REST POST /down handler.
 func runDown(d *daily, purge, ignoreHookErrors bool, out, errOut io.Writer) error {
 	hc := buildHookContext(d.Worktree.PrimaryPath, d.Worktree.Toplevel, d.Worktree.Branch, d.Manifest, errOut)
+	hc.Slug = d.Slug
+	hc.RuntimeEnv = d.Ctx.ComposeEnv
 	if err := materialize.RunHooks("pre_down", d.Manifest.Hooks.PreDown, hc, out, errOut); err != nil {
 		if ignoreHookErrors {
 			fmt.Fprintf(errOut, "! pre_down failed (continuing because --ignore-hook-errors): %v\n", err)

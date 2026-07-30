@@ -92,6 +92,104 @@ port = 3000
 	}
 }
 
+func TestDailyForWorktree_ResolveValuesRefreshAndCache(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg"))
+
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &infra.Config{
+		Mode:           infra.ModeLocal,
+		TLD:            "test",
+		BindIP:         "127.0.0.1",
+		AnswerIP:       "127.0.0.1",
+		TraefikNetwork: "pier",
+	}
+	if err := cfg.Save(paths); err != nil {
+		t.Fatal(err)
+	}
+
+	wt := filepath.Join(root, "wt")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifestBody := `[project]
+name = "pickatube"
+
+[stack]
+kind = "compose"
+file = "docker-compose.dev.yml"
+
+[[expose]]
+service = "backend"
+port = 8000
+preserve_ports = [{value.oauth_callback_port}]
+
+[env.backend]
+GOOGLE_OAUTH_REDIRECT_URI = "http://127.0.0.1:{value.oauth_callback_port}/callback"
+
+[hooks]
+resolve_values = "./resolve-values.sh"
+`
+	if err := os.WriteFile(filepath.Join(wt, ".pier.toml"), []byte(manifestBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeResolver := func(port int) {
+		t.Helper()
+		body := fmt.Sprintf("#!/bin/sh\nprintf '{\"oauth_callback_port\":%d}\\n'\n", port)
+		if err := os.WriteFile(filepath.Join(wt, "resolve-values.sh"), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeResolver(49163)
+
+	info := &worktree.Info{
+		Toplevel:    wt,
+		Branch:      "feat/oauth",
+		PrimaryPath: wt,
+		IsPrimary:   true,
+	}
+	var out, errOut bytes.Buffer
+	fresh, err := dailyForWorktreeFresh(info, "oauth", &out, &errOut)
+	if err != nil {
+		t.Fatalf("fresh daily: %v\nstderr: %s", err, errOut.String())
+	}
+	if got := fresh.Manifest.Expose[0].PreservePorts[0]; got != 49163 {
+		t.Errorf("fresh preserve port = %d, want 49163", got)
+	}
+	if got := fresh.Ctx.ComposeEnv["PIER_VALUE_OAUTH_CALLBACK_PORT"]; got != "49163" {
+		t.Errorf("fresh compose env = %q", got)
+	}
+	fresh.State.Close()
+
+	writeResolver(49164)
+	cached, err := dailyForWorktree(info, "oauth", &out, &errOut)
+	if err != nil {
+		t.Fatalf("cached daily: %v", err)
+	}
+	if got := cached.Manifest.Expose[0].PreservePorts[0]; got != 49163 {
+		t.Errorf("cached preserve port = %d, want 49163", got)
+	}
+	cached.State.Close()
+
+	refreshed, err := dailyForWorktreeFresh(info, "oauth", &out, &errOut)
+	if err != nil {
+		t.Fatalf("refreshed daily: %v", err)
+	}
+	defer refreshed.State.Close()
+	if got := refreshed.Manifest.Expose[0].PreservePorts[0]; got != 49164 {
+		t.Errorf("refreshed preserve port = %d, want 49164", got)
+	}
+	if got := refreshed.Manifest.Env["backend"]["GOOGLE_OAUTH_REDIRECT_URI"]; got != "http://127.0.0.1:49164/callback" {
+		t.Errorf("refreshed redirect URI = %q", got)
+	}
+}
+
 // TestResolveDaily_ForwardsCobraWriters is the end-to-end version of
 // the contract above: it actually drives resolveDaily(cmd, slug) from
 // inside a real git worktree and asserts the cobra-bound writers

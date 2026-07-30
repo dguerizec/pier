@@ -504,6 +504,7 @@
       "ManifestHooks": {
         "type": "object",
         "properties": {
+          "resolve_values": { "type": "string", "description": "sh -c command returning scalar JSON values used to render {value.*} manifest tokens" },
           "pre_up":    { "type": "array", "items": { "type": "string" } },
           "post_up":   { "type": "array", "items": { "type": "string" } },
           "pre_down":  { "type": "array", "items": { "type": "string" } },

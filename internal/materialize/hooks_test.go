@@ -24,10 +24,15 @@ func TestRunHooks_EnvAndCwd(t *testing.T) {
 		Branch:       "feat/x",
 		BaseDomain:   "myapp.test",
 		ProjectName:  "myapp",
+		ValuesFile:   filepath.Join(dir, ".pier", "resolved-values.json"),
+		RuntimeEnv: map[string]string{
+			"PIER_VALUE_OAUTH_CALLBACK_PORT": "49163",
+		},
 	}
-	cmd := `printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+	cmd := `printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
 		"$PIER_WORKTREE_PATH" "$PIER_PRIMARY_PATH" "$PIER_SLUG" \
-		"$PIER_BRANCH" "$PIER_BASE_DOMAIN" "$PIER_PROJECT_NAME" "$(pwd)" > ` + out
+		"$PIER_BRANCH" "$PIER_BASE_DOMAIN" "$PIER_PROJECT_NAME" \
+		"$PIER_VALUES_FILE" "$PIER_VALUE_OAUTH_CALLBACK_PORT" "$(pwd)" > ` + out
 
 	var stdout, stderr bytes.Buffer
 	if err := RunHooks("post_create", []string{cmd}, hc, &stdout, &stderr); err != nil {
@@ -39,7 +44,17 @@ func TestRunHooks_EnvAndCwd(t *testing.T) {
 	}
 	got := strings.Split(strings.TrimRight(string(body), "\n"), "\n")
 	resolvedDir, _ := filepath.EvalSymlinks(dir)
-	want := []string{dir, "/tmp/primary", "feat-x", "feat/x", "myapp.test", "myapp", resolvedDir}
+	want := []string{
+		dir,
+		"/tmp/primary",
+		"feat-x",
+		"feat/x",
+		"myapp.test",
+		"myapp",
+		filepath.Join(dir, ".pier", "resolved-values.json"),
+		"49163",
+		resolvedDir,
+	}
 	if len(got) != len(want) {
 		t.Fatalf("output lines = %v, want %v", got, want)
 	}

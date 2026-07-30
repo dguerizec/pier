@@ -171,8 +171,8 @@ For values that must be computed per worktree, `hooks.resolve_values` prints a
 JSON object before pier performs the final manifest parse:
 
 ```toml
-[hooks]
-resolve_values = "./scripts/resolve-pier-values"
+[stack.env]
+PICKATUBE_OAUTH_RELAY_PORT = "{value.oauth_callback_port}"
 
 [[expose]]
 service = "web"
@@ -181,13 +181,28 @@ preserve_ports = [{value.oauth_callback_port}]
 
 [env.web]
 OAUTH_CALLBACK_URL = "http://127.0.0.1:{value.oauth_callback_port}/callback"
+
+[hooks]
+resolve_values = "./scripts/resolve-pier-values"
 ```
 
-Each returned scalar is also exported to Compose as
-`PIER_VALUE_<UPPERCASE_NAME>`, so the compose binding can use
-`"${PIER_VALUE_OAUTH_CALLBACK_PORT}:8765"`. Pier caches the resolved object in
-the worktree's `.pier/resolved-values.json`; the hook owns allocation policy
-and collision handling.
+`[stack.env]` maps the resolved value to a project-owned variable passed to
+Docker Compose. The source Compose file can remain Pier-agnostic and retain its
+vanilla default:
+
+```yaml
+services:
+  web:
+    ports:
+      - "${PICKATUBE_OAUTH_RELAY_PORT:-8765}:8765"
+```
+
+This mechanism is not port-specific: `[stack.env]` participates in normal
+Compose interpolation anywhere in the source model, while `[env.<service>]`
+injects variables into a container. Each returned scalar is still exported as
+`PIER_VALUE_<UPPERCASE_NAME>` for hooks and direct Compose use. Pier caches the
+resolved object in the worktree's `.pier/resolved-values.json`; the hook owns
+allocation policy and collision handling.
 
 ### Minimal compose for raw-process stacks
 

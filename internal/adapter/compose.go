@@ -691,7 +691,7 @@ func scanComposeServices(c Ctx) map[string]composeServiceInfo {
 	out := make(map[string]composeServiceInfo, len(doc.Services))
 	for name, svc := range doc.Services {
 		for i := range svc.Ports {
-			expandResolvedValueRefs(&svc.Ports[i], c.ComposeEnv)
+			expandComposeEnvRefs(&svc.Ports[i], c.ComposeEnv)
 		}
 		out[name] = composeServiceInfo{
 			hasPorts:         len(svc.Ports) > 0,
@@ -702,16 +702,161 @@ func scanComposeServices(c Ctx) map[string]composeServiceInfo {
 	return out
 }
 
-func expandResolvedValueRefs(node *yaml.Node, values map[string]string) {
-	if node == nil || len(values) == 0 {
+func expandComposeEnvRefs(node *yaml.Node, env map[string]string) {
+	if node == nil || len(env) == 0 {
 		return
 	}
 	if node.Kind == yaml.ScalarNode {
-		for name, value := range values {
-			node.Value = strings.ReplaceAll(node.Value, "${"+name+"}", value)
-		}
+		node.Value = expandComposeEnv(node.Value, env)
 	}
 	for _, child := range node.Content {
-		expandResolvedValueRefs(child, values)
+		expandComposeEnvRefs(child, env)
 	}
+}
+
+// expandComposeEnv resolves variables Pier explicitly supplies to Compose so
+// port selection and the actual compose invocation see the same binding.
+// Unknown variables remain untouched because they may come from the caller's
+// shell or Compose's .env file.
+func expandComposeEnv(value string, env map[string]string) string {
+	var out strings.Builder
+	for i := 0; i < len(value); {
+		if value[i] != '$' || i+1 >= len(value) {
+			out.WriteByte(value[i])
+			i++
+			continue
+		}
+		if value[i+1] == '$' {
+			out.WriteString("$$")
+			i += 2
+			continue
+		}
+		if value[i+1] == '{' {
+			end := composeExpressionEnd(value, i+2)
+			if end < 0 {
+				out.WriteString(value[i:])
+				break
+			}
+			expression := value[i+2 : end]
+			if expanded, ok := expandComposeExpression(expression, env); ok {
+				out.WriteString(expanded)
+			} else {
+				out.WriteString(value[i : end+1])
+			}
+			i = end + 1
+			continue
+		}
+
+		end := i + 1
+		for end < len(value) && isComposeEnvNameByte(value[end], end == i+1) {
+			end++
+		}
+		if end == i+1 {
+			out.WriteByte(value[i])
+			i++
+			continue
+		}
+		name := value[i+1 : end]
+		if expanded, ok := env[name]; ok {
+			out.WriteString(expanded)
+		} else {
+			out.WriteString(value[i:end])
+		}
+		i = end
+	}
+	return out.String()
+}
+
+func composeExpressionEnd(value string, start int) int {
+	depth := 1
+	for i := start; i < len(value); i++ {
+		if value[i] == '$' && i+1 < len(value) && value[i+1] == '{' {
+			depth++
+			i++
+			continue
+		}
+		if value[i] == '}' {
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func expandComposeExpression(expression string, env map[string]string) (string, bool) {
+	end := 0
+	for end < len(expression) && isComposeEnvNameByte(expression[end], end == 0) {
+		end++
+	}
+	if end == 0 {
+		return "", false
+	}
+	name := expression[:end]
+	value, set := env[name]
+	if end == len(expression) {
+		return value, set
+	}
+
+	rest := expression[end:]
+	var operator, word string
+	for _, candidate := range []string{":-", ":?", ":+", "-", "?", "+"} {
+		if strings.HasPrefix(rest, candidate) {
+			operator = candidate
+			word = rest[len(candidate):]
+			break
+		}
+	}
+	if operator == "" {
+		return "", false
+	}
+
+	switch operator {
+	case ":-":
+		if !set {
+			return "", false
+		}
+		if value == "" {
+			return expandComposeEnv(word, env), true
+		}
+		return value, true
+	case "-":
+		if !set {
+			return "", false
+		}
+		return value, true
+	case ":?":
+		if !set || value == "" {
+			return "", false
+		}
+		return value, true
+	case "?":
+		if !set {
+			return "", false
+		}
+		return value, true
+	case ":+":
+		if !set {
+			return "", false
+		}
+		if value == "" {
+			return "", true
+		}
+		return expandComposeEnv(word, env), true
+	case "+":
+		if !set {
+			return "", false
+		}
+		return expandComposeEnv(word, env), true
+	default:
+		return "", false
+	}
+}
+
+func isComposeEnvNameByte(b byte, first bool) bool {
+	if b == '_' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' {
+		return true
+	}
+	return !first && b >= '0' && b <= '9'
 }

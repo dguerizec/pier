@@ -60,8 +60,8 @@ type Plan struct {
 
 	// Existing is the previous manifest when re-running pier init on a
 	// project that already has a .pier.toml. Apply uses it as the base for
-	// the rewrite so user-curated sections (env, materialize, hooks, watch,
-	// stack.match_host_uid) survive untouched. Nil on first init.
+	// the rewrite so user-curated sections (stack.env, env, materialize,
+	// hooks, watch) survive untouched. Nil on first init.
 	Existing *manifest.Manifest
 
 	// WorktreeDirExplicit is true when the user passed --worktree-dir on

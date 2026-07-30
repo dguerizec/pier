@@ -125,6 +125,10 @@ name = "pickatube"
 kind = "compose"
 file = "docker-compose.dev.yml"
 
+[stack.env]
+PICKATUBE_OAUTH_RELAY_PORT = "{value.oauth_callback_port}"
+PICKATUBE_WORKTREE_HOST = "{slug}.{base_domain}"
+
 [[expose]]
 service = "backend"
 port = 8000
@@ -165,6 +169,12 @@ resolve_values = "./resolve-values.sh"
 	if got := fresh.Ctx.ComposeEnv["PIER_VALUE_OAUTH_CALLBACK_PORT"]; got != "49163" {
 		t.Errorf("fresh compose env = %q", got)
 	}
+	if got := fresh.Ctx.ComposeEnv["PICKATUBE_OAUTH_RELAY_PORT"]; got != "49163" {
+		t.Errorf("fresh mapped compose env = %q", got)
+	}
+	if got := fresh.Ctx.ComposeEnv["PICKATUBE_WORKTREE_HOST"]; got != "oauth.pickatube.test" {
+		t.Errorf("fresh templated compose env = %q", got)
+	}
 	fresh.State.Close()
 
 	writeResolver(49164)
@@ -174,6 +184,9 @@ resolve_values = "./resolve-values.sh"
 	}
 	if got := cached.Manifest.Expose[0].PreservePorts[0]; got != 49163 {
 		t.Errorf("cached preserve port = %d, want 49163", got)
+	}
+	if got := cached.Ctx.ComposeEnv["PICKATUBE_OAUTH_RELAY_PORT"]; got != "49163" {
+		t.Errorf("cached mapped compose env = %q", got)
 	}
 	cached.State.Close()
 
@@ -187,6 +200,9 @@ resolve_values = "./resolve-values.sh"
 	}
 	if got := refreshed.Manifest.Env["backend"]["GOOGLE_OAUTH_REDIRECT_URI"]; got != "http://127.0.0.1:49164/callback" {
 		t.Errorf("refreshed redirect URI = %q", got)
+	}
+	if got := refreshed.Ctx.ComposeEnv["PICKATUBE_OAUTH_RELAY_PORT"]; got != "49164" {
+		t.Errorf("refreshed mapped compose env = %q", got)
 	}
 }
 

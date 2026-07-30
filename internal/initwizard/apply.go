@@ -75,11 +75,11 @@ func ProposeManifest(p *Plan) (*manifest.Manifest, error) {
 // Apply validates the Plan and writes .pier.toml + .gitignore entries.
 //
 // On re-init (Plan.Existing != nil) the existing manifest is used as the
-// base so user-curated sections — env, materialize, hooks, watch — pass
-// through untouched. Apply rewrites the sections the wizard owns:
-// project, expose, worktree, and the full stack block (kind, file,
-// service, match_host_uid — the last one inherited from Existing in
-// Derive when no explicit flag was passed).
+// base so user-curated sections — stack.env, env, materialize, hooks,
+// watch — pass through untouched. Apply rewrites the sections the wizard
+// owns: project, expose, worktree, and stack.kind/file/service/match_host_uid
+// (the last one inherited from Existing in Derive when no explicit flag
+// was passed).
 //
 // Status messages are printed to stdout so the CLI doesn't have to know
 // about the file layout.

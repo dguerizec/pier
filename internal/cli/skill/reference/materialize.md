@@ -144,7 +144,10 @@ post_down = ["./scripts/notify.sh"]     # after stop + state cleanup
 `resolve_values` is a special data-producing hook: stdout is captured as
 a scalar JSON object instead of streamed, stderr remains visible, and
 the result is rendered into `{value.<name>}` manifest tokens before
-`pre_up`. See [manifest.md](manifest.md) "Values resolved by a hook".
+`pre_up`. Map a resolved value into a project-owned Compose interpolation
+variable with `[stack.env]`; the source Compose file does not need to
+reference `PIER_VALUE_*`. See [manifest.md](manifest.md) "Values resolved
+by a hook".
 
 **Execution model and env vars for the four lifecycle hooks are identical
 to `[materialize]`** — same

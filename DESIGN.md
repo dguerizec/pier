@@ -118,7 +118,8 @@ Default manifest behavior:
   intended branch.
 
 Re-running `pier init` is expected. Wizard-owned fields are refreshed while
-user-curated sections (`env`, `materialize`, `hooks`, `watch`) are preserved.
+user-curated sections (`stack.env`, `env`, `materialize`, `hooks`, `watch`)
+are preserved.
 
 ### Daily Worktree And Workload Commands
 
@@ -281,6 +282,9 @@ Important fields:
 - `[stack].match_host_uid` injects `user: "<uid>:<gid>"` into exposed services.
 - `[service.<name>].match_host_uid` applies the same override to any compose
   service, exposed or not.
+- `[stack.env]` passes project-named variables to the adapter process. For
+  Compose, they interpolate the source model without being injected into
+  containers; values may contain workload tokens and `{value.*}` tokens.
 - `[env.<service>]` values support Pier tokens such as `{slug}`,
   `{pier.tld}`, `{base_domain}`, `{host.<service>}`, and `{url.<service>}`.
 - `[hooks].resolve_values` computes per-worktree scalar values before the
@@ -299,15 +303,16 @@ At `pier up`:
 1. Resolve worktree, static manifest bootstrap, slug, and install config.
 2. Run `resolve_values`, render `{value.*}` tokens, cache the JSON object,
    then parse and validate the final manifest.
-3. Open the state DB and run `pre_up`.
-4. Apply symlinks/snapshots from the primary worktree.
-5. Generate `.pier/compose.override.yml`.
-6. Run `docker compose -f <file> -f .pier/compose.override.yml -p <project>-<slug> up -d --build`.
-7. Connect exposed containers to the traefik discovery network with
+3. Expand `[stack.env]` and add it to the Compose process environment.
+4. Open the state DB and run `pre_up`.
+5. Apply symlinks/snapshots from the primary worktree.
+6. Generate `.pier/compose.override.yml`.
+7. Run `docker compose -f <file> -f .pier/compose.override.yml -p <project>-<slug> up -d --build`.
+8. Connect exposed containers to the traefik discovery network with
    worktree-scoped aliases.
-8. Persist the workload row in state.
-9. Run `post_up`.
-10. Print URLs.
+9. Persist the workload row in state.
+10. Run `post_up`.
+11. Print URLs.
 
 The generated override owns:
 

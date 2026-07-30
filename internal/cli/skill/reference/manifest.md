@@ -2,9 +2,10 @@
 
 `pier init` generates the project / stack / expose blocks and
 `[worktree].base_ref` from the compose file, but it does **not**
-generate `[env.<service>]` or `[worktree].dir` — those entries are the
-main things you'll add by hand (and `[worktree].dir` only on explicit
-user request; see [worktree-dir.md](worktree-dir.md)).
+generate `[stack.env]`, `[env.<service>]`, or `[worktree].dir` — those
+entries are the main things you'll add by hand (and `[worktree].dir`
+only on explicit user request; see
+[worktree-dir.md](worktree-dir.md)).
 
 ## Full annotated example
 
@@ -23,6 +24,13 @@ match_host_uid = true                # injects user: "<uid>:<gid>" into every ex
                                      # default UID differs (distroless/nonroot). `pier init`
                                      # prompts and writes an explicit value. See
                                      # "match_host_uid — when to set true vs false" below.
+
+# [stack.env] values are passed to the Docker Compose process and
+# participate in interpolation of the source Compose model. They are
+# not injected into containers. Use project-owned variable names so
+# the Compose file remains usable without Pier.
+[stack.env]
+APP_SSH_HOST_PORT = "{value.ssh_host_port}"
 
 # Each [[expose]] entry tells pier to publish one compose service behind
 # traefik. The container-side port is what traefik forwards to over the
@@ -60,6 +68,9 @@ snapshots   = ["data-dev/"]          # copied per worktree (mutable, isolated)
 post_create = ["./scripts/seed.sh"]  # shell cmds run after `pier worktree add` materializes
 pre_remove  = ["./scripts/dump.sh"]  # shell cmds run before `pier worktree rm` tears down
 
+[hooks]
+resolve_values = "./scripts/resolve-pier-values"
+
 [worktree]
 # dir    = "./worktrees"             # OPTIONAL — only add on explicit user request.
                                      # Per-user default lives in ~/.config/pier/prefs.toml;
@@ -70,9 +81,10 @@ base_ref = "main"                    # new branches fork from this ref
 
 ## Templating tokens
 
-`pier init` does not write any `[env.<service>]` — you add them when an
-app needs to know the URL of a sibling service for the current
-worktree. Use these tokens in `[env.<service>]` values:
+`pier init` does not write `[stack.env]` or `[env.<service>]`. Add
+`[stack.env]` when the source Compose model needs a per-worktree value;
+add `[env.<service>]` when a container needs one. Both accept these
+workload tokens:
 
 | Token | Expands to | Notes |
 |---|---|---|
@@ -100,6 +112,9 @@ Pier runs it from the target worktree before the final manifest parse:
 [hooks]
 resolve_values = "./scripts/resolve-pier-values"
 
+[stack.env]
+PICKATUBE_OAUTH_RELAY_PORT = "{value.oauth_callback_port}"
+
 [[expose]]
 service = "api"
 port = 8000
@@ -114,13 +129,24 @@ If the hook prints `{"oauth_callback_port":49163}`, the final TOML has
 Tokens outside TOML strings become typed scalar literals; tokens inside
 strings become escaped text.
 
-Pier exports the same values to Docker Compose as
-`PIER_VALUE_<UPPERCASE_NAME>`. A compose binding can therefore use:
+`[stack.env]` maps a resolved value to a project-owned Compose variable:
 
 ```yaml
 ports:
-  - "127.0.0.1:${PIER_VALUE_OAUTH_CALLBACK_PORT}:8765"
+  - "127.0.0.1:${PICKATUBE_OAUTH_RELAY_PORT:-8765}:8765"
 ```
+
+Pier passes `PICKATUBE_OAUTH_RELAY_PORT=49163` to Compose and resolves
+the same expression while selecting bindings for the generated
+`ports: !override` block. Vanilla Compose receives no Pier variable and
+keeps its `8765` default. The mapping is generic and can drive any
+Compose-interpolated scalar, including image tags, volume paths, labels,
+commands, and ports.
+
+Pier also exports every resolved scalar as
+`PIER_VALUE_<UPPERCASE_NAME>` for hooks and direct Compose use. Prefer
+`[stack.env]` when the checked-in Compose file should remain
+Pier-agnostic.
 
 The value object is cached with mode `0600` at
 `.pier/resolved-values.json`. `pier up` refreshes it; `down` and `logs`
@@ -235,8 +261,8 @@ container starts.
 
 When a project needs to compute the preserved port instead, use
 `hooks.resolve_values`, put `{value.<name>}` directly in the integer
-list, and reference the corresponding `PIER_VALUE_<NAME>` variable in
-Compose as described above.
+list, and map that value to the source Compose variable through
+`[stack.env]` as described above.
 
 **Symptom that says "you should have set true"**: container starts but
 fails with `Permission denied` writing to a path that's bind-mounted
@@ -268,7 +294,8 @@ case (`--yes`). Without a flag, the wizard prompts.
 - ❌ Does NOT write `[worktree].dir` into `.pier.toml` — that's a
   per-user preference, not a project setting. See
   [worktree-dir.md](worktree-dir.md).
-- ❌ Does NOT prompt for `[env.<service>]` — too project-specific.
+- ❌ Does NOT prompt for `[stack.env]` or `[env.<service>]` — too
+  project-specific.
 - ❌ Does NOT add `[materialize]` entries (`symlinks`, `snapshots`,
   `post_create`, `pre_remove`) — add them when the app expects `.env`,
   secrets, a per-worktree mutable data dir, or per-worktree DB

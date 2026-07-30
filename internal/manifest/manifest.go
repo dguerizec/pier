@@ -65,6 +65,11 @@ type Stack struct {
 	File       string `toml:"file,omitempty"       json:"file,omitempty"`       // compose
 	Dockerfile string `toml:"dockerfile,omitempty" json:"dockerfile,omitempty"` // dockerfile (Phase 3 — synthesized compose)
 
+	// Env is passed to the adapter process. For Compose stacks, these values
+	// participate in interpolation of the source compose file without being
+	// injected into containers. This is distinct from Manifest.Env.
+	Env map[string]string `toml:"env,omitempty" json:"env,omitempty"`
+
 	// Service names the [[expose]] entry that should also be reachable at
 	// the bare `<slug>.<base_domain>` (no sub-domain). When empty or when
 	// no [[expose]] matches, no alias is emitted — every exposed service
@@ -429,7 +434,10 @@ func dedent(block []string) {
 	}
 }
 
-var dnsLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+var (
+	dnsLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+	envName  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
 
 // Validate checks that required fields are set and consistent with Stack.Kind.
 //
@@ -461,6 +469,14 @@ func (m *Manifest) Validate() error {
 		return errors.New("manifest: stack.kind is required")
 	default:
 		return fmt.Errorf("manifest: stack.kind %q must be compose (or dockerfile, Phase 3)", m.Stack.Kind)
+	}
+	for name := range m.Stack.Env {
+		if !envName.MatchString(name) {
+			return fmt.Errorf("manifest: stack.env variable %q is not a valid environment variable name", name)
+		}
+		if strings.HasPrefix(name, "PIER_") {
+			return fmt.Errorf("manifest: stack.env variable %q uses the reserved PIER_ prefix", name)
+		}
 	}
 
 	if len(m.Expose) == 0 {

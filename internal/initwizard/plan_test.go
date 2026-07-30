@@ -265,6 +265,9 @@ file = "docker-compose.dev.yml"
 service = "web"
 match_host_uid = true
 
+[stack.env]
+APP_HOST_PORT = "2224"
+
 [[expose]]
 service = "web"
 port = 80
@@ -320,6 +323,9 @@ API_URL = "{url.api}"
 	if !p.Existing.Stack.MatchHostUID {
 		t.Error("match_host_uid should survive on Existing")
 	}
+	if got := p.Existing.Stack.Env["APP_HOST_PORT"]; got != "2224" {
+		t.Errorf("stack.env should survive on Existing, got %q", got)
+	}
 	// Plan.MatchHostUID inherits the existing value when no flag is passed.
 	if !p.MatchHostUID {
 		t.Error("Plan.MatchHostUID should inherit existing manifest value on re-init")
@@ -345,6 +351,9 @@ base_domain = "myproj.example"
 kind = "compose"
 file = "docker-compose.dev.yml"
 service = "api"
+
+[stack.env]
+APP_HOST_PORT = "8001"
 
 [[expose]]
 service = "api"
@@ -393,6 +402,9 @@ SECRET = "shh"
 	}
 	if roundtrip.Env["api"]["SECRET"] != "shh" {
 		t.Errorf("env.api lost: %+v", roundtrip.Env)
+	}
+	if got := roundtrip.Stack.Env["APP_HOST_PORT"]; got != "8001" {
+		t.Errorf("stack.env lost: %q", got)
 	}
 }
 

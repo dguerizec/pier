@@ -28,7 +28,7 @@ type Ctx struct {
 	Service        map[string]manifest.ServiceConfig // per-compose-service overrides
 	DefaultService string                            // service name that gets the bare-slug alias; "" when no alias
 	Env            map[string]map[string]string      // service → key → templated value injected into the override
-	ComposeEnv     map[string]string                 // resolved PIER_VALUE_* variables used by Compose interpolation
+	ComposeEnv     map[string]string                 // manifest and resolved-value variables used by Compose interpolation
 	TraefikNetwork string                            // docker network the workload joins for label discovery
 	Out            io.Writer                         // command output sink
 	Err            io.Writer                         // command error sink

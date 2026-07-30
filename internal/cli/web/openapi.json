@@ -473,6 +473,7 @@
           "file":           { "type": "string", "description": "Compose file path (for kind=compose)" },
           "dockerfile":     { "type": "string", "description": "Dockerfile path (kind=dockerfile, Phase 3)" },
           "service":        { "type": "string", "description": "Service that gets the bare-slug alias" },
+          "env":            { "type": "object", "additionalProperties": { "type": "string" }, "description": "Variables passed to the adapter process; for Compose, they interpolate the source Compose model without being injected into containers" },
           "match_host_uid": { "type": "boolean", "description": "Inject user: <uid>:<gid> in the compose override (distroless/nonroot fix)" }
         }
       },

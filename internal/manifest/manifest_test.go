@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -28,6 +29,9 @@ kind = "compose"
 file = "docker-compose.dev.yml"
 service = "app"
 
+[stack.env]
+APP_HOST_PORT = "3210"
+
 [[expose]]
 service = "app"
 port    = 3000
@@ -49,6 +53,9 @@ snapshots = ["data-dev/"]
 	}
 	if m.Stack.Kind != KindCompose || m.Stack.File != "docker-compose.dev.yml" {
 		t.Errorf("stack = %+v", m.Stack)
+	}
+	if got := m.Stack.Env["APP_HOST_PORT"]; got != "3210" {
+		t.Errorf("stack.env.APP_HOST_PORT = %q", got)
 	}
 	if len(m.Expose) != 1 || m.Expose[0].Service != "app" || m.Expose[0].Port != 3000 {
 		t.Errorf("expose = %+v", m.Expose)
@@ -175,6 +182,9 @@ name = "pickatube"
 kind = "compose"
 file = "docker-compose.dev.yml"
 
+[stack.env]
+PICKATUBE_OAUTH_RELAY_PORT = "{value.oauth_callback_port}"
+
 [[expose]]
 service = "backend"
 port = 8000
@@ -210,6 +220,9 @@ resolve_values = "./scripts/resolve-pier-values"
 	}
 	if got := resolved.Expose[0].PreservePorts[0]; got != 49163 {
 		t.Errorf("preserve port = %d, want 49163", got)
+	}
+	if got := resolved.Stack.Env["PICKATUBE_OAUTH_RELAY_PORT"]; got != "49163" {
+		t.Errorf("stack env port = %q, want 49163", got)
 	}
 	if got := resolved.Env["backend"]["GOOGLE_OAUTH_REDIRECT_URI"]; got != "http://127.0.0.1:49163/oauth/google/callback" {
 		t.Errorf("redirect URI = %q", got)
@@ -294,6 +307,24 @@ func TestValidate_Errors(t *testing.T) {
 			"compose without file",
 			Manifest{Project: Project{Name: "x", BaseDomain: "x.test"}, Stack: Stack{Kind: KindCompose}, Expose: okExpose},
 			"stack.file",
+		},
+		{
+			"invalid stack env name",
+			Manifest{
+				Project: Project{Name: "x", BaseDomain: "x.test"},
+				Stack:   Stack{Kind: KindCompose, File: "a", Env: map[string]string{"BAD-NAME": "x"}},
+				Expose:  okExpose,
+			},
+			"valid environment variable name",
+		},
+		{
+			"reserved stack env name",
+			Manifest{
+				Project: Project{Name: "x", BaseDomain: "x.test"},
+				Stack:   Stack{Kind: KindCompose, File: "a", Env: map[string]string{"PIER_SLUG": "x"}},
+				Expose:  okExpose,
+			},
+			"reserved PIER_ prefix",
 		},
 		{
 			"dockerfile without dockerfile",
@@ -400,7 +431,7 @@ func TestWriteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if loaded.Project != original.Project || loaded.Stack != original.Stack {
+	if loaded.Project != original.Project || !reflect.DeepEqual(loaded.Stack, original.Stack) {
 		t.Errorf("round-trip mismatch:\noriginal=%+v\nloaded=  %+v", original, loaded)
 	}
 	if len(loaded.Expose) != 1 ||

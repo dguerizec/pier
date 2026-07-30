@@ -340,7 +340,7 @@ func TestRenderOverride_PreserveResolvedValueHostBinding(t *testing.T) {
   backend:
     image: python:3.13-slim
     ports:
-      - "127.0.0.1:${PIER_VALUE_OAUTH_CALLBACK_PORT}:8765"
+      - "127.0.0.1:${PICKATUBE_OAUTH_RELAY_PORT:-8765}:8765"
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -359,7 +359,7 @@ func TestRenderOverride_PreserveResolvedValueHostBinding(t *testing.T) {
 			{Service: "backend", Port: 8000, PreservePorts: []int{49163}},
 		},
 		ComposeEnv: map[string]string{
-			"PIER_VALUE_OAUTH_CALLBACK_PORT": "49163",
+			"PICKATUBE_OAUTH_RELAY_PORT": "49163",
 		},
 	}
 	got, err := renderOverride(c)
@@ -370,7 +370,7 @@ func TestRenderOverride_PreserveResolvedValueHostBinding(t *testing.T) {
 	if !strings.Contains(backend, `"127.0.0.1:49163:8765"`) {
 		t.Errorf("resolved host binding missing:\n%s", backend)
 	}
-	if strings.Contains(backend, "PIER_VALUE_OAUTH_CALLBACK_PORT") {
+	if strings.Contains(backend, "PICKATUBE_OAUTH_RELAY_PORT") {
 		t.Errorf("unresolved value reference remains:\n%s", backend)
 	}
 }
@@ -382,7 +382,7 @@ func TestComposeRun_PropagatesResolvedValueEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	capture := filepath.Join(dir, "captured")
-	script := "#!/bin/sh\nprintf '%s' \"$PIER_VALUE_OAUTH_CALLBACK_PORT\" > \"$CAPTURE_FILE\"\n"
+	script := "#!/bin/sh\nprintf '%s|%s' \"$PIER_VALUE_OAUTH_CALLBACK_PORT\" \"$PICKATUBE_OAUTH_RELAY_PORT\" > \"$CAPTURE_FILE\"\n"
 	if err := os.WriteFile(filepath.Join(stubDir, "docker"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -398,6 +398,7 @@ func TestComposeRun_PropagatesResolvedValueEnvironment(t *testing.T) {
 		},
 		ComposeEnv: map[string]string{
 			"PIER_VALUE_OAUTH_CALLBACK_PORT": "49163",
+			"PICKATUBE_OAUTH_RELAY_PORT":     "49163",
 		},
 	}
 	if _, err := composeRun(c, []string{"config"}, filepath.Join(dir, "override.yml"), true); err != nil {
@@ -407,8 +408,36 @@ func TestComposeRun_PropagatesResolvedValueEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(body); got != "49163" {
-		t.Errorf("captured value = %q, want 49163", got)
+	if got := string(body); got != "49163|49163" {
+		t.Errorf("captured value = %q, want 49163|49163", got)
+	}
+}
+
+func TestExpandComposeEnv(t *testing.T) {
+	env := map[string]string{
+		"PORT":  "49163",
+		"EMPTY": "",
+		"ALT":   "fallback",
+	}
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"braced", "${PORT}:8765", "49163:8765"},
+		{"bare", "$PORT:8765", "49163:8765"},
+		{"default", "${PORT:-8765}:8765", "49163:8765"},
+		{"empty default", "${EMPTY:-8765}:8765", "8765:8765"},
+		{"alternate", "${PORT:+$ALT}:8765", "fallback:8765"},
+		{"unknown", "${FROM_DOTENV:-8765}:8765", "${FROM_DOTENV:-8765}:8765"},
+		{"escaped", "$${PORT}:8765", "$${PORT}:8765"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := expandComposeEnv(c.input, env); got != c.want {
+				t.Errorf("expandComposeEnv(%q) = %q, want %q", c.input, got, c.want)
+			}
+		})
 	}
 }
 

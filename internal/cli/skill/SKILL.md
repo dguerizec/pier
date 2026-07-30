@@ -62,7 +62,7 @@ prompts. The wizard inspects the compose file, fills in
 `match_host_uid = true` (safe for distroless / nonroot images), and
 gitignores `.pier.local.toml` + `.pier/`. Re-running on an existing
 manifest is safe: user-curated sections (`[env]`, `[materialize]`,
-`[hooks]`, `[watch]`) pass through untouched.
+`[hooks]`, `[watch]`, and `[stack.env]`) pass through untouched.
 
 **Don't hand-write `.pier.toml`** — typos in `base_domain`, missing
 `match_host_uid`, slug collisions are common bugs the wizard avoids
@@ -151,9 +151,9 @@ for any leftover state.
 
 ## Manifest essentials (`.pier.toml`)
 
-The wizard-owned blocks are `[project]`, `[stack]`, `[[expose]]`, and
-`[worktree].base_ref`. The blocks you'll edit by hand are
-`[env.<service>]` and `[materialize]`.
+The wizard owns `[project]`, `[[expose]]`, `[worktree].base_ref`, and
+the scalar `[stack]` settings. The blocks you'll edit by hand include
+`[stack.env]`, `[env.<service>]`, and `[materialize]`.
 
 Minimal example:
 
@@ -179,7 +179,8 @@ port    = 8000
 API_URL = "{url.api}"                # → http://api.<slug>.<base> at runtime
 ```
 
-**Templating tokens** in `[env.<service>]` values: `{slug}`,
+**Templating tokens** in `[stack.env]` and `[env.<service>]` values:
+`{slug}`,
 `{base_domain}`, `{pier.tld}`, `{host.<service>}`, `{url.<service>}`,
 `{host.default}`, `{url.default}`. Full reference + examples in
 [reference/manifest.md](reference/manifest.md).
@@ -187,9 +188,22 @@ API_URL = "{url.api}"                # → http://api.<slug>.<base> at runtime
 **`[hooks].resolve_values`** runs a project command before the final
 manifest parse. Its stdout is a scalar JSON object; `{value.<name>}`
 tokens can appear in typed fields such as
-`preserve_ports = [{value.oauth_callback_port}]`, and every scalar is
-also exported to Compose as `PIER_VALUE_<UPPERCASE_NAME>`. Pier caches
-the result per worktree; the hook owns allocation and collision policy.
+`preserve_ports = [{value.oauth_callback_port}]`. Use `[stack.env]` to
+map a value to a project-owned Compose interpolation variable without
+making the source Compose file depend on Pier:
+
+```toml
+[stack.env]
+PICKATUBE_OAUTH_RELAY_PORT = "{value.oauth_callback_port}"
+```
+
+The source can keep
+`"${PICKATUBE_OAUTH_RELAY_PORT:-8765}:8765"` for vanilla Compose while
+Pier supplies a different value per worktree. `[stack.env]` is generic:
+it participates in Compose interpolation anywhere in the source model
+and does not inject the variable into a container. Every resolved scalar
+is also exported as `PIER_VALUE_<UPPERCASE_NAME>`. Pier caches the result
+per worktree; the hook owns allocation and collision policy.
 See [reference/manifest.md](reference/manifest.md).
 
 **`[materialize]` and `[hooks]`** govern how secondary worktrees inherit
@@ -213,7 +227,8 @@ entry. Use only for non-HTTP protocols where traefik virtual hosts cannot
 help; fixed host ports still collide between simultaneous worktrees. For
 parallel worktrees, keep `preserve_ports` on the stable container port and
 make the Compose published port configurable through a gitignored `.env`
-(for example `"${SSH_HOST_PORT:-2223}:2223"`).
+(for example `"${SSH_HOST_PORT:-2223}:2223"`), or map a resolved value
+through `[stack.env]`.
 
 **`[worktree].dir`** is a per-user preference, not a project setting.
 Don't write it into `.pier.toml` proactively. See
@@ -275,9 +290,10 @@ pier ps --slug feat-x
 - **Browser code with hardcoded `localhost:PORT`.** pier can't rewrite
   values inside browser-side bundles. Refactor to read the API URL
   from an env var, then inject via `[env.<service>]`.
-- **Apps that need stable host port bindings.** pier strips host ports
-  in its override to avoid multi-worktree collisions; if you must keep
-  them, only one worktree at a time can run under pier.
+- **Apps that need one fixed host port.** Pier strips host ports in its
+  override to avoid multi-worktree collisions; a genuinely fixed port
+  still limits the project to one running worktree. If the host port can
+  vary, resolve it per worktree and map it through `[stack.env]`.
 - **Production hosting.** pier is for dev/preview only.
 
 ## Deeper references
@@ -286,7 +302,8 @@ pier ps --slug feat-x
   unattended invocation, re-init semantics, post-init checklist (env
   tokens, materialize entries to add by hand).
 - [reference/manifest.md](reference/manifest.md) — full annotated
-  manifest, all templating tokens, `[env.<service>]` patterns,
+  manifest, all templating tokens, `[stack.env]`,
+  `[env.<service>]` patterns,
   `match_host_uid` decision tree, schema-only fields.
 - [reference/materialize.md](reference/materialize.md) — symlinks vs
   snapshots semantics, `[materialize].post_create` / `pre_remove` and

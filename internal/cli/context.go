@@ -235,7 +235,7 @@ func dailyForWorktreeMode(info *worktree.Info, slug string, out, errW io.Writer,
 		return nil, err
 	}
 
-	m, composeEnv, err := loadDailyManifest(
+	m, resolvedValueEnv, err := loadDailyManifest(
 		manifestRoot,
 		info,
 		slug,
@@ -274,6 +274,28 @@ func dailyForWorktreeMode(info *worktree.Info, slug string, out, errW io.Writer,
 		}
 	}
 
+	ctx := adapter.Ctx{
+		Project:        m.Project.Name,
+		Slug:           slug,
+		BaseDomain:     baseDomain,
+		TLD:            cfg.TLD,
+		WorktreePath:   info.Toplevel,
+		Stack:          m.Stack,
+		Expose:         m.Expose,
+		Service:        m.Service,
+		DefaultService: defaultService,
+		Env:            m.Env,
+		TraefikNetwork: cfg.EffectiveTraefikNetwork(),
+		Out:            out,
+		Err:            errW,
+	}
+	stackEnv, err := adapter.ExpandEnvBlock(m.Stack.Env, ctx)
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("stack.env: %w", err)
+	}
+	ctx.ComposeEnv = mergeComposeEnv(stackEnv, resolvedValueEnv)
+
 	return &daily{
 		Worktree: info,
 		Manifest: m,
@@ -281,23 +303,26 @@ func dailyForWorktreeMode(info *worktree.Info, slug string, out, errW io.Writer,
 		Paths:    paths,
 		Config:   cfg,
 		State:    store,
-		Ctx: adapter.Ctx{
-			Project:        m.Project.Name,
-			Slug:           slug,
-			BaseDomain:     baseDomain,
-			TLD:            cfg.TLD,
-			WorktreePath:   info.Toplevel,
-			Stack:          m.Stack,
-			Expose:         m.Expose,
-			Service:        m.Service,
-			DefaultService: defaultService,
-			Env:            m.Env,
-			ComposeEnv:     composeEnv,
-			TraefikNetwork: cfg.EffectiveTraefikNetwork(),
-			Out:            out,
-			Err:            errW,
-		},
+		Ctx:      ctx,
 	}, nil
+}
+
+// mergeComposeEnv combines user-named adapter variables with the reserved
+// PIER_VALUE_* variables derived from resolve_values. Manifest validation
+// reserves the entire PIER_ namespace, but resolved values deliberately win
+// if an in-memory caller bypasses validation.
+func mergeComposeEnv(stackEnv, resolvedValueEnv map[string]string) map[string]string {
+	if len(stackEnv) == 0 && len(resolvedValueEnv) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(stackEnv)+len(resolvedValueEnv))
+	for name, value := range stackEnv {
+		out[name] = value
+	}
+	for name, value := range resolvedValueEnv {
+		out[name] = value
+	}
+	return out
 }
 
 func loadDailyManifest(

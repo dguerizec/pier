@@ -75,10 +75,10 @@ The default branch ref (`main`/`master`) is auto-detected; only set
 ## Re-init
 
 Re-running `pier init` on a project that already has a `.pier.toml` is
-safe: the wizard preserves user-curated sections (`[env.<service>]`,
-`[materialize]`, `[hooks]`, `[watch]`) and only rewrites the
-wizard-owned blocks (`[project]`, `[stack]`, `[[expose]]`,
-`[worktree].base_ref`).
+safe: the wizard preserves user-curated sections (`[stack.env]`,
+`[env.<service>]`, `[materialize]`, `[hooks]`, `[watch]`) and only
+rewrites the wizard-owned fields (`[project]`, `[[expose]]`,
+`[worktree].base_ref`, and the scalar `[stack]` settings).
 
 `match_host_uid` is wizard-owned but **inherited from the existing
 manifest** when the key was explicitly set. Re-init never silently
@@ -94,6 +94,10 @@ or rename a service — the wizard picks up the changes and updates
 
 Even after `pier init`, the agent typically still has to add:
 
+- **`[stack.env]`** when the source Compose model needs a
+  per-worktree interpolation value without depending on a Pier-specific
+  variable. This is the bridge from `{value.*}` to a project-owned
+  Compose variable.
 - **`[env.<service>]`** when a service needs to know the URL of a
   sibling service for the current worktree (front → API,
   worker → API, OAuth callback URL, etc.). Use the templating tokens
@@ -120,11 +124,13 @@ The agent should:
 
 1. Verify the manifest is sane (cat `.pier.toml`, check the detected
    service set matches the user's mental model).
-2. Add `[env.<service>]` entries if the app reads sibling URLs from
+2. Add `[stack.env]` if the source Compose model needs a resolved
+   per-worktree value.
+3. Add `[env.<service>]` entries if the app reads sibling URLs from
    env (most do).
-3. Add `[materialize]` entries if the app expects `.env`, secrets, or
+4. Add `[materialize]` entries if the app expects `.env`, secrets, or
    per-worktree mutable data.
-4. Run `pier up` and confirm the URL prints. The first up on a new
+5. Run `pier up` and confirm the URL prints. The first up on a new
    project is the smoke test that everything is wired correctly.
 
 If `pier up` fails with `Permission denied` on a bind-mounted path,

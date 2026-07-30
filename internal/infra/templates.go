@@ -38,7 +38,7 @@ accessLog: {}
 
 // renderDnsmasqConfig wires *.<tld> to answerIP via dnsmasq, listening on
 // listenIP. listenIP and answerIP coincide in local mode; server mode
-// listens on 0.0.0.0 (or a specific tailnet IP) and answers with the IP
+// listens on 0.0.0.0 (or a specific LAN/VPN IP) and answers with the IP
 // peers can reach.
 func renderDnsmasqConfig(tld, listenIP, answerIP string) ([]byte, error) {
 	t := template.Must(template.New("dnsmasq").Parse(`# managed by pier

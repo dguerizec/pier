@@ -11,12 +11,12 @@ import (
 // Config is the persisted install state. Written by Install, read by other
 // commands that need to know the active TLD or mode.
 type Config struct {
-	Mode   string `toml:"mode"`              // local | server
-	TLD    string `toml:"tld"`               // base TLD (e.g. test)
-	BindIP string `toml:"bind_ip"`           // listen IP — 127.0.0.1 (local) | 0.0.0.0 or specific (server)
+	Mode   string `toml:"mode"`    // local | server
+	TLD    string `toml:"tld"`     // base TLD (e.g. test)
+	BindIP string `toml:"bind_ip"` // listen IP — 127.0.0.1 (local) | 0.0.0.0 or specific (server)
 	// AnswerIP is what dnsmasq returns as the A record for *.tld. Equal to
-	// BindIP in local mode; set to the reachable IP (typically tailnet) in
-	// server mode so peers know where to send HTTP traffic.
+	// BindIP in local mode; set to a peer-reachable LAN or VPN IP in server
+	// mode so clients know where to send HTTP traffic.
 	AnswerIP string `toml:"answer_ip,omitempty"`
 
 	// TraefikNetwork is the docker network workloads register on for traefik

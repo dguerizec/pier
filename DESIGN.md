@@ -1,9 +1,10 @@
 # pier — design document
 
-Pier is a Go CLI that gives each git worktree a stable HTTP URL on a
-local or tailnet-routed dev TLD. It bootstraps a shared reverse-proxy/DNS
-layer once, then each project contributes a small `.pier.toml` manifest
-that tells Pier how to run the workload with Docker Compose.
+Pier is a Go CLI that gives each git worktree a stable HTTP URL on a local
+development TLD. It bootstraps a shared reverse-proxy/DNS layer once, then
+each project contributes a small `.pier.toml` manifest that tells Pier how to
+run the workload with Docker Compose. Local-only routing is the default; LAN
+and Tailscale reachability are optional.
 
 This is the current design. Older sketches, including the dropped process
 adapter, live in git history.
@@ -23,8 +24,9 @@ adapter, live in git history.
   `worktree`, API calls) are non-interactive. Prompts are limited to setup
   commands such as `install`, `init`, `serve install`, and `share add/remove`
   when their host or LAN-address arguments are omitted.
-- **Local or tailnet.** The same project manifest works on a laptop-only
-  `.test` install or a shared server reached through Tailscale/headscale.
+- **Local first, optionally shared.** The same project manifest works on a
+  laptop-only `.test` install, a trusted LAN, or an optional Tailscale network.
+  Neither Tailscale nor Headscale is a Pier dependency.
 
 ## 2. Non-goals
 
@@ -36,8 +38,8 @@ adapter, live in git history.
 - **No process adapter.** Host process management was dropped to keep one
   execution model and avoid host port/PID/log semantics.
 - **No multi-user authorization in v1.** The trust boundary is the local
-  machine or VPN peer set. Optional basic-auth middleware is a future
-  escape hatch.
+  machine or the explicitly selected trusted LAN/VPN peer set. Optional
+  basic-auth middleware is a future escape hatch.
 - **No TLS in v1.** HTTP-only on reserved/local/tailnet names. mkcert or
   ACME can be added later if needed.
 
@@ -47,13 +49,17 @@ adapter, live in git history.
 
 Bootstraps machine-wide infrastructure and writes Pier's install config.
 
-The wizard inspects the host:
+The wizard always defaults to local mode on loopback with Pier-managed
+traefik + dnsmasq. Its reachability choices are:
 
-- Tailscale active → suggest server mode and tailnet `--answer-ip`.
-- Existing dockerized traefik → BYO-traefik mode, using its docker network.
-- Headscale detected → refuse Pier TLDs under `base_domain`, then offer to
-  patch headscale split-DNS for a safe TLD such as `.test`.
-- Otherwise → local mode on loopback with Pier-managed traefik + dnsmasq.
+- local-only, always present and selected by default;
+- LAN, always present and followed by an assigned-address choice;
+- Tailscale, present only when an active Tailscale IPv4 is detected.
+
+An existing dockerized traefik can still trigger BYO-traefik integration. A
+detected Headscale instance is only presented after the user selects Tailscale;
+Pier can then refuse conflicting TLDs and offer to patch split-DNS for a safe
+TLD such as `.test`. `--yes` accepts the local default.
 
 The install path also:
 
@@ -61,7 +67,9 @@ The install path also:
 - links detected agent-specific skill directories when safe;
 - asks for a per-user default worktree directory in `prefs.toml`.
 
-Explicit infra flags skip wizard planning. Important flags:
+Explicit install-shape flags such as `--mode`, `--bind-ip`, and `--answer-ip`
+skip wizard planning. Other flags, including `--tld`, can customize either
+path. Important flags:
 
 - `--mode local|server`
 - `--tld <name>`
@@ -338,18 +346,21 @@ Local mode:
 
 - traefik listens on loopback;
 - dnsmasq answers `*.<tld>` with `127.0.0.1`;
-- Linux systemd-resolved gets a per-domain drop-in.
+- Linux systemd-resolved gets a per-domain drop-in;
+- this is the default even when Tailscale or Headscale is installed.
 
 Server mode:
 
 - traefik listens on the chosen bind IP;
 - dnsmasq answers `*.<tld>` with `answer_ip`;
-- peers use split-DNS to send `.<tld>` queries to the Pier server.
+- LAN or VPN peers use split-DNS to send `.<tld>` queries to the Pier server;
+- the wizard enters this mode only after an explicit LAN or Tailscale choice.
 
-Headscale:
+Optional Headscale integration:
 
-- Pier refuses a workload TLD under headscale `base_domain` because MagicDNS
-  owns that zone and preempts split-DNS routing.
+- it is considered only when detected and Tailscale reachability was selected;
+- Pier then refuses a workload TLD under headscale `base_domain` because
+  MagicDNS owns that zone and preempts split-DNS routing.
 - For safe TLDs outside `base_domain`, `pier install` can patch
   `dns.nameservers.split.<tld>` in headscale config and restart headscale.
 - `extra_records_path` is only used for dashboard FQDNs under
@@ -444,7 +455,7 @@ route into Pier's dynamic config directory.
 - Server mode assumes peers can reach `answer_ip` over LAN/VPN.
 - Selective LAN sharing requires an assigned IPv4 address that is distinct
   from the main proxy bind. Server mode is supported when the main proxy is
-  bound to a specific tailnet address; a `0.0.0.0` main bind is rejected
+  bound to a specific address; a `0.0.0.0` main bind is rejected
   because it already exposes every Pier host on every LAN interface.
 - Fixed preserved host ports collide across worktrees; they are an escape hatch
   for non-HTTP protocols.
@@ -459,9 +470,9 @@ route into Pier's dynamic config directory.
 Implemented:
 
 - Compose adapter.
-- Local and server installs.
+- Local-first installs with explicit LAN and detected-Tailscale options.
 - BYO-traefik.
-- Headscale split-DNS patch/unpatch.
+- Optional Headscale split-DNS patch/unpatch.
 - Dashboard/API daemon with systemd --user install and upgrade.
 - Dashboard FQDN via headscale `extra_records_path`.
 - Worktree add/rm/clean wrappers.

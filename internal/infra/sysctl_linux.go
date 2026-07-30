@@ -14,16 +14,16 @@ const sysctlDropinPath = "/etc/sysctl.d/99-pier.conf"
 
 // renderNonlocalBindSysctl returns the body pier drops into /etc/sysctl.d/.
 // The setting allows bind() to succeed against IPs that aren't (yet)
-// assigned to any host interface — exactly the case at boot when docker
-// starts pier-traefik before tailscaled has put the tailnet IP on
-// tailscale0. docker-proxy's bind() then returns EADDRNOTAVAIL, docker
-// silently swallows the error, and the container ends up with a ghost
-// port mapping (visible in `docker inspect`, absent from `docker port`).
-// Standard pattern used by keepalived / HAProxy for VIPs.
+// assigned to any host interface — for example, at boot when docker starts
+// pier-traefik before a VPN or virtual interface has its address.
+// docker-proxy's bind() then returns EADDRNOTAVAIL, docker silently swallows
+// the error, and the container ends up with a ghost port mapping (visible in
+// `docker inspect`, absent from `docker port`). Standard pattern used by
+// keepalived / HAProxy for VIPs.
 func renderNonlocalBindSysctl() []byte {
 	return []byte(`# Written by pier — see https://github.com/dguerizec/pier
 # Allows bind() to non-local IPs so docker-proxy can bind the
-# tailscale IP at boot before tailscaled has assigned it.
+# configured server IP before its interface is ready.
 net.ipv4.ip_nonlocal_bind = 1
 net.ipv6.ip_nonlocal_bind = 1
 `)
@@ -110,7 +110,7 @@ func checkNonlocalBind(bindIP string) Check {
 		return Check{
 			Name:    "kernel allows bind to " + bindIP,
 			Status:  StatusFail,
-			Detail:  sysctlDropinPath + " missing — docker may lose its port mapping at boot when tailscale isn't yet up",
+			Detail:  sysctlDropinPath + " missing — docker may lose its port mapping at boot before the interface is ready",
 			FixHint: "pier doctor --fix  (re-runs the sudo install step)",
 		}
 	}

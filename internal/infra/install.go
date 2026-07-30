@@ -31,7 +31,7 @@ type InstallOptions struct {
 	Mode      string // ModeLocal | ModeServer
 	TLD       string
 	BindIP    string // listen address override
-	AnswerIP  string // A record returned by dnsmasq (server mode); auto-detected from tailscale when empty
+	AnswerIP  string // Peer-reachable A record returned by dnsmasq in server mode
 	ManualDNS bool   // skip /etc/systemd/resolved.conf.d/pier.conf, print instructions instead
 	Out       io.Writer
 
@@ -90,11 +90,11 @@ func Install(opts InstallOptions) error {
 		case ModeLocal:
 			opts.AnswerIP = opts.BindIP
 		case ModeServer:
-			ip, err := autoDetectTailnetIP()
+			ip, err := autoDetectTailscaleIP()
 			if err != nil {
-				return fmt.Errorf("--mode server requires --answer-ip (auto-detect via tailscale failed: %w)", err)
+				return fmt.Errorf("--mode server requires --answer-ip when Tailscale is unavailable: %w", err)
 			}
-			fmt.Fprintf(out, "✓ auto-detected tailnet IP for --answer-ip: %s\n", ip)
+			fmt.Fprintf(out, "✓ using detected Tailscale IP for --answer-ip: %s\n", ip)
 			opts.AnswerIP = ip
 		}
 	}
@@ -200,16 +200,15 @@ func Install(opts InstallOptions) error {
 		fmt.Fprintf(out, "! --manual-dns set; configure host DNS yourself:\n\n%s\n", manualDNSInstructions(opts.TLD, opts.BindIP))
 	}
 
-	// Server mode binds traefik on a specific (typically tailscale) IP.
-	// At boot, docker may try to publish the port before tailscaled has
-	// assigned the IP, silently lose the mapping, and leave the container
+	// Server mode may bind traefik on a specific LAN, VPN, or virtual IP.
+	// At boot, docker may try to publish the port before that address has
+	// been assigned, silently lose the mapping, and leave the container
 	// running with a ghost binding. The sysctl drop-in lets bind() succeed
-	// against IPs that aren't yet on an interface — once tailscale brings
-	// the IP up, packets flow normally. No-op for loopback/wildcard binds.
+	// before the interface is ready. No-op for loopback/wildcard binds.
 	changed, err := configureNonlocalBind(opts.BindIP)
 	switch {
 	case err == nil && changed:
-		fmt.Fprintf(out, "✓ kernel: net.ipv4.ip_nonlocal_bind enabled (lets docker bind %s before tailscale assigns it)\n", opts.BindIP)
+		fmt.Fprintf(out, "✓ kernel: net.ipv4.ip_nonlocal_bind enabled (lets docker bind %s before its interface is ready)\n", opts.BindIP)
 	case err == nil:
 		// not applicable (loopback/wildcard) or already current — stay terse
 	default:
@@ -263,9 +262,10 @@ func writeFileIfChanged(path string, body []byte, mode os.FileMode) (bool, error
 	return true, nil
 }
 
-// autoDetectTailnetIP returns the host's tailscale IPv4. Used as a default
-// AnswerIP when --mode server is set without --answer-ip.
-func autoDetectTailnetIP() (string, error) {
+// autoDetectTailscaleIP is a convenience fallback for explicit server-mode
+// installs that omit --answer-ip. LAN installs should pass their selected
+// address explicitly.
+func autoDetectTailscaleIP() (string, error) {
 	out, err := exec.Command("tailscale", "ip", "-4").Output()
 	if err != nil {
 		return "", fmt.Errorf("tailscale ip: %w", err)

@@ -4,6 +4,11 @@
 
 Pier gives every git worktree a stable URL on a local dev TLD. Bootstrap traefik + dnsmasq + host DNS once, then `pier up` per worktree returns a clickable URL. Designed for the agentic workflow: each agent works on its own worktree, deploys to its own ephemeral env, returns a URL.
 
+**Pier is local by default.** It requires Docker, but it does **not** require
+Tailscale or Headscale. LAN and Tailscale access are optional choices offered
+during installation; the standard local installation binds Pier to the
+development machine.
+
 ```bash
 $ pier worktree add ../myapp-feat-x -b feat/x
 $ cd ../myapp-feat-x
@@ -15,7 +20,7 @@ Architecture and roadmap live in [DESIGN.md](DESIGN.md). This README is the prac
 
 ## Status
 
-Phase 1 MVP and most of Phase 2 are shipped. Compose adapter, install wizard, BYO-traefik, server mode, selective LAN sharing, headscale split-DNS patching, dashboard/API server, doctor, materialize, worktree wrapper, and AI agent skill install — all in. Backlog: MCP shim, dockerfile adapter (synthesized compose), gc, watch, macOS DNS support. See [DESIGN.md §8](DESIGN.md#8-roadmap).
+Phase 1 MVP and most of Phase 2 are shipped. Compose adapter, local-first install wizard, BYO-traefik, optional LAN/Tailscale access, selective LAN sharing, optional Headscale split-DNS patching, dashboard/API server, doctor, materialize, worktree wrapper, and AI agent skill install — all in. Backlog: MCP shim, dockerfile adapter (synthesized compose), gc, watch, macOS DNS support. See [DESIGN.md §8](DESIGN.md#8-roadmap).
 
 Pier is intentionally **docker-coupled** — even projects that aren't otherwise containerized declare a minimal `docker-compose.dev.yml`. See the snippet in [Per-repo setup](#per-repo-setup-once-per-project) below.
 
@@ -52,29 +57,41 @@ Go 1.26+ required. Homebrew tap (`brew install dguerizec/pier/pier`) will follow
 pier install
 ```
 
-The wizard inspects the host and proposes a single concrete plan:
+The wizard starts with the safe local-only choice:
 
-- **Tailscale detected?** Server mode, `--bind-ip` from your tailnet IP.
-- **Existing traefik container?** BYO-traefik mode — pier registers workloads on it instead of spawning its own.
-- **Headscale detected?** pier refuses TLDs under `base_domain`, then can patch split-DNS for a safe TLD such as `.test`.
-- **Otherwise** — local mode, traefik + dnsmasq under `~/.config/pier/`, systemd-resolved drop-in for `.test`.
+```text
+URL reachability
+> Local only (recommended) — reachable from this machine
+  LAN (optional) — reachable from devices on your local network
+  Tailscale (optional, when detected) — reachable from your tailnet
+```
+
+LAN is always offered. The Tailscale choice appears only when an active
+Tailscale IPv4 is detected. Headscale integration is offered later only when
+Headscale is present and Tailscale access was selected.
+
+The wizard also detects an existing dockerized Traefik and can use its network
+instead of spawning `pier-traefik`. With the default local choice, Pier runs
+Traefik + dnsmasq on loopback and installs a systemd-resolved route for `.test`.
 
 Output looks like this:
 
-```
+```text
 $ pier install
 Detected:
-  ✓ tailscale: 100.64.0.10 on my-tailnet
-  ✓ existing traefik: container=traefik network=proxy
-  ✓ headscale: container=headscale base_domain=nebula records=/etc/headscale/dns_records.json
+  no optional integrations detected; local mode is ready
 
 Plan:
-  --mode server --tld test --bind-ip 100.64.0.10 --answer-ip 100.64.0.10 --use-existing-traefik traefik --traefik-network proxy
+  --mode local --tld test
 
 Apply this plan? [Y/n]
 ```
 
-Pass `-y` to accept silently (CI / agent-friendly). Pass any explicit infra flag (`--mode`, `--tld`, ...) to skip the wizard. The installer also writes the bundled AI-agent skill to `~/.agents/skills/pier` and, when run interactively, asks for your default `pier worktree add <name>` directory.
+Pass `-y` to accept the local default silently (CI / agent-friendly). Explicit
+install-shape flags such as `--mode`, `--bind-ip`, and `--answer-ip` skip the
+wizard; `--tld` can customize either path. The installer also writes the
+bundled AI-agent skill to `~/.agents/skills/pier` and, when run interactively,
+asks for your default `pier worktree add <name>` directory.
 
 `pier uninstall` reverses everything (containers, network, host DNS drop-in, config dir). BYO mode leaves the user's traefik + network alone. The pier binary itself stays in place — pass `--purge` to also delete it (`pier uninstall --purge`). `--purge` declines when the binary lives under a brew prefix or system path; let the package manager remove it in that case.
 
@@ -251,14 +268,18 @@ Slug is derived from the branch name (DESIGN §5.1): `feat/foo-bar` → `foo-bar
 
 ## Modes
 
-Pier has two workload routing modes, picked automatically by the wizard:
+Pier is local unless the user explicitly chooses a broader reach:
 
-| Mode | When | URL example | DNS routing |
+| Wizard choice | Required software/network | URL example | DNS routing |
 |---|---|---|---|
-| **local** | no tailscale, no headscale | `feat-x.myapp.test` | pier-dnsmasq on `127.0.0.1`, systemd-resolved drop-in |
-| **server + split-DNS** | tailscale + headscale, TLD outside base_domain | `feat-x.myapp.test` | pier-dnsmasq on tailnet IP, headscale `dns.nameservers.split` |
+| **Local only (default)** | Docker | `feat-x.myapp.test` | pier-dnsmasq on `127.0.0.1`, local systemd-resolved route |
+| **LAN (optional)** | A trusted LAN with an assigned IPv4 | `feat-x.myapp.test` | pier-dnsmasq on the chosen LAN IP; clients route `.test` to that IP |
+| **Tailscale (optional)** | Active Tailscale client | `feat-x.myapp.test` | pier-dnsmasq on the detected Tailscale IP; tailnet split-DNS |
 
-When a tailnet already uses Headscale `extra_records_path` for prod hostnames, Pier can use that records adapter for the dashboard FQDN. It does not use records for per-worktree workload URLs.
+Headscale is never required. When detected for the selected Tailscale option,
+Pier can patch its split-DNS configuration. If that Headscale instance already
+uses `extra_records_path`, Pier can also use it for an optional dashboard FQDN;
+workload URLs do not use that records adapter.
 
 ## Health & recovery
 
@@ -269,9 +290,17 @@ pier doctor --fix       # restart down containers, prune dead workload rows
 
 `doctor` adapts to the active mode: it skips pier-traefik checks in BYO mode, warns about stale workload rows, and reports legacy system-level `pier.service` units left behind by older installs.
 
-## Multi-machine (tailnet) access
+## Multi-machine access
 
-When pier runs on a tailnet host in server mode, peers can reach the URLs through the same tailnet:
+For a LAN, select the LAN option during `pier install`, then route the Pier TLD
+on each client to the chosen server address:
+
+```bash
+pier client add --tld test --resolver 192.168.1.42
+```
+
+For Tailscale, select the Tailscale option when it is offered. Tailnet peers
+can then reach Pier through split-DNS:
 
 ```bash
 # on a peer machine
@@ -279,16 +308,19 @@ pier client tailscale     # prints exact split-DNS / extra_records snippets
                           # for both Tailscale.com and headscale config.yaml
 ```
 
-The install wizard can auto-apply the Headscale split-DNS rule when the TLD is outside `base_domain`. `extra_records_path` is only needed when you choose a dashboard FQDN under the Headscale `base_domain`.
+If Headscale is detected, the wizard can auto-apply its split-DNS rule when the
+TLD is outside `base_domain`. `extra_records_path` is only needed when you
+choose a dashboard FQDN under the Headscale `base_domain`.
 
 Test peer resolution with `resolvectl query <slug>.<base_domain>` rather than `dig`. Dig may bypass systemd-resolved per-link routing on Linux and produce false negatives.
 
 ## Selective LAN sharing
 
 Pier installs can publish individual workload hosts on a LAN without exposing
-Pier's wildcard DNS or every active worktree. Local mode works directly;
-server mode also works when its main proxy is bound to a distinct, specific
-tailnet address rather than `0.0.0.0`:
+Pier's wildcard DNS or every active worktree. This is the recommended approach
+when a local-first install only needs to share a few URLs. Server mode also
+works when its main proxy is bound to a distinct, specific address rather than
+`0.0.0.0`:
 
 ```bash
 cd /path/to/jobo
@@ -325,8 +357,8 @@ any LAN peer that knows a shared hostname can request it.
 ## Caveats
 
 - **Linux only** for host DNS auto-config in MVP. macOS support is on the v0.2 list.
-- **No TLS** — HTTP only on the reserved `.test` TLD, or for the dashboard under your tailnet base domain when configured. mkcert + Let's Encrypt is post-v1.
-- **Trust boundary = VPN peers**. Anyone in your tailnet can reach any pier URL. A `[security].basic_auth` middleware is a post-MVP nice-to-have.
+- **No TLS** — HTTP only on the reserved `.test` TLD, or for the dashboard under an optional tailnet base domain when configured. mkcert + Let's Encrypt is post-v1.
+- **Local by default; trusted networks only when shared.** LAN or Tailscale server mode exposes every Pier URL to peers that can reach the selected address. Use `pier share` for a finite LAN allowlist. A `[security].basic_auth` middleware is a post-MVP nice-to-have.
 - **Compose only.** Even raw-process stacks (uv/npm/cargo) declare a `docker-compose.dev.yml` — see the minimal snippet below. The dockerfile adapter (which synthesizes a compose file from a Dockerfile) lands in Phase 3.
 
 ## Contributing

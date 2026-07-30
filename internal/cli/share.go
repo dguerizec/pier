@@ -110,7 +110,7 @@ func runShareAdd(cmd *cobra.Command, selectors []string, opts shareAddOpts) erro
 func validateShareAddress(cfg *infra.Config, address share.Address) error {
 	switch cfg.BindIP {
 	case infra.DefaultServerBind:
-		return fmt.Errorf("Pier's main proxy already binds 0.0.0.0:80, so every LAN interface exposes all Pier hosts; reconfigure it on a specific tailnet address before using selective sharing")
+		return fmt.Errorf("Pier's main proxy already binds 0.0.0.0:80, so every LAN interface exposes all Pier hosts; reconfigure it on a specific address before using selective sharing")
 	case address.IP:
 		return fmt.Errorf("Pier's main proxy already binds %s:80; choose a different LAN address for selective sharing", address.IP)
 	default:

@@ -2,18 +2,21 @@ package cli
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
 	"github.com/dguerizec/pier/internal/cli/skill"
 	"github.com/dguerizec/pier/internal/detect"
 	"github.com/dguerizec/pier/internal/headscale"
 	"github.com/dguerizec/pier/internal/infra"
+	"github.com/dguerizec/pier/internal/share"
 )
 
 type installOpts struct {
@@ -27,6 +30,19 @@ type installOpts struct {
 	traefikNetwork            string
 	externalTraefikDynamicDir string
 	yes                       bool
+}
+
+type installReachability string
+
+const (
+	reachabilityLocal     installReachability = "local"
+	reachabilityLAN       installReachability = "lan"
+	reachabilityTailscale installReachability = "tailscale"
+)
+
+type installRouting struct {
+	Reachability installReachability
+	IP           string
 }
 
 func newInstallCmd() *cobra.Command {
@@ -66,12 +82,12 @@ func newInstallCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&opts.mode, "mode", "", "local | server (only local supported in MVP)")
+	f.StringVar(&opts.mode, "mode", "", "local | server")
 	f.StringVar(&opts.tld, "tld", infra.DefaultTLD, "base TLD (RFC2606 reserved recommended)")
 	f.BoolVar(&opts.manualDNS, "manual-dns", false, "skip system DNS modification, print instructions instead")
 	f.BoolVar(&opts.noSudo, "no-sudo", false, "alias of --manual-dns")
 	f.StringVar(&opts.bindIP, "bind-ip", "", "traefik/dnsmasq listen IP (default: 127.0.0.1 local, 0.0.0.0 server)")
-	f.StringVar(&opts.answerIP, "answer-ip", "", "IP dnsmasq returns for *.<tld> (server mode; auto-detected from tailscale when omitted)")
+	f.StringVar(&opts.answerIP, "answer-ip", "", "peer-reachable IP dnsmasq returns for *.<tld> in server mode")
 	f.StringVar(&opts.externalTraefik, "use-existing-traefik", "", "BYO mode: name of an existing traefik container to register workloads on")
 	f.StringVar(&opts.traefikNetwork, "traefik-network", "", "BYO mode: docker network for label discovery (auto-detected from the existing traefik when omitted)")
 	f.StringVar(&opts.externalTraefikDynamicDir, "traefik-dynamic-dir", "", "BYO mode: host path of the existing traefik's file-provider directory (auto-detected when omitted; required to expose http://pier.<tld>)")
@@ -92,8 +108,9 @@ func shouldRunWizard(cmd *cobra.Command) bool {
 	return true
 }
 
-// runInstallWizard inspects the host, prints a single suggested plan, and
-// applies it on confirmation.
+// runInstallWizard inspects the host, asks how broadly Pier should be
+// reachable, prints the resulting plan, and applies it on confirmation.
+// Local is always the default; detected network integrations are opt-in.
 func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 	out := cmd.OutOrStdout()
 	env := detect.Run()
@@ -104,14 +121,11 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 	}
 	fmt.Fprintln(out)
 
-	// In wizard mode the cobra flag default for --tld ("test") shouldn't
-	// drown out detection; treat unchanged --tld as "no opinion" so we can
-	// suggest pier.<base_domain> when headscale is around.
-	if !cmd.Flags().Changed("tld") {
-		base.tld = ""
+	routing, err := selectInstallRouting(cmd, env, base.yes)
+	if err != nil {
+		return err
 	}
-
-	plan := composeInstallPlan(env, base)
+	plan := composeInstallPlan(env, base, routing)
 
 	// Refuse to install when the chosen TLD lives under headscale's
 	// base_domain. MagicDNS owns the lookups authoritatively for that
@@ -120,7 +134,9 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 	// spawning containers and writing host DNS, otherwise the user
 	// ends up with a half-applied install pointing at a TLD that
 	// can't work.
-	if env.Headscale.Found && env.Headscale.BaseDomain != "" && tldIsUnder(plan.TLD, env.Headscale.BaseDomain) {
+	if routing.Reachability == reachabilityTailscale &&
+		env.Headscale.Found && env.Headscale.BaseDomain != "" &&
+		tldIsUnder(plan.TLD, env.Headscale.BaseDomain) {
 		fmt.Fprintf(out, "! pier TLD %q lives under headscale base_domain %q.\n", plan.TLD, env.Headscale.BaseDomain)
 		fmt.Fprintln(out, "  MagicDNS pre-empts split-DNS for names under base_domain — workloads won't resolve from peers.")
 		fmt.Fprintln(out, "  Pick a TLD outside the base_domain (e.g. `--tld test`) and re-run install.")
@@ -167,7 +183,9 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 	installUserSkill(cmd.InOrStdin(), out, base.yes)
 	askWorktreeDirPref(cmd, base.yes)
 
-	if env.Headscale.Found && env.Tailscale.Active && env.Headscale.ConfigPath != "" {
+	if routing.Reachability == reachabilityTailscale &&
+		env.Headscale.Found && env.Headscale.ConfigPath != "" &&
+		env.Headscale.BaseDomain != "" {
 		fmt.Fprintln(out)
 		// Pre-flight already refused TLD-under-base_domain, so anything
 		// reaching here is safe to auto-patch.
@@ -190,6 +208,116 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 		}
 	}
 	return nil
+}
+
+func selectInstallRouting(cmd *cobra.Command, env detect.Environment, yes bool) (installRouting, error) {
+	selected := installRouting{Reachability: reachabilityLocal}
+	if yes || !commandIsInteractive(cmd) {
+		return selected, nil
+	}
+
+	lanAddresses, lanErr := share.LANAddresses()
+	lanAddresses = withoutIP(lanAddresses, env.Tailscale.IPv4)
+
+	reachabilities := availableInstallReachabilities(env)
+	options := make([]huh.Option[installReachability], 0, len(reachabilities))
+	for _, reachability := range reachabilities {
+		var label string
+		switch reachability {
+		case reachabilityLocal:
+			label = "Local only (recommended) — reachable from this machine"
+		case reachabilityLAN:
+			label = "LAN (optional) — reachable from devices on your local network"
+		case reachabilityTailscale:
+			label = fmt.Sprintf(
+				"Tailscale (optional) — reachable from %s via %s",
+				emptyAs(env.Tailscale.Tailnet, "your tailnet"),
+				env.Tailscale.IPv4,
+			)
+		}
+		options = append(options, huh.NewOption(label, reachability))
+	}
+
+	choice := reachabilityLocal
+	field := huh.NewSelect[installReachability]().
+		Title("URL reachability").
+		Description("Local is the safe default. LAN and Tailscale expose Pier to other machines.").
+		Options(options...).
+		Value(&choice)
+	if err := huh.NewForm(huh.NewGroup(field)).Run(); err != nil {
+		return installRouting{}, fmt.Errorf("reachability prompt: %w", err)
+	}
+
+	selected.Reachability = choice
+	switch choice {
+	case reachabilityLocal:
+		return selected, nil
+	case reachabilityLAN:
+		if lanErr != nil {
+			return installRouting{}, fmt.Errorf("LAN option: inspect network interfaces: %w", lanErr)
+		}
+		address, err := selectInstallLANAddress(lanAddresses)
+		if err != nil {
+			return installRouting{}, err
+		}
+		selected.IP = address.IP
+		fmt.Fprintln(cmd.OutOrStdout(), "! LAN mode exposes every Pier host on this trusted network address.")
+		fmt.Fprintln(cmd.OutOrStdout(), "  For selective sharing, keep local mode and use `pier share add` per workload.")
+		return selected, nil
+	case reachabilityTailscale:
+		selected.IP = env.Tailscale.IPv4
+		return selected, nil
+	default:
+		return installRouting{}, fmt.Errorf("unknown reachability %q", choice)
+	}
+}
+
+func availableInstallReachabilities(env detect.Environment) []installReachability {
+	reachabilities := []installReachability{reachabilityLocal, reachabilityLAN}
+	if env.Tailscale.Active && env.Tailscale.IPv4 != "" {
+		reachabilities = append(reachabilities, reachabilityTailscale)
+	}
+	return reachabilities
+}
+
+func selectInstallLANAddress(addresses []share.Address) (share.Address, error) {
+	if len(addresses) == 0 {
+		return share.Address{}, errors.New("LAN option: no active LAN IPv4 address found; connect this machine to the LAN and rerun `pier install`")
+	}
+	if len(addresses) == 1 {
+		return addresses[0], nil
+	}
+
+	selected := addresses[0]
+	options := make([]huh.Option[share.Address], 0, len(addresses))
+	for _, address := range addresses {
+		options = append(options, huh.NewOption(
+			fmt.Sprintf("%s — %s", address.Interface, address.IP),
+			address,
+		))
+	}
+	field := huh.NewSelect[share.Address]().
+		Title("LAN address").
+		Description("Pier binds this exact address and will not follow the interface to another network.").
+		Options(options...).
+		Value(&selected)
+	if err := huh.NewForm(huh.NewGroup(field)).Run(); err != nil {
+		return share.Address{}, fmt.Errorf("LAN address prompt: %w", err)
+	}
+	return selected, nil
+}
+
+func withoutIP(addresses []share.Address, excluded string) []share.Address {
+	if excluded == "" {
+		return addresses
+	}
+	filtered := make([]share.Address, 0, len(addresses))
+	for _, address := range addresses {
+		if address.IP != excluded {
+			filtered = append(filtered, address)
+		}
+	}
+	return filtered
 }
 
 // installUserSkill drops the embedded skill tree under ~/.agents/skills/pier/
@@ -254,14 +382,10 @@ func tldIsUnder(tld, base string) bool {
 	return tld == base || strings.HasSuffix(tld, "."+base)
 }
 
-// composeInstallPlan turns detected environment + user flags into the
-// concrete InstallOptions. Explicit flags always win over detected values.
-//
-// Workloads always resolve via split-DNS (pier-dnsmasq + headscale config
-// patch) regardless of whether a headscale records adapter is available —
-// the records adapter is reserved for the dashboard FQDN, configured
-// later by `pier serve install` and not at infra install time.
-func composeInstallPlan(env detect.Environment, base installOpts) infra.InstallOptions {
+// composeInstallPlan turns detected environment, user flags, and the explicit
+// wizard reachability choice into concrete InstallOptions. Local remains the
+// default even when Tailscale or Headscale is detected.
+func composeInstallPlan(env detect.Environment, base installOpts, routing installRouting) infra.InstallOptions {
 	plan := infra.InstallOptions{
 		Mode:                      base.mode,
 		TLD:                       base.tld,
@@ -275,20 +399,16 @@ func composeInstallPlan(env detect.Environment, base installOpts) infra.InstallO
 	if plan.TLD == "" {
 		plan.TLD = infra.DefaultTLD
 	}
-	switch {
-	case env.Tailscale.Active:
-		if plan.Mode == "" {
-			plan.Mode = infra.ModeServer
-		}
+	if plan.Mode == "" {
+		plan.Mode = infra.ModeLocal
+	}
+	if routing.Reachability == reachabilityLAN || routing.Reachability == reachabilityTailscale {
+		plan.Mode = infra.ModeServer
 		if plan.BindIP == "" {
-			plan.BindIP = env.Tailscale.IPv4
+			plan.BindIP = routing.IP
 		}
 		if plan.AnswerIP == "" {
-			plan.AnswerIP = env.Tailscale.IPv4
-		}
-	default:
-		if plan.Mode == "" {
-			plan.Mode = infra.ModeLocal
+			plan.AnswerIP = routing.IP
 		}
 	}
 	if env.Traefik.Found && env.Traefik.Container != "" {
@@ -310,7 +430,8 @@ func composeInstallPlan(env detect.Environment, base installOpts) infra.InstallO
 	// split-DNS patch we apply post-Install. Requires the chosen TLD
 	// to live OUTSIDE base_domain (MagicDNS pre-empts split-DNS for
 	// names under base_domain).
-	if env.Headscale.Found && env.Headscale.ConfigPath != "" &&
+	if routing.Reachability == reachabilityTailscale &&
+		env.Headscale.Found && env.Headscale.ConfigPath != "" &&
 		env.Headscale.BaseDomain != "" && !tldIsUnder(plan.TLD, env.Headscale.BaseDomain) {
 		plan.HeadscaleConfigPath = env.Headscale.ConfigPath
 		plan.HeadscaleContainer = env.Headscale.Container

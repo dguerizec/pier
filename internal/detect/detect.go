@@ -469,7 +469,7 @@ func readHeadscaleBaseDomain(cfgPath string) string {
 func (e Environment) Summary() []string {
 	var lines []string
 	if e.Tailscale.Active {
-		lines = append(lines, fmt.Sprintf("✓ tailscale: %s on %s", e.Tailscale.IPv4, emptyAs(e.Tailscale.Tailnet, "?")))
+		lines = append(lines, fmt.Sprintf("optional Tailscale integration available: %s on %s", e.Tailscale.IPv4, emptyAs(e.Tailscale.Tailnet, "?")))
 	}
 	if e.Traefik.Found {
 		who := "container=" + emptyAs(e.Traefik.Container, "<host process>")
@@ -490,10 +490,10 @@ func (e Environment) Summary() []string {
 		if e.Headscale.RecordsPath != "" {
 			extra += " records=" + e.Headscale.RecordsPath
 		}
-		lines = append(lines, fmt.Sprintf("✓ headscale: container=%s%s", e.Headscale.Container, extra))
+		lines = append(lines, fmt.Sprintf("optional Headscale integration available: container=%s%s", e.Headscale.Container, extra))
 	}
 	if len(lines) == 0 {
-		lines = append(lines, "no tailscale, traefik or headscale detected — defaulting to local-mode pier")
+		lines = append(lines, "no optional integrations detected; local mode is ready")
 	}
 	return lines
 }

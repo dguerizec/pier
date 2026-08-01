@@ -1,7 +1,7 @@
 # pier
 
 <p align="center">
-  <img src="internal/cli/web/favicon.png" alt="Pier" width="160">
+  <img src="assets/pier.png" alt="Pier" width="480">
 </p>
 
 > One CLI, one URL per git worktree. No per-project DNS or proxy plumbing.

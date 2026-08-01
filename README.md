@@ -1,5 +1,9 @@
 # pier
 
+<p align="center">
+  <img src="internal/cli/web/favicon.png" alt="Pier" width="160">
+</p>
+
 > One CLI, one URL per git worktree. No per-project DNS or proxy plumbing.
 
 Pier gives every git worktree a stable URL on a local dev TLD. Bootstrap traefik + dnsmasq + host DNS once, then `pier up` per worktree returns a clickable URL. Designed for the agentic workflow: each agent works on its own worktree, deploys to its own ephemeral env, returns a URL.

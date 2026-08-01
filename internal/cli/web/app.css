@@ -43,6 +43,15 @@ header {
   z-index: 10;
 }
 .brand { display: flex; align-items: center; gap: 0.5rem; }
+.brand-icon {
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  display: block;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
 header h1 { margin: 0; font-size: 1.15rem; font-weight: 600; }
 .conn {
   font-size: 0.8rem;

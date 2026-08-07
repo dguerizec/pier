@@ -336,7 +336,9 @@ The generated override owns:
 - port stripping, except selected `preserve_ports`;
 - `user: "<uid>:<gid>"` where requested;
 - templated environment variables.
-- the external Traefik network on exposed services, available at creation time.
+- the external Traefik network on exposed services, available at creation time;
+- the implicit Compose `default` network when an exposed source service does
+  not declare an explicit network topology.
 
 Do not edit `.pier/compose.override.yml`; it is regenerated.
 

@@ -277,6 +277,10 @@ running, reconciles changed services, removes Compose orphans, and waits for
 services to be running or healthy before returning. The default readiness
 deadline is two minutes; override it with `--wait-timeout 5m`.
 
+Exposed services keep their source Compose networks. When a service relies on
+Compose's implicit `default` network, Pier declares it alongside the shared
+Traefik network so service-to-service DNS continues to work.
+
 `pier down` targets the last configuration Pier successfully applied, not a
 hypothetical workload reconstructed from the current manifest. It therefore
 still stops the right Compose project after changing `project.name`,

@@ -430,12 +430,13 @@ func ensureDockerNetwork(name string) error {
 // default service (the one Stack.Service points at), where pier emits a
 // second router matching the bare `<slug>.<base>` host.
 type exposedDetails struct {
-	ContainerName string
-	RouterID      string
-	HostRule      string
-	AliasRule     string
-	Port          int
-	Aliases       []string
+	ContainerName     string
+	RouterID          string
+	HostRule          string
+	AliasRule         string
+	Port              int
+	Aliases           []string
+	UseDefaultNetwork bool
 }
 
 // envEntry is one rendered KEY=value line for the compose `environment:`
@@ -489,12 +490,13 @@ func renderOverride(c Ctx) ([]byte, error) {
 			b.User = user
 		}
 		b.Exposed = &exposedDetails{
-			ContainerName: ServiceName(c.Project, c.Slug, e.Service),
-			RouterID:      ServiceName(c.Project, c.Slug, e.Service),
-			HostRule:      HostFor(e, c.Slug, c.BaseDomain),
-			AliasRule:     alias,
-			Port:          e.Port,
-			Aliases:       []string{HostFor(e, c.Slug, c.BaseDomain)},
+			ContainerName:     ServiceName(c.Project, c.Slug, e.Service),
+			RouterID:          ServiceName(c.Project, c.Slug, e.Service),
+			HostRule:          HostFor(e, c.Slug, c.BaseDomain),
+			AliasRule:         alias,
+			Port:              e.Port,
+			Aliases:           []string{HostFor(e, c.Slug, c.BaseDomain)},
+			UseDefaultNetwork: !composeServices[e.Service].hasNetworks,
 		}
 		if alias != "" {
 			b.Exposed.Aliases = append(b.Exposed.Aliases, alias)
@@ -566,6 +568,9 @@ services:
 {{- with .Exposed}}
     container_name: {{.ContainerName}}
     networks:
+{{- if .UseDefaultNetwork}}
+      default: {}
+{{- end}}
       {{$.ProxyNetworkKey}}:
         aliases:
 {{- range .Aliases}}
@@ -768,6 +773,7 @@ func indentYAMLList(body string) string {
 type composeServiceInfo struct {
 	hasPorts         bool
 	hasContainerName bool
+	hasNetworks      bool
 	ports            []yaml.Node
 }
 
@@ -811,6 +817,7 @@ func scanComposeServices(c Ctx) map[string]composeServiceInfo {
 		Services map[string]struct {
 			Ports         []yaml.Node `yaml:"ports"`
 			ContainerName string      `yaml:"container_name"`
+			Networks      yaml.Node   `yaml:"networks"`
 		} `yaml:"services"`
 	}
 	if err := yaml.Unmarshal(body, &doc); err != nil {
@@ -824,6 +831,7 @@ func scanComposeServices(c Ctx) map[string]composeServiceInfo {
 		out[name] = composeServiceInfo{
 			hasPorts:         len(svc.Ports) > 0,
 			hasContainerName: svc.ContainerName != "",
+			hasNetworks:      len(svc.Networks.Content) > 0,
 			ports:            svc.Ports,
 		}
 	}

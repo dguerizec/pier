@@ -42,7 +42,7 @@ func TestRenderOverride_SingleExpose(t *testing.T) {
 		"traefik.http.routers.myapp-feat-x-web-default.service=myapp-feat-x-web",
 		"traefik.docker.network=pier",
 		"traefik.http.services.myapp-feat-x-web.loadbalancer.server.port=3000",
-		"networks:\n      pier_proxy:",
+		"networks:\n      default: {}\n      pier_proxy:",
 		"- web.feat-x.myapp.test",
 		"- feat-x.myapp.test",
 		"name: pier",
@@ -56,6 +56,36 @@ func TestRenderOverride_SingleExpose(t *testing.T) {
 	// Compose connects the proxy network before Traefik discovers the
 	// container. AttachToTraefikNetwork then reconnects it with only these
 	// FQDN aliases, removing Compose's implicit short service alias.
+}
+
+func TestRenderOverride_PreservesExplicitServiceNetworksWithoutAddingDefault(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte(`services:
+  web:
+    image: demo
+    networks:
+      - backend
+networks:
+  backend: {}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := Ctx{
+		Project: "demo", Slug: "main", BaseDomain: "demo.test", WorktreePath: dir,
+		Stack:  manifest.Stack{Kind: manifest.KindCompose, File: "compose.yml"},
+		Expose: []manifest.ExposeRule{{Service: "web", Port: 3000}}, TraefikNetwork: "pier",
+	}
+	body, err := renderOverride(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceBlock := strings.SplitN(string(body), "labels:", 2)[0]
+	if strings.Contains(serviceBlock, "default: {}") {
+		t.Fatalf("override added default to a service with explicit networks:\n%s", body)
+	}
+	if !strings.Contains(serviceBlock, "pier_proxy:") {
+		t.Fatalf("override is missing proxy network:\n%s", body)
+	}
 }
 
 func TestComposePrepareApplyBuildsBeforeReconcileAndWaits(t *testing.T) {

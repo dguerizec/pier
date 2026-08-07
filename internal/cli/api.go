@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/dguerizec/pier/internal/adapter"
+	"github.com/dguerizec/pier/internal/applied"
 	"github.com/dguerizec/pier/internal/infra"
 	"github.com/dguerizec/pier/internal/manifest"
 	"github.com/dguerizec/pier/internal/state"
@@ -447,23 +448,6 @@ func (h *apiHandler) postWorkloadUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Preserve idempotent up without running resolve_values on an already
-	// active workload. The resolver may own an external allocation, so a
-	// no-op API retry must not invoke it.
-	store, err := state.Open(h.paths.StateDB)
-	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if existing, err := store.Get(project, slug); err == nil {
-		if containerStatus(existing) == "running" {
-			store.Close()
-			writeJSON(w, http.StatusOK, buildAPIWorkload(h.cfg, existing))
-			return
-		}
-	}
-	store.Close()
-
 	d, err := dailyForWorktreeFresh(info, slug, io.Discard, io.Discard)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, err.Error())
@@ -471,17 +455,20 @@ func (h *apiHandler) postWorkloadUp(w http.ResponseWriter, r *http.Request) {
 	}
 	defer d.State.Close()
 	if d.Manifest.Project.Name != project {
-		writeAPIError(w, http.StatusConflict,
-			fmt.Sprintf("manifest at %s declares project=%q, URL says %q",
-				info.Toplevel, d.Manifest.Project.Name, project))
-		return
+		previous, loadErr := applied.Load(info.Toplevel, slug)
+		if loadErr != nil || previous.Project != project {
+			writeAPIError(w, http.StatusConflict,
+				fmt.Sprintf("manifest at %s declares project=%q, URL says %q",
+					info.Toplevel, d.Manifest.Project.Name, project))
+			return
+		}
 	}
 	if err := runUp(d, false, io.Discard, io.Discard); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "up failed: "+err.Error())
 		return
 	}
 
-	wl, err := d.State.Get(project, slug)
+	wl, err := d.State.Get(d.Ctx.Project, slug)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "post-up state read: "+err.Error())
 		return
@@ -523,7 +510,7 @@ func (h *apiHandler) postWorkloadDown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d, err := dailyForWorktree(info, slug, io.Discard, io.Discard)
+	d, err := dailyForDown(info, slug, io.Discard, io.Discard)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -804,7 +791,7 @@ func (h *apiHandler) deleteWorktree(w http.ResponseWriter, r *http.Request) {
 	// the worktree might be wedged in a state where compose can't bring
 	// it down cleanly, and the user wants the dir gone anyway.
 	if info, err := worktree.DetectFrom(abs); err == nil {
-		if d, err := dailyForWorktree(info, slug, io.Discard, io.Discard); err == nil {
+		if d, err := dailyForDown(info, slug, io.Discard, io.Discard); err == nil {
 			_ = runDown(d, false, false, io.Discard, io.Discard)
 			d.State.Close()
 		}

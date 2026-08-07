@@ -314,13 +314,19 @@ At `pier up`:
 3. Expand `[stack.env]` and add it to the Compose process environment.
 4. Open the state DB and run `pre_up`.
 5. Apply symlinks/snapshots from the primary worktree.
-6. Generate `.pier/compose.override.yml`.
-7. Run `docker compose -f <file> -f .pier/compose.override.yml -p <project>-<slug> up -d --build`.
-8. Connect exposed containers to the traefik discovery network with
-   worktree-scoped aliases.
-9. Persist the workload row in state.
-10. Run `post_up`.
-11. Print URLs.
+6. Generate `.pier/compose.override.yml` and a secret-free teardown model.
+7. Validate the merged Compose model and build images without touching the
+   running workload.
+8. If `project.name`, `stack.kind`, or `stack.file` changed, stop the previous
+   applied identity only after the new build succeeds.
+9. Run `docker compose ... up -d --no-build --remove-orphans --wait`, with a
+   bounded readiness timeout.
+10. Reconnect exposed containers to the Traefik discovery network with only
+    worktree-scoped FQDN aliases. The network is already present during
+    container creation, so normal up does not need a second container restart.
+11. Atomically persist the applied workload snapshot, then update the state row.
+12. Print URLs.
+13. Run `post_up`.
 
 The generated override owns:
 
@@ -330,8 +336,18 @@ The generated override owns:
 - port stripping, except selected `preserve_ports`;
 - `user: "<uid>:<gid>"` where requested;
 - templated environment variables.
+- the external Traefik network on exposed services, available at creation time.
 
 Do not edit `.pier/compose.override.yml`; it is regenerated.
+
+`pier down` uses `.pier/applied/<slug>.json`, not the desired manifest, as its
+teardown authority. The mode-0600 snapshot records the effective Pier context,
+generated override, and a minimal Compose model containing service and network
+identity but no container environment. This keeps down operational after a
+manifest parse error, project/stack rename, or branch-slug change. The snapshot
+is removed only after the applied adapter teardown and state-row deletion
+succeed. Workloads created by older Pier versions fall back to manifest-based
+down until their next successful `pier up` writes a snapshot.
 
 ### 5.4 DNS And Routing
 
@@ -394,6 +410,9 @@ updates.
 `state.db` tracks registered projects and running workloads. Workload state is
 a cache; docker, git, and filesystem reality win. `doctor --fix` can drop dead
 rows. `gc` is reserved for broader orphan cleanup but is not implemented yet.
+Each worktree also keeps its last effective teardown state under
+`.pier/applied/`; unlike `state.db`, that snapshot is authoritative for
+`pier down` and is replaced atomically after reconciliation.
 
 ### 5.6 Materialization And Hooks
 
@@ -481,6 +500,9 @@ Implemented:
 - Selective per-host LAN sharing.
 - Doctor checks and selected fix paths.
 - Curl-pipe installer and GoReleaser config.
+- Build-first workload reconciliation with orphan cleanup and Compose
+  running/health readiness.
+- Applied-state teardown across manifest and workload-identity changes.
 
 Not implemented yet:
 
@@ -490,7 +512,6 @@ Not implemented yet:
 - TLS.
 - Optional basic auth.
 - Automatic host DNS setup outside Linux.
-- Health-check-based workload readiness.
 
 Open design questions:
 

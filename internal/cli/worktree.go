@@ -365,7 +365,7 @@ func resolveExistingWorktreePath(primary, target string) (string, error) {
 
 // removeWorktreeAt runs `git worktree remove` against primary, with --force
 // when force is true. Caller is responsible for stopping the workload
-// first (CLI does runPierIn down; API does runDown via dailyForWorktree).
+// first (CLI does runPierIn down; API does runDown via dailyForDown).
 //
 // On failure, runs `git worktree prune` so that even when the rm hit a
 // permission error mid-way (typical when a container left root-owned

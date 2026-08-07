@@ -2,10 +2,12 @@ package adapter
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dguerizec/pier/internal/manifest"
 )
@@ -40,24 +42,125 @@ func TestRenderOverride_SingleExpose(t *testing.T) {
 		"traefik.http.routers.myapp-feat-x-web-default.service=myapp-feat-x-web",
 		"traefik.docker.network=pier",
 		"traefik.http.services.myapp-feat-x-web.loadbalancer.server.port=3000",
+		"networks:\n      pier_proxy:",
+		"- web.feat-x.myapp.test",
+		"- feat-x.myapp.test",
+		"name: pier",
+		"external: true",
 	}
 	for _, w := range want {
 		if !strings.Contains(s, w) {
 			t.Errorf("override missing %q\n--- rendered ---\n%s", w, s)
 		}
 	}
-	// Pier network attachment is no longer declared in the compose
-	// override — pier attaches it post-`compose up` with explicit
-	// aliases so the short service name doesn't leak onto the shared
-	// network. See attachToTraefikNetwork.
-	for _, bad := range []string{
-		"networks: [default, pier]",
-		"networks:\n  pier:",
-		"external: true",
-	} {
-		if strings.Contains(s, bad) {
-			t.Errorf("override unexpectedly contains %q\n--- rendered ---\n%s", bad, s)
-		}
+	// Compose connects the proxy network before Traefik discovers the
+	// container. AttachToTraefikNetwork then reconnects it with only these
+	// FQDN aliases, removing Compose's implicit short service alias.
+}
+
+func TestComposePrepareApplyBuildsBeforeReconcileAndWaits(t *testing.T) {
+	if os.PathSeparator != '/' {
+		t.Skip("shell-script docker stub is POSIX-only")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte("services:\n  web:\n    image: demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stubDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(stubDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(dir, "calls")
+	script := `#!/bin/sh
+printf '%s\n' "$*" >> "$CALLS_FILE"
+case "$*" in
+  *"config --format=json"*)
+    printf '%s\n' '{"services":{"web":{}},"networks":{"default":{"name":"demo-main_default","external":false},"pier_proxy":{"name":"pier","external":true}}}'
+    ;;
+  "network ls"*) printf '%s\n' 'pier' ;;
+  *"ps -q web"*) printf '%s\n' 'container-id' ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(stubDir, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CALLS_FILE", calls)
+	c := Ctx{
+		Project:        "demo",
+		Slug:           "main",
+		BaseDomain:     "demo.test",
+		WorktreePath:   dir,
+		Stack:          manifest.Stack{Kind: manifest.KindCompose, File: "compose.yml", Service: "web"},
+		Expose:         []manifest.ExposeRule{{Service: "web", Port: 3000}},
+		DefaultService: "web",
+		TraefikNetwork: "pier",
+		WaitTimeout:    7 * time.Second,
+		Out:            io.Discard,
+		Err:            io.Discard,
+	}
+	a := compose{}
+	prepared, err := a.Prepare(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(prepared.AdapterData), "demo-main_default") ||
+		!strings.Contains(string(prepared.AdapterData), teardownImage) {
+		t.Fatalf("teardown config missing applied resources:\n%s", prepared.AdapterData)
+	}
+	if _, err := a.Apply(c, prepared); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(body)
+	build := strings.Index(log, " build\n")
+	up := strings.Index(log, " up -d --no-build --remove-orphans --wait --wait-timeout 7\n")
+	if build < 0 || up < 0 || build > up {
+		t.Fatalf("build must precede reconcile:\n%s", log)
+	}
+	if strings.Contains(log, " restart ") {
+		t.Fatalf("normal apply must not restart exposed containers:\n%s", log)
+	}
+	if !strings.Contains(log, "network disconnect pier demo-main-web") ||
+		!strings.Contains(log, "network connect --alias web.main.demo.test --alias main.demo.test pier demo-main-web") {
+		t.Fatalf("exact Traefik alias reconnect missing:\n%s", log)
+	}
+}
+
+func TestComposeDownAppliedUsesFrozenTeardownConfig(t *testing.T) {
+	if os.PathSeparator != '/' {
+		t.Skip("shell-script docker stub is POSIX-only")
+	}
+	dir := t.TempDir()
+	stubDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(stubDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(dir, "calls")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CALLS_FILE\"\n"
+	if err := os.WriteFile(filepath.Join(stubDir, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CALLS_FILE", calls)
+	c := Ctx{Project: "old", Slug: "main", WorktreePath: dir, Out: io.Discard, Err: io.Discard}
+	data := []byte("services:\n  web:\n    image: pier.local/teardown-placeholder\n")
+	if err := (compose{}).DownApplied(c, data); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(body)
+	if !strings.Contains(log, "compose -f ") || !strings.Contains(log, " -p old-main down --remove-orphans") {
+		t.Fatalf("applied down invocation = %q", log)
+	}
+	if strings.Contains(log, "compose.yml") {
+		t.Fatalf("applied down unexpectedly used current stack file: %q", log)
 	}
 }
 
@@ -93,6 +196,31 @@ func TestRenderOverride_MultiExposeNoAlias(t *testing.T) {
 	}
 	if strings.Contains(s, "-default.rule=Host(") {
 		t.Errorf("no service is default, alias router should not be rendered:\n%s", s)
+	}
+}
+
+func TestRenderOverride_AvoidsSourceNetworkKeyCollision(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "compose.yml"), []byte(`services:
+  web:
+    image: demo
+networks:
+  pier_proxy:
+    name: user-owned
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := Ctx{
+		Project: "demo", Slug: "main", BaseDomain: "demo.test", WorktreePath: dir,
+		Stack:  manifest.Stack{Kind: manifest.KindCompose, File: "compose.yml"},
+		Expose: []manifest.ExposeRule{{Service: "web", Port: 3000}}, TraefikNetwork: "pier",
+	}
+	body, err := renderOverride(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "pier_proxy_1:") {
+		t.Fatalf("generated network key should avoid source collision:\n%s", body)
 	}
 }
 

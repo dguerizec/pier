@@ -135,7 +135,7 @@ vars are identical to `[materialize].post_create` / `pre_remove`.
 ```toml
 [hooks]
 resolve_values = "./scripts/resolve-values" # JSON values before final manifest parse
-pre_up    = ["cargo build --release"]   # before materialize.Apply / adapter.Up
+pre_up    = ["cargo build --release"]   # before materialize.Apply / adapter.Prepare
 post_up   = ["./scripts/smoke.sh"]      # after URLs are printed, workload running
 pre_down  = ["./scripts/dump.sh"]       # before adapter.Down (workload still up)
 post_down = ["./scripts/notify.sh"]     # after stop + state cleanup
@@ -157,6 +157,11 @@ to `[materialize]`** — same
 same first-non-zero-aborts sequencing, cwd = current worktree. A single
 script can be reused as `post_create` and `post_up` if both phases
 expect the same env.
+
+The effective hooks are part of the mode-0600 applied snapshot. `pier down`
+runs the hooks belonging to the workload that was last applied, even if the
+current manifest has since changed or stopped parsing. Run `pier up` to apply a
+hook change before relying on that changed hook during teardown.
 
 **Failure behaviour (per phase):**
 - `pre_up` fails → `pier up` aborts before `materialize.Apply`. Nothing

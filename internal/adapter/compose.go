@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -20,13 +21,16 @@ import (
 )
 
 const (
-	overrideSubdir = ".pier"
-	overrideFile   = "compose.override.yml"
+	overrideSubdir       = ".pier"
+	overrideFile         = "compose.override.yml"
+	pierProxyNetworkBase = "pier_proxy"
+	defaultWaitTimeout   = 2 * time.Minute
+	teardownImage        = "pier.local/teardown-placeholder"
 )
 
 type compose struct{}
 
-func (compose) Up(c Ctx) (*Handle, error) {
+func (compose) Prepare(c Ctx) (*Prepared, error) {
 	if c.Stack.File == "" {
 		return nil, errors.New("compose: stack.file is required")
 	}
@@ -39,33 +43,61 @@ func (compose) Up(c Ctx) (*Handle, error) {
 		return nil, err
 	}
 
-	if err := ensureExternalNetworks(c, overridePath); err != nil {
-		fmt.Fprintf(c.Err, "warning: ensure external networks: %v\n", err)
+	cfg, err := inspectComposeConfig(c, overridePath)
+	if err != nil {
+		return nil, fmt.Errorf("compose config: %w", err)
 	}
+	ensureExternalNetworks(c, cfg)
+	teardown, err := renderTeardownCompose(cfg)
+	if err != nil {
+		return nil, err
+	}
+	override, err := os.ReadFile(overridePath)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", overridePath, err)
+	}
+	if _, err := composeRun(c, []string{"build"}, overridePath, true); err != nil {
+		return nil, fmt.Errorf("compose build: %w", err)
+	}
+	return &Prepared{AdapterData: teardown, OverrideData: override}, nil
+}
 
-	if _, err := composeRun(c, []string{"up", "-d", "--build"}, overridePath, true); err != nil {
-		return nil, fmt.Errorf("compose up: %w", err)
+func (compose) Apply(c Ctx, prepared *Prepared) (*Handle, error) {
+	if prepared == nil {
+		return nil, errors.New("compose: prepared workload is required")
 	}
-
-	if err := AttachToTraefikNetwork(c); err != nil {
-		return nil, fmt.Errorf("attach to %s network: %w", c.TraefikNetwork, err)
+	overridePath := filepath.Join(c.WorktreePath, overrideSubdir, overrideFile)
+	timeout := c.WaitTimeout
+	if timeout <= 0 {
+		timeout = defaultWaitTimeout
 	}
-	if err := RefreshTraefikRoutes(c); err != nil {
-		return nil, fmt.Errorf("refresh traefik routes: %w", err)
+	args := []string{
+		"up", "-d", "--no-build", "--remove-orphans", "--wait",
+		"--wait-timeout", strconv.Itoa(int(timeout.Seconds())),
 	}
-
-	// We track the default exposed service's container id (or the first
-	// expose when no default is set) as the workload's "primary" container.
-	// state stays single-row per workload, sufficient for ls/down today.
+	_, applyErr := composeRun(c, args, overridePath, true)
+	handle := &Handle{}
 	primary := c.DefaultService
 	if primary == "" {
 		primary = c.Expose[0].Service
 	}
-	cid, err := composeContainerID(c, overridePath, primary)
-	if err != nil {
-		fmt.Fprintf(c.Err, "warning: could not resolve container id (%v)\n", err)
+	cid, idErr := composeContainerID(c, overridePath, primary)
+	if idErr != nil {
+		fmt.Fprintf(c.Err, "warning: could not resolve container id (%v)\n", idErr)
+	} else {
+		handle.ContainerID = cid
 	}
-	return &Handle{ContainerID: cid}, nil
+	if applyErr != nil && idErr != nil {
+		return nil, fmt.Errorf("compose up: %w", applyErr)
+	}
+	if applyErr != nil {
+		return handle, fmt.Errorf("compose up: %w", applyErr)
+	}
+
+	if err := AttachToTraefikNetwork(c); err != nil {
+		return handle, fmt.Errorf("attach to %s network: %w", c.TraefikNetwork, err)
+	}
+	return handle, nil
 }
 
 func (compose) Down(c Ctx) error {
@@ -79,7 +111,38 @@ func (compose) Down(c Ctx) error {
 			return werr
 		}
 	}
-	if _, err := composeRun(c, []string{"down"}, overridePath, true); err != nil {
+	if _, err := composeRun(c, []string{"down", "--remove-orphans"}, overridePath, true); err != nil {
+		return fmt.Errorf("compose down: %w", err)
+	}
+	return nil
+}
+
+func (compose) DownApplied(c Ctx, adapterData []byte) error {
+	if len(adapterData) == 0 {
+		return errors.New("compose: applied teardown config is empty")
+	}
+	dir := filepath.Join(c.WorktreePath, overrideSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	f, err := os.CreateTemp(dir, "compose.down-*.yml")
+	if err != nil {
+		return fmt.Errorf("create applied compose config: %w", err)
+	}
+	path := f.Name()
+	defer os.Remove(path)
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return err
+	}
+	if _, err := f.Write(adapterData); err != nil {
+		f.Close()
+		return fmt.Errorf("write applied compose config: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close applied compose config: %w", err)
+	}
+	if _, err := composeRunFiles(c, []string{path}, []string{"down", "--remove-orphans"}, true); err != nil {
 		return fmt.Errorf("compose down: %w", err)
 	}
 	return nil
@@ -115,13 +178,15 @@ func (compose) Logs(c Ctx, follow bool, tail int, services []string) error {
 // composeRun shells out to `docker compose -f <stack> -f <override> -p <name> <args...>`.
 // When stream is true, stdout/stderr are forwarded to the caller's writers.
 func composeRun(c Ctx, args []string, overridePath string, stream bool) (string, error) {
-	stackPath := stackFilePath(c)
-	full := []string{
-		"compose",
-		"-f", stackPath,
-		"-f", overridePath,
-		"-p", Name(c.Project, c.Slug),
+	return composeRunFiles(c, []string{stackFilePath(c), overridePath}, args, stream)
+}
+
+func composeRunFiles(c Ctx, files, args []string, stream bool) (string, error) {
+	full := []string{"compose"}
+	for _, path := range files {
+		full = append(full, "-f", path)
 	}
+	full = append(full, "-p", Name(c.Project, c.Slug))
 	full = append(full, args...)
 
 	ctx := c.Context
@@ -194,35 +259,31 @@ func writeOverride(c Ctx) (string, error) {
 	return path, nil
 }
 
-// ensureExternalNetworks renders the merged compose config and creates any
+// ensureExternalNetworks creates any
 // `external: true` network the user's compose file references but the
 // docker daemon doesn't have. The pier network itself is provisioned at
 // install time so the existence check below is a no-op for it.
-//
-// Best-effort: a compose config failure here means up will surface the
-// real error a moment later — we don't want to mask it.
-func ensureExternalNetworks(c Ctx, overridePath string) error {
-	cmd := exec.Command("docker",
-		"compose",
-		"-f", stackFilePath(c),
-		"-f", overridePath,
-		"config", "--format=json",
-	)
-	cmd.Dir = c.WorktreePath
-	cmd.Env = runtimevalues.MergeEnv(os.Environ(), c.ComposeEnv)
-	out, err := cmd.Output()
+type composeConfig struct {
+	Services map[string]json.RawMessage `json:"services"`
+	Networks map[string]struct {
+		External any    `json:"external"`
+		Name     string `json:"name"`
+	} `json:"networks"`
+}
+
+func inspectComposeConfig(c Ctx, overridePath string) (*composeConfig, error) {
+	out, err := composeRun(c, []string{"config", "--format=json"}, overridePath, false)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	var cfg struct {
-		Networks map[string]struct {
-			External any    `json:"external"`
-			Name     string `json:"name"`
-		} `json:"networks"`
+	var cfg composeConfig
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		return nil, fmt.Errorf("decode compose config: %w", err)
 	}
-	if err := json.Unmarshal(out, &cfg); err != nil {
-		return nil
-	}
+	return &cfg, nil
+}
+
+func ensureExternalNetworks(c Ctx, cfg *composeConfig) {
 	for _, n := range cfg.Networks {
 		if !isExternal(n.External) {
 			continue
@@ -235,7 +296,37 @@ func ensureExternalNetworks(c Ctx, overridePath string) error {
 			fmt.Fprintf(c.Err, "warning: create network %s: %v\n", netName, err)
 		}
 	}
-	return nil
+}
+
+func renderTeardownCompose(cfg *composeConfig) ([]byte, error) {
+	type teardownService struct {
+		Image string `yaml:"image"`
+	}
+	type teardownNetwork struct {
+		Name     string `yaml:"name,omitempty"`
+		External bool   `yaml:"external,omitempty"`
+	}
+	model := struct {
+		Services map[string]teardownService `yaml:"services"`
+		Networks map[string]teardownNetwork `yaml:"networks,omitempty"`
+	}{
+		Services: make(map[string]teardownService, len(cfg.Services)),
+		Networks: make(map[string]teardownNetwork, len(cfg.Networks)),
+	}
+	for name := range cfg.Services {
+		model.Services[name] = teardownService{Image: teardownImage}
+	}
+	for key, network := range cfg.Networks {
+		model.Networks[key] = teardownNetwork{
+			Name:     network.Name,
+			External: isExternal(network.External),
+		}
+	}
+	body, err := yaml.Marshal(model)
+	if err != nil {
+		return nil, fmt.Errorf("render applied compose config: %w", err)
+	}
+	return body, nil
 }
 
 // isExternal handles both the modern `external: true` form and the older
@@ -255,10 +346,10 @@ func isExternal(v any) bool {
 // compose service short name (`backend`, `frontend`, …) which would
 // collide across projects and worktrees sharing the same network.
 //
-// Why this isn't done via compose: `docker compose` auto-registers the
-// service short name as a network alias on every connected network and
-// offers no way to suppress that default. `docker network connect
-// --alias` lets us declare exactly the aliases we want.
+// Compose performs the initial attachment so Traefik sees the intended
+// network during container discovery, but it also auto-registers the short
+// service name and offers no way to suppress it. Reconnecting after readiness
+// removes that collision-prone alias without restarting the container.
 //
 // The exposed container stays on its project's `default` network (via
 // compose's auto-attach), so the short name `backend` keeps resolving
@@ -278,12 +369,9 @@ func AttachToTraefikNetwork(c Ctx) error {
 	return nil
 }
 
-// RefreshTraefikRoutes nudges the docker provider after pier's post-compose
-// network attach. Traefik can process the compose-created container before it
-// has joined the shared pier network, cache the first compose-private network,
-// and then keep proxying to an unreachable IP even after docker network connect.
-// A container restart after the pier network exists makes Traefik rebuild the
-// service against traefik.docker.network.
+// RefreshTraefikRoutes is a doctor recovery path for legacy or externally
+// modified workloads. Normal Apply does not call it: exposed services now join
+// the Traefik network as part of compose up, before provider discovery.
 func RefreshTraefikRoutes(c Ctx) error {
 	seen := map[string]bool{}
 	for _, e := range c.Expose {
@@ -309,8 +397,8 @@ func RefreshTraefikRoutes(c Ctx) error {
 // is dropped, then a fresh attach is made with the explicit aliases
 // we want.
 func reconnectWithAliases(network, container string, aliases []string) error {
-	// Best-effort disconnect — fails silently when the container isn't
-	// on the network, which is the common case on a fresh `pier up`.
+	// Best-effort disconnect also keeps doctor recovery compatible with legacy
+	// containers which were never attached by Compose.
 	_ = exec.Command("docker", "network", "disconnect", network, container).Run()
 
 	args := []string{"network", "connect"}
@@ -347,6 +435,7 @@ type exposedDetails struct {
 	HostRule      string
 	AliasRule     string
 	Port          int
+	Aliases       []string
 }
 
 // envEntry is one rendered KEY=value line for the compose `environment:`
@@ -377,6 +466,7 @@ func renderOverride(c Ctx) ([]byte, error) {
 		return nil, errors.New("compose: at least one [[expose]] entry is required")
 	}
 	composeServices := scanComposeServices(c)
+	proxyNetworkKey := availableProxyNetworkKey(c)
 	user := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
 
 	blocks := map[string]*serviceOverride{}
@@ -404,6 +494,10 @@ func renderOverride(c Ctx) ([]byte, error) {
 			HostRule:      HostFor(e, c.Slug, c.BaseDomain),
 			AliasRule:     alias,
 			Port:          e.Port,
+			Aliases:       []string{HostFor(e, c.Slug, c.BaseDomain)},
+		}
+		if alias != "" {
+			b.Exposed.Aliases = append(b.Exposed.Aliases, alias)
 		}
 		// Exposed services always have their host ports stripped — traefik
 		// routes via the pier network, host bindings would collide between
@@ -471,6 +565,12 @@ services:
 {{- end}}
 {{- with .Exposed}}
     container_name: {{.ContainerName}}
+    networks:
+      {{$.ProxyNetworkKey}}:
+        aliases:
+{{- range .Aliases}}
+          - {{.}}
+{{- end}}
     labels:
       - traefik.enable=true
       - traefik.http.routers.{{.RouterID}}.rule=Host(` + "`{{.HostRule}}`" + `)
@@ -501,19 +601,47 @@ services:
 {{- end}}
 {{- end}}
 {{- end}}
+networks:
+  {{.ProxyNetworkKey}}:
+    name: {{.Network}}
+    external: true
 `))
 	data := struct {
-		Network string
-		Blocks  []*serviceOverride
+		Network         string
+		ProxyNetworkKey string
+		Blocks          []*serviceOverride
 	}{
-		Network: c.TraefikNetwork,
-		Blocks:  ordered,
+		Network:         c.TraefikNetwork,
+		ProxyNetworkKey: proxyNetworkKey,
+		Blocks:          ordered,
 	}
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, data); err != nil {
 		return nil, fmt.Errorf("render override: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+func availableProxyNetworkKey(c Ctx) string {
+	body, err := os.ReadFile(stackFilePath(c))
+	if err != nil {
+		return pierProxyNetworkBase
+	}
+	var doc struct {
+		Networks map[string]yaml.Node `yaml:"networks"`
+	}
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		return pierProxyNetworkBase
+	}
+	for suffix := 0; ; suffix++ {
+		key := pierProxyNetworkBase
+		if suffix > 0 {
+			key += "_" + strconv.Itoa(suffix)
+		}
+		if _, exists := doc.Networks[key]; !exists {
+			return key
+		}
+	}
 }
 
 // sortedEnv flattens an env map into key-sorted entries so the rendered

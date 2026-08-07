@@ -1,12 +1,15 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/dguerizec/pier/internal/adapter"
+	"github.com/dguerizec/pier/internal/applied"
 	"github.com/dguerizec/pier/internal/materialize"
 	"github.com/dguerizec/pier/internal/state"
 )
@@ -15,19 +18,24 @@ type upOpts struct {
 	slug             string
 	fresh            bool
 	ignoreHookErrors bool
+	waitTimeout      time.Duration
 }
 
 func newUpCmd() *cobra.Command {
 	var opts upOpts
 	cmd := &cobra.Command{
 		Use:   "up",
-		Short: "Materialize files and start the workload for the current worktree",
+		Short: "Build and reconcile the workload for the current worktree",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if opts.waitTimeout <= 0 {
+				return errors.New("--wait-timeout must be greater than zero")
+			}
 			d, err := resolveDailyFresh(cmd, opts.slug)
 			if err != nil {
 				return err
 			}
 			defer d.State.Close()
+			d.Ctx.WaitTimeout = opts.waitTimeout
 			return runUp(d, opts.ignoreHookErrors, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
@@ -35,18 +43,18 @@ func newUpCmd() *cobra.Command {
 	f.StringVar(&opts.slug, "slug", "", "override derived slug")
 	f.BoolVar(&opts.fresh, "fresh", false, "skip snapshot copy, mkdir empty dirs instead (post-MVP)")
 	f.BoolVar(&opts.ignoreHookErrors, "ignore-hook-errors", false, "continue when a [hooks].pre_up / post_up command fails")
+	f.DurationVar(&opts.waitTimeout, "wait-timeout", 2*time.Minute, "maximum time to wait for services to become running/healthy")
 	registerSlugCompletion(cmd)
 	return cmd
 }
 
-// runUp registers the project, materializes files, calls the adapter's Up,
-// persists the workload in state, and prints URLs.
+// runUp materializes files, prepares without disrupting the current workload,
+// replaces an old identity when needed, applies the desired workload, persists
+// its teardown state, and prints URLs.
 // Shared between the cobra command and the REST POST /up handler — keep
 // it pure so the API can call it with io.Discard writers without
 // surprising the CLI flow.
 func runUp(d *daily, ignoreHookErrors bool, out, errOut io.Writer) error {
-	registerProjectForUp(d, errOut)
-
 	hc := buildHookContext(d.Worktree.PrimaryPath, d.Worktree.Toplevel, d.Worktree.Branch, d.Manifest, errOut)
 	hc.Slug = d.Slug
 	hc.RuntimeEnv = d.Ctx.ComposeEnv
@@ -67,21 +75,34 @@ func runUp(d *daily, ignoreHookErrors bool, out, errOut io.Writer) error {
 		return err
 	}
 
-	h, err := a.Up(d.Ctx)
+	previous, err := previousAppliedForUp(d.Worktree.Toplevel, d.Slug)
 	if err != nil {
 		return err
 	}
-
-	err = d.State.Upsert(&state.Workload{
-		Project:      d.Ctx.Project,
-		Slug:         d.Ctx.Slug,
-		WorktreePath: d.Ctx.WorktreePath,
-		Branch:       d.Worktree.Branch,
-		Kind:         d.Manifest.Stack.Kind,
-		ContainerID:  h.ContainerID,
-	})
+	prepared, err := a.Prepare(d.Ctx)
 	if err != nil {
-		return fmt.Errorf("persist workload: %w", err)
+		return err
+	}
+	if previous != nil && !previous.SameIdentity(d.Ctx) {
+		fmt.Fprintf(out, "▸ replacing applied workload %s with %s\n",
+			adapter.Name(previous.Project, previous.Slug), adapter.Name(d.Ctx.Project, d.Ctx.Slug))
+		old := dailyFromApplied(d, previous, out, errOut)
+		if err := runDown(old, false, ignoreHookErrors, out, errOut); err != nil {
+			return fmt.Errorf("stop previous applied workload: %w", err)
+		}
+	}
+
+	h, applyErr := a.Apply(d.Ctx, prepared)
+	if h != nil {
+		if err := persistAppliedWorkload(d, prepared, h, errOut); err != nil {
+			if applyErr != nil {
+				return errors.Join(applyErr, err)
+			}
+			return err
+		}
+	}
+	if applyErr != nil {
+		return applyErr
 	}
 
 	for _, u := range adapter.URLs(d.Ctx) {
@@ -98,6 +119,69 @@ func runUp(d *daily, ignoreHookErrors bool, out, errOut io.Writer) error {
 	return nil
 }
 
+func previousAppliedForUp(worktreePath, desiredSlug string) (*applied.State, error) {
+	state, err := applied.Load(worktreePath, desiredSlug)
+	if err == nil {
+		return state, nil
+	}
+	if !errors.Is(err, applied.ErrNotFound) {
+		return nil, err
+	}
+	states, err := applied.List(worktreePath)
+	if err != nil {
+		return nil, err
+	}
+	if len(states) == 0 {
+		return nil, nil
+	}
+	if len(states) == 1 {
+		return states[0], nil
+	}
+	return nil, fmt.Errorf("multiple applied workloads exist in %s; stop the old workload with pier down --slug before changing slug", worktreePath)
+}
+
+func persistAppliedWorkload(d *daily, prepared *adapter.Prepared, h *adapter.Handle, errOut io.Writer) error {
+	appliedState := applied.New(
+		d.Ctx,
+		d.Worktree.PrimaryPath,
+		d.Worktree.Branch,
+		d.Manifest,
+		prepared,
+		h,
+	)
+	if err := applied.Save(appliedState); err != nil {
+		return fmt.Errorf("persist applied workload (workload is running): %w", err)
+	}
+	registerProjectForUp(d, errOut)
+
+	if err := d.State.Upsert(&state.Workload{
+		Project:      d.Ctx.Project,
+		Slug:         d.Ctx.Slug,
+		WorktreePath: d.Ctx.WorktreePath,
+		Branch:       d.Worktree.Branch,
+		Kind:         d.Manifest.Stack.Kind,
+		ContainerID:  h.ContainerID,
+	}); err != nil {
+		return fmt.Errorf("persist workload: %w", err)
+	}
+	return nil
+}
+
+func dailyFromApplied(current *daily, state *applied.State, out, errOut io.Writer) *daily {
+	ctx := state.Context(out, errOut)
+	ctx.WorktreePath = current.Worktree.Toplevel
+	return &daily{
+		Worktree: current.Worktree,
+		Manifest: &state.Manifest,
+		Slug:     state.Slug,
+		Ctx:      ctx,
+		State:    current.State,
+		Paths:    current.Paths,
+		Config:   current.Config,
+		Applied:  state,
+	}
+}
+
 // registerProjectForUp makes an existing .pier.toml sufficient for the
 // dashboard/API project surface. The primary worktree is the stable repo
 // identity; registering a secondary path would create one registry row per
@@ -108,7 +192,7 @@ func registerProjectForUp(d *daily, errOut io.Writer) {
 	if repoPath == "" {
 		repoPath = d.Worktree.Toplevel
 	}
-	if _, err := d.State.RegisterProject(d.Manifest.Project.Name, repoPath); err != nil {
+	if _, err := d.State.RegisterOrRenameProject(d.Manifest.Project.Name, repoPath); err != nil {
 		fmt.Fprintf(errOut, "! registry: %v\n", err)
 	}
 }

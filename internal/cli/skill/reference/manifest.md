@@ -149,8 +149,8 @@ Pier also exports every resolved scalar as
 Pier-agnostic.
 
 The value object is cached with mode `0600` at
-`.pier/resolved-values.json`. `pier up` refreshes it; `down` and `logs`
-reuse the exact cached values. The resolver receives
+`.pier/resolved-values.json`. `pier up` refreshes it; the applied teardown
+snapshot and `logs` reuse the exact resolved values. The resolver receives
 `PIER_VALUES_FILE` and the normal `PIER_*` worktree context, so it can
 reuse a prior assignment. Allocation, locking, and collision policy
 belong to the project hook.

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/dguerizec/pier/internal/manifest"
 )
@@ -33,17 +34,20 @@ type Ctx struct {
 	Out            io.Writer                         // command output sink
 	Err            io.Writer                         // command error sink
 	Context        context.Context                   // cancels the underlying docker process; nil = no cancellation
+	WaitTimeout    time.Duration                     // readiness deadline; zero uses the adapter default
 }
 
-// Handle is the state to persist after a successful Up.
+// Handle is the state to persist after a successful Apply.
 type Handle struct {
 	ContainerID string // compose / dockerfile (first exposed service)
 }
 
 // Adapter is implemented per stack kind.
 type Adapter interface {
-	Up(c Ctx) (*Handle, error)
+	Prepare(c Ctx) (*Prepared, error)
+	Apply(c Ctx, prepared *Prepared) (*Handle, error)
 	Down(c Ctx) error
+	DownApplied(c Ctx, adapterData []byte) error
 	Logs(c Ctx, follow bool, tail int, services []string) error
 }
 

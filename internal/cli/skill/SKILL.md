@@ -44,9 +44,10 @@ one URL per git worktree.
   labels, container names, ports reset, and templated env vars. **Never
   edit that file by hand** — it is regenerated and your edits will be
   lost.
-- **State lives in three places**: git (worktrees), docker (containers),
-  the pier state DB (`~/.config/pier/state.db`). pier orchestrates the
-  three. Don't manipulate them directly when a pier command exists.
+- **State lives in four places**: git (worktrees), docker (containers),
+  the pier state DB (`~/.config/pier/state.db`), and the last applied
+  teardown snapshot under `.pier/applied/`. pier orchestrates them. Don't
+  manipulate them directly when a pier command exists.
 
 ## Bootstrapping (`pier init`)
 
@@ -89,7 +90,7 @@ the common case — pier resolves project + slug from the cwd).
 
 | Task | pier command | Do NOT use |
 |---|---|---|
-| Start the workload | `pier up` | `docker compose up`, `make run` |
+| Start or reconcile the workload | `pier up` | `docker compose up`, `make run` |
 | Stop the workload | `pier down` (`--purge` to also wipe snapshots) | `docker compose down`, `docker stop` |
 | Print the workload's URL | `pier url` (`--all` for every URL) | grep the manifest |
 | Tail logs | `pier logs [-f] [--tail N]` | `docker compose logs` |
@@ -100,6 +101,12 @@ the common case — pier resolves project + slug from the cwd).
 `--slug X` on any of `up/down/url/logs/ps` targets a different worktree
 without `cd`. `X` can be a slug, a branch name, or a worktree path /
 basename — pier resolves all three.
+
+Repeated `pier up` is the supported reload path. It builds first while the
+current workload remains available, reconciles with orphan cleanup, and waits
+for Compose running/health readiness. Use `--wait-timeout 5m` for a stack that
+needs longer than the two-minute default. `pier down` uses the last applied
+snapshot, so it remains safe after editing or breaking the current manifest.
 
 `pier share` is an explicit LAN allowlist for local-mode installs. Use
 `pier share add backend --interface enp3s0` (or `--bind-ip <ip>`) when
@@ -250,13 +257,10 @@ Don't write it into `.pier.toml` proactively. See
    registration, host port stripping, and per-worktree container
    names — multi-worktree runs will collide.
 7. **Running `docker compose restart` / `stop` / `start` / `rm`
-   on a pier workload.** Pier attaches the shared `pier` network
-   with a unique alias *after* `compose up`. A raw compose restart
-   re-creates the container without that alias, traefik loses the
-   route, and short service names (`backend`, `frontend`) collide
-   with other projects on the shared network. Use `pier down && pier
-   up` instead, or `pier doctor --fix` to re-sync if you've already
-   restarted out-of-band.
+   on a pier workload.** These bypass Pier's build/readiness pipeline,
+   exact Traefik aliases, applied snapshot, and state update. Use `pier up`
+   to rebuild or reconcile, `pier down` to stop, or `pier doctor --fix`
+   to re-sync after an out-of-band mutation.
 8. **Adding `[worktree].dir` to `.pier.toml` without being asked.**
    It's a per-user preference. See
    [reference/worktree-dir.md](reference/worktree-dir.md).

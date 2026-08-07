@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dguerizec/pier/internal/adapter"
+	"github.com/dguerizec/pier/internal/applied"
 	"github.com/dguerizec/pier/internal/infra"
 	"github.com/dguerizec/pier/internal/manifest"
 	"github.com/dguerizec/pier/internal/materialize"
@@ -30,6 +31,7 @@ type daily struct {
 	State    *state.Store
 	Paths    *infra.Paths
 	Config   *infra.Config
+	Applied  *applied.State
 }
 
 // resolveTarget picks which worktree the daily command should operate on
@@ -173,6 +175,42 @@ func resolveDailyFresh(cmd *cobra.Command, slugOverride string) (*daily, error) 
 	return resolveDailyMode(cmd, slugOverride, true)
 }
 
+// resolveDown prefers the last applied workload state over the desired
+// manifest. This keeps teardown possible after project/stack renames and even
+// when the current manifest is missing or invalid.
+func resolveDown(cmd *cobra.Command, slugOverride string) (*daily, error) {
+	current, err := worktree.Detect()
+	if err != nil {
+		return nil, err
+	}
+	slugInput := slugOverride
+	if slugInput == "" {
+		slugInput = os.Getenv("PIER_SLUG")
+	}
+	info, slug, err := resolveTarget(current, slugInput)
+	if err != nil {
+		return nil, err
+	}
+	if slugInput == "" {
+		states, err := applied.List(info.Toplevel)
+		if err != nil {
+			return nil, err
+		}
+		if len(states) == 1 {
+			return dailyForAppliedState(info, states[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
+		}
+		if len(states) > 1 {
+			for _, state := range states {
+				if state.Slug == slug {
+					return dailyForAppliedState(info, state, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				}
+			}
+			return nil, fmt.Errorf("multiple applied workloads exist in %s; select one with --slug", info.Toplevel)
+		}
+	}
+	return dailyForDown(info, slug, cmd.OutOrStdout(), cmd.ErrOrStderr())
+}
+
 func resolveDailyMode(cmd *cobra.Command, slugOverride string, refreshValues bool) (*daily, error) {
 	current, err := worktree.Detect()
 	if err != nil {
@@ -201,6 +239,42 @@ func dailyForWorktree(info *worktree.Info, slug string, out, errW io.Writer) (*d
 // hooks.resolve_values before parsing the final manifest.
 func dailyForWorktreeFresh(info *worktree.Info, slug string, out, errW io.Writer) (*daily, error) {
 	return dailyForWorktreeMode(info, slug, out, errW, true)
+}
+
+func dailyForDown(info *worktree.Info, slug string, out, errW io.Writer) (*daily, error) {
+	snapshot, err := applied.Load(info.Toplevel, slug)
+	if errors.Is(err, applied.ErrNotFound) {
+		return dailyForWorktree(info, slug, out, errW)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return dailyForAppliedState(info, snapshot, out, errW)
+}
+
+func dailyForAppliedState(info *worktree.Info, snapshot *applied.State, out, errW io.Writer) (*daily, error) {
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		return nil, err
+	}
+	if err := paths.EnsureDirs(); err != nil {
+		return nil, err
+	}
+	store, err := state.Open(paths.StateDB)
+	if err != nil {
+		return nil, err
+	}
+	ctx := snapshot.Context(out, errW)
+	ctx.WorktreePath = info.Toplevel
+	return &daily{
+		Worktree: info,
+		Manifest: &snapshot.Manifest,
+		Slug:     snapshot.Slug,
+		Ctx:      ctx,
+		State:    store,
+		Paths:    paths,
+		Applied:  snapshot,
+	}, nil
 }
 
 func dailyForWorktreeMode(info *worktree.Info, slug string, out, errW io.Writer, refreshValues bool) (*daily, error) {

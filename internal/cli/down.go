@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/dguerizec/pier/internal/adapter"
+	"github.com/dguerizec/pier/internal/applied"
 	"github.com/dguerizec/pier/internal/materialize"
 )
 
@@ -22,7 +23,7 @@ func newDownCmd() *cobra.Command {
 		Use:   "down",
 		Short: "Stop workload, free the slot, keep data by default",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			d, err := resolveDaily(cmd, opts.slug)
+			d, err := resolveDown(cmd, opts.slug)
 			if err != nil {
 				return err
 			}
@@ -57,12 +58,22 @@ func runDown(d *daily, purge, ignoreHookErrors bool, out, errOut io.Writer) erro
 	if err != nil {
 		return err
 	}
-	if err := a.Down(d.Ctx); err != nil {
+	if d.Applied != nil {
+		err = a.DownApplied(d.Ctx, d.Applied.AdapterData)
+	} else {
+		err = a.Down(d.Ctx)
+	}
+	if err != nil {
 		return err
 	}
 
 	if err := d.State.Delete(d.Ctx.Project, d.Ctx.Slug); err != nil {
 		return fmt.Errorf("delete state row: %w", err)
+	}
+	if d.Applied != nil {
+		if err := applied.Delete(d.Worktree.Toplevel, d.Applied.Slug); err != nil {
+			return err
+		}
 	}
 
 	if purge {

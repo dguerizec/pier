@@ -255,6 +255,9 @@ cd ../myapp-feat-x
 pier up
 → http://feat-x.myapp.test
 
+# after changing source, Compose, .pier.toml, or .pier.local.toml
+pier up                         # build, reconcile, and wait for readiness
+
 # inspect
 pier ls
 pier url                       # current worktree URL
@@ -267,6 +270,17 @@ pier down --purge              # also wipe snapshot copies (data-dev/)
 # clean cleanup
 pier worktree rm ../myapp-feat-x --purge
 ```
+
+`pier up` is idempotent: it builds images while the current workload keeps
+running, reconciles changed services, removes Compose orphans, and waits for
+services to be running or healthy before returning. The default readiness
+deadline is two minutes; override it with `--wait-timeout 5m`.
+
+`pier down` targets the last configuration Pier successfully applied, not a
+hypothetical workload reconstructed from the current manifest. It therefore
+still stops the right Compose project after changing `project.name`,
+`stack.file`, the branch slug, or even when the current manifest no longer
+parses. Applied state is local, mode `0600`, and lives under `.pier/applied/`.
 
 Slug is derived from the branch name (DESIGN §5.1): `feat/foo-bar` → `foo-bar`, `main` → `main`. Override with `--slug` or `PIER_SLUG=...`.
 

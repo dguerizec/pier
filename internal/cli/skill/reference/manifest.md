@@ -79,6 +79,10 @@ resolve_values = "./scripts/resolve-pier-values"
 base_ref = "main"                    # new branches fork from this ref
 ```
 
+`.pier.local.toml` layers per-developer values over the tracked manifest.
+`[env.<service>]` is merged variable by variable: a local value overrides the
+same tracked key while unrelated tracked variables remain available.
+
 ## Templating tokens
 
 `pier init` does not write `[stack.env]` or `[env.<service>]`. Add

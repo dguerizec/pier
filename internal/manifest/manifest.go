@@ -323,11 +323,48 @@ func decodeSource(src *source, mainBody, localBody []byte, dst any) error {
 		return fmt.Errorf("manifest: parse %s: %w", src.mainPath, err)
 	}
 	if len(localBody) > 0 {
+		var baseEnv map[string]map[string]string
+		if m, ok := dst.(*Manifest); ok {
+			baseEnv = cloneServiceEnv(m.Env)
+		}
 		if _, err := toml.Decode(string(localBody), dst); err != nil {
 			return fmt.Errorf("manifest: parse %s: %w", src.localPath, err)
 		}
+		if m, ok := dst.(*Manifest); ok {
+			mergeServiceEnvDefaults(m, baseEnv)
+		}
 	}
 	return nil
+}
+
+func cloneServiceEnv(env map[string]map[string]string) map[string]map[string]string {
+	clone := make(map[string]map[string]string, len(env))
+	for service, values := range env {
+		clone[service] = make(map[string]string, len(values))
+		for key, value := range values {
+			clone[service][key] = value
+		}
+	}
+	return clone
+}
+
+func mergeServiceEnvDefaults(m *Manifest, defaults map[string]map[string]string) {
+	if len(defaults) == 0 {
+		return
+	}
+	if m.Env == nil {
+		m.Env = make(map[string]map[string]string, len(defaults))
+	}
+	for service, values := range defaults {
+		if m.Env[service] == nil {
+			m.Env[service] = make(map[string]string, len(values))
+		}
+		for key, value := range values {
+			if _, overridden := m.Env[service][key]; !overridden {
+				m.Env[service][key] = value
+			}
+		}
+	}
 }
 
 func validateStaticTemplates(path string, body []byte) error {

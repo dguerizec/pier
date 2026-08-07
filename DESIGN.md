@@ -295,6 +295,8 @@ Important fields:
   containers; values may contain workload tokens and `{value.*}` tokens.
 - `[env.<service>]` values support Pier tokens such as `{slug}`,
   `{pier.tld}`, `{base_domain}`, `{host.<service>}`, and `{url.<service>}`.
+  `.pier.local.toml` merges these tables per service and variable; local values
+  override matching tracked keys without removing other tracked variables.
 - `[hooks].resolve_values` computes per-worktree scalar values before the
   final manifest parse; `{value.<name>}` tokens can therefore occupy typed
   positions such as `preserve_ports`.

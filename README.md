@@ -170,7 +170,9 @@ symlinks  = [".env", "secrets/"]        # symlinked from primary on first up
 snapshots = ["data-dev/"]               # copied per worktree (own mutable copy)
 ```
 
-`.pier.local.toml` next to it is always gitignored — per-developer overrides (custom slug, worktree dir, etc.).
+`.pier.local.toml` next to it is always gitignored for per-developer overrides.
+`[env.<service>]` tables merge variable by variable with the tracked manifest;
+local values win without hiding unrelated tracked variables.
 
 `preserve_ports` keeps a matching Compose `ports:` entry for protocols that cannot
 go through Traefik's HTTP routing. It does not allocate a different host port by

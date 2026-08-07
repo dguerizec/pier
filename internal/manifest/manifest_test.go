@@ -157,11 +157,19 @@ file = "docker-compose.yml"
 [[expose]]
 service = "app"
 port    = 3000
+
+[env.app]
+PUBLIC_URL = "http://app.test"
+TOKEN = "tracked"
 `)
 	writeFile(t, filepath.Join(dir, LocalFileName), `
 [[expose]]
 service = "app"
 port    = 4000
+
+[env.app]
+TOKEN = "local"
+LOCAL_ONLY = "yes"
 `)
 	m, err := Load(dir)
 	if err != nil {
@@ -169,6 +177,15 @@ port    = 4000
 	}
 	if m.Expose[0].Port != 4000 {
 		t.Errorf("port = %d, want 4000 (override)", m.Expose[0].Port)
+	}
+	if got := m.Env["app"]["PUBLIC_URL"]; got != "http://app.test" {
+		t.Errorf("env.app.PUBLIC_URL = %q, want tracked value", got)
+	}
+	if got := m.Env["app"]["TOKEN"]; got != "local" {
+		t.Errorf("env.app.TOKEN = %q, want local override", got)
+	}
+	if got := m.Env["app"]["LOCAL_ONLY"]; got != "yes" {
+		t.Errorf("env.app.LOCAL_ONLY = %q, want local value", got)
 	}
 }
 

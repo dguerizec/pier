@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS workloads (
     started_at    INTEGER NOT NULL,
     PRIMARY KEY (project, slug)
 );
+CREATE INDEX IF NOT EXISTS idx_workloads_worktree_slug
+    ON workloads(worktree_path, slug);
 CREATE TABLE IF NOT EXISTS projects (
     name          TEXT PRIMARY KEY,
     repo_path     TEXT NOT NULL UNIQUE,
@@ -123,6 +125,25 @@ func (s *Store) Get(project, slug string) (*Workload, error) {
 		FROM workloads
 		WHERE project = ? AND slug = ?
 	`, project, slug)
+	w, err := scanWorkload(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return w, err
+}
+
+// GetByWorktree fetches the newest workload for a stable worktree path and
+// slug. Unlike project-name lookup, this still finds the applied workload after
+// project.name changes in the source manifest.
+func (s *Store) GetByWorktree(worktreePath, slug string) (*Workload, error) {
+	row := s.db.QueryRow(`
+		SELECT project, slug, worktree_path, branch, kind,
+		       container_id, pid, port, started_at
+		FROM workloads
+		WHERE worktree_path = ? AND slug = ?
+		ORDER BY started_at DESC
+		LIMIT 1
+	`, worktreePath, slug)
 	w, err := scanWorkload(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -233,6 +254,34 @@ func (s *Store) RegisterProject(name, repoPath string) (*Project, error) {
 		return nil, err
 	}
 	return &Project{Name: name, RepoPath: repoPath, RegisteredAt: time.Unix(now, 0)}, nil
+}
+
+// RegisterOrRenameProject is the up-path variant: the repository path is the
+// stable identity, so changing project.name updates the registry row when the
+// requested name is otherwise free. Conflicts with another repository remain
+// errors.
+func (s *Store) RegisterOrRenameProject(name, repoPath string) (*Project, error) {
+	if name == "" || repoPath == "" {
+		return nil, errors.New("state: name and repo_path are required")
+	}
+	if existing, err := s.GetProject(name); err == nil {
+		if existing.RepoPath == repoPath {
+			return existing, nil
+		}
+		return nil, fmt.Errorf("%w: name %q already maps to %s", ErrProjectExists, name, existing.RepoPath)
+	} else if !errors.Is(err, ErrProjectNotFound) {
+		return nil, err
+	}
+	if existing, err := s.GetProjectByRepo(repoPath); err == nil {
+		if _, err := s.db.Exec(`UPDATE projects SET name = ? WHERE repo_path = ?`, name, repoPath); err != nil {
+			return nil, err
+		}
+		existing.Name = name
+		return existing, nil
+	} else if !errors.Is(err, ErrProjectNotFound) {
+		return nil, err
+	}
+	return s.RegisterProject(name, repoPath)
 }
 
 // GetProject fetches one project by name. Returns ErrProjectNotFound when

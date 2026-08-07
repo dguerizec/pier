@@ -90,6 +90,25 @@ func TestUpsert_Replaces(t *testing.T) {
 	}
 }
 
+func TestGetByWorktreeSurvivesProjectRename(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	w := &Workload{Project: "old-name", Slug: "main", WorktreePath: "/repo", Branch: "main", Kind: "compose"}
+	if err := s.Upsert(w); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetByWorktree("/repo", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Project != "old-name" {
+		t.Fatalf("project = %q, want old-name", got.Project)
+	}
+}
+
 func TestGet_NotFound(t *testing.T) {
 	s := mustOpen(t)
 	_, err := s.Get("nope", "nope")
@@ -183,6 +202,27 @@ func TestRegisterProjectConflicts(t *testing.T) {
 	}
 	if _, err := s.RegisterProject("different-name", "/repo"); !errors.Is(err, ErrProjectExists) {
 		t.Errorf("repo conflict: err = %v, want ErrProjectExists", err)
+	}
+}
+
+func TestRegisterOrRenameProjectUsesRepoAsStableIdentity(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.RegisterProject("old-name", "/repo"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.RegisterOrRenameProject("new-name", "/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "new-name" {
+		t.Fatalf("name = %q, want new-name", got.Name)
+	}
+	if _, err := s.GetProject("old-name"); !errors.Is(err, ErrProjectNotFound) {
+		t.Fatalf("old registry lookup = %v, want ErrProjectNotFound", err)
 	}
 }
 

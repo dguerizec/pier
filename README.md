@@ -260,6 +260,7 @@ pier up                         # build, reconcile, and wait for readiness
 
 # inspect
 pier ls
+pier ls --wide                # include each workload's worktree path
 pier url                       # current worktree URL
 pier logs -f                   # tail logs
 

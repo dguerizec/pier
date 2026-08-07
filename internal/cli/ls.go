@@ -16,15 +16,16 @@ import (
 )
 
 type lsRow struct {
-	Project string `json:"project"`
-	Slug    string `json:"slug"`
-	URL     string `json:"url"`
-	Status  string `json:"status"`
-	Uptime  string `json:"uptime"`
+	Project      string `json:"project"`
+	Slug         string `json:"slug"`
+	URL          string `json:"url"`
+	Status       string `json:"status"`
+	Uptime       string `json:"uptime"`
+	WorktreePath string `json:"worktree_path"`
 }
 
 func newLsCmd() *cobra.Command {
-	var asJSON bool
+	var asJSON, wide bool
 	cmd := &cobra.Command{
 		Use:   "ls",
 		Short: "List active workloads across all projects",
@@ -51,26 +52,35 @@ func newLsCmd() *cobra.Command {
 			rows := make([]lsRow, 0, len(workloads))
 			for _, w := range workloads {
 				rows = append(rows, lsRow{
-					Project: w.Project,
-					Slug:    w.Slug,
-					URL:     workloadURL(w, cfg.TLD),
-					Status:  containerStatus(w),
-					Uptime:  humanUptime(time.Since(w.StartedAt)),
+					Project:      w.Project,
+					Slug:         w.Slug,
+					URL:          workloadURL(w, cfg.TLD),
+					Status:       containerStatus(w),
+					Uptime:       humanUptime(time.Since(w.StartedAt)),
+					WorktreePath: w.WorktreePath,
 				})
 			}
 
 			if asJSON {
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(rows)
 			}
-			return renderTable(cmd, rows)
+			return renderTable(cmd, rows, wide)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "machine-readable JSON output")
+	cmd.Flags().BoolVar(&wide, "wide", false, "include the worktree path in table output")
 	return cmd
 }
 
-func renderTable(cmd *cobra.Command, rows []lsRow) error {
+func renderTable(cmd *cobra.Command, rows []lsRow, wide bool) error {
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
+	if wide {
+		fmt.Fprintln(w, "PROJECT\tSLUG\tURL\tSTATUS\tUPTIME\tWORKTREE")
+		for _, r := range rows {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", r.Project, r.Slug, r.URL, r.Status, r.Uptime, r.WorktreePath)
+		}
+		return w.Flush()
+	}
 	fmt.Fprintln(w, "PROJECT\tSLUG\tURL\tSTATUS\tUPTIME")
 	for _, r := range rows {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.Project, r.Slug, r.URL, r.Status, r.Uptime)

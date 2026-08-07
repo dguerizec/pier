@@ -95,7 +95,7 @@ the common case — pier resolves project + slug from the cwd).
 | Print the workload's URL | `pier url` (`--all` for every URL) | grep the manifest |
 | Tail logs | `pier logs [-f] [--tail N]` | `docker compose logs` |
 | Inspect containers | `pier ps` (passes through to compose) | `docker ps` (less scoped) |
-| List every active workload | `pier ls` | querying state.db directly |
+| List every active workload | `pier ls` (`--wide` includes worktree paths) | querying state.db directly |
 | Share selected hosts on a LAN | `pier share add <host>` | exposing Pier's main proxy / DNS wildcard |
 
 `--slug X` on any of `up/down/url/logs/ps` targets a different worktree
@@ -283,7 +283,7 @@ pier url --slug feat-x       # → http://feat-x.myapp.test (or .dev, etc.)
 pier worktree rm feat-x --purge
 
 # What's currently running, where?
-pier ls
+pier ls --wide
 
 # Inspect another worktree's containers from anywhere
 pier ps --slug feat-x

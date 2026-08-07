@@ -10,10 +10,10 @@ import (
 
 // Populated at build time via -ldflags by goreleaser. Defaults are used for
 // `go install` / `go build` so a self-built binary still reports something.
-const devBaseVersion = "v0.2.2"
+const devBaseVersion = "v0.3.0"
 
 var (
-	version = "v0.2.2-dev"
+	version = "v0.3.0-dev"
 	commit  = "none"
 	date    = "unknown"
 )

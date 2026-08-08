@@ -28,6 +28,24 @@ Phase 1 MVP and most of Phase 2 are shipped. Compose adapter, local-first instal
 
 Pier is intentionally **docker-coupled** — even projects that aren't otherwise containerized declare a minimal `docker-compose.dev.yml`. See the snippet in [Per-repo setup](#per-repo-setup-once-per-project) below.
 
+## Pier or Kubernetes?
+
+They overlap, but solve different problems. Pier turns local git worktrees and
+Compose stacks into isolated, reachable preview environments. Kubernetes is a
+general-purpose platform for running containerized workloads across a cluster.
+
+| | Pier | Kubernetes |
+|---|---|---|
+| **Best fit** | Local development and agent previews on one Docker host | Shared or production environments, especially when Kubernetes is already in use |
+| **Advantages** | Compose-native; one command and URL per worktree; includes local DNS, data materialization, hooks, and cleanup | Scheduling, scaling, self-healing, rolling deployments, access controls, and a large production ecosystem |
+| **Trade-offs** | Development-only; no multi-node scheduling, high availability, or production parity with Kubernetes | More infrastructure and manifests; image builds, external DNS/routing, and git-worktree lifecycle need separate tooling |
+
+Most Pier behavior can be recreated *around* Kubernetes with namespaces,
+Services/Gateway, DNS, storage, image-building, and custom automation. Kubernetes
+alone does not provide Pier's git-aware local workflow. Choose Pier for the
+shortest path from a Compose worktree to a preview URL; choose Kubernetes when
+cluster-level capabilities or production parity matter more than local simplicity.
+
 ## Install
 
 ### One-liner (Linux, macOS — amd64 or arm64)

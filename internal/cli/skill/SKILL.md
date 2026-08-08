@@ -90,7 +90,7 @@ the common case — pier resolves project + slug from the cwd).
 
 | Task | pier command | Do NOT use |
 |---|---|---|
-| Start or reconcile the workload | `pier up` | `docker compose up`, `make run` |
+| Start, rebuild, reload, or reconcile the workload | `pier up` | `pier down && pier up`, `docker compose up`, `make run` |
 | Stop the workload | `pier down` (`--purge` to also wipe snapshots) | `docker compose down`, `docker stop` |
 | Print the workload's URL | `pier url` (`--all` for every URL) | grep the manifest |
 | Tail logs | `pier logs [-f] [--tail N]` | `docker compose logs` |
@@ -107,6 +107,11 @@ current workload remains available, reconciles with orphan cleanup, and waits
 for Compose running/health readiness. Use `--wait-timeout 5m` for a stack that
 needs longer than the two-minute default. `pier down` uses the last applied
 snapshot, so it remains safe after editing or breaking the current manifest.
+For ordinary source, Compose, `.pier.toml`, or `.pier.local.toml` changes, run
+`pier up` directly: do not prepend `pier down`, because that discards the
+prebuild-before-replacement benefit and creates avoidable downtime. Reserve
+`pier down && pier up` for an explicitly requested full teardown or a reported
+reconciliation failure, and state that reason to the user.
 
 `pier share` is an explicit LAN allowlist for local-mode installs. Use
 `pier share add backend --interface enp3s0` (or `--bind-ip <ip>`) when

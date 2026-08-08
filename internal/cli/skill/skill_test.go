@@ -3,8 +3,26 @@ package skill
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestEmbeddedSkillPrefersDirectUpForRoutineReloads(t *testing.T) {
+	body, err := Files.ReadFile("SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(strings.Fields(string(body)), " ")
+	for _, want := range []string{
+		"Repeated `pier up` is the supported reload path.",
+		"run `pier up` directly: do not prepend `pier down`",
+		"Reserve `pier down && pier up` for an explicitly requested full teardown",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("embedded skill is missing reload guidance %q", want)
+		}
+	}
+}
 
 func TestUserDirUsesNeutralAgentsLocation(t *testing.T) {
 	home := t.TempDir()

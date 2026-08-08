@@ -24,6 +24,23 @@ func TestEmbeddedSkillPrefersDirectUpForRoutineReloads(t *testing.T) {
 	}
 }
 
+func TestEmbeddedSkillUsesDedicatedSkillRefreshCommand(t *testing.T) {
+	body, err := Files.ReadFile("SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(strings.Fields(string(body)), " ")
+	for _, want := range []string{
+		"Refresh the installed Pier skill | `pier skill install --yes`",
+		"Do not run `pier install` for that purpose",
+		"Run `pier install --reconfigure` only when the user explicitly wants",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("embedded skill is missing install guidance %q", want)
+		}
+	}
+}
+
 func TestUserDirUsesNeutralAgentsLocation(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

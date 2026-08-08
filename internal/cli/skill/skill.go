@@ -1,7 +1,8 @@
 // Package skill embeds the agent skill that teaches AI assistants how to
-// operate inside a pier-managed repository. `pier install` writes the
-// canonical skill under ~/.agents/skills/pier/ and can expose it to
-// agent-specific loaders through symlinks.
+// operate inside a pier-managed repository. `pier install` and
+// `pier skill install` write the canonical skill under
+// ~/.agents/skills/pier/ and can expose it to agent-specific loaders
+// through symlinks.
 package skill
 
 import (
@@ -41,10 +42,9 @@ func UserDir() (string, error) {
 }
 
 // Install writes the embedded skill tree under dir, overwriting any
-// existing files. Used by `pier install`, which is idempotent —
-// re-running keeps the skill in sync with the binary. Project-local
-// overrides under <repo>/.claude/skills/pier/ still take precedence at
-// lookup time, so this never stomps a customized skill.
+// existing files. Used by `pier install` and `pier skill install`, which are
+// idempotent. Project-local overrides under <repo>/.claude/skills/pier/ still
+// take precedence at lookup time, so this never stomps a customized skill.
 func Install(dir string) error {
 	return fs.WalkDir(Files, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {

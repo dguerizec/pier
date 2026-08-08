@@ -49,6 +49,7 @@ func init() {
 		newClientCmd(),
 		newDoctorCmd(),
 		newWorktreeCmd(),
+		newSkillCmd(),
 	)
 }
 

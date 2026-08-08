@@ -59,6 +59,11 @@ type InstallOptions struct {
 	// the install wizard patches split-DNS into it. Persisted to Config
 	// so Uninstall can revert the patch.
 	HeadscaleConfigPath string
+
+	// PreviousConfig preserves settings owned by other install surfaces, such
+	// as the dashboard FQDN written by `pier serve install`, when the shared
+	// infrastructure is reinstalled or reconfigured.
+	PreviousConfig *Config
 }
 
 // Install brings up the traefik + dnsmasq pair and (optionally) configures
@@ -215,17 +220,7 @@ func Install(opts InstallOptions) error {
 		return err
 	}
 
-	cfg := &Config{
-		Mode:                      opts.Mode,
-		TLD:                       opts.TLD,
-		BindIP:                    opts.BindIP,
-		AnswerIP:                  opts.AnswerIP,
-		TraefikNetwork:            traefikNet,
-		ExternalTraefik:           opts.ExternalTraefik,
-		ExternalTraefikDynamicDir: opts.ExternalTraefikDynamicDir,
-		HeadscaleContainer:        opts.HeadscaleContainer,
-		HeadscaleConfigPath:       opts.HeadscaleConfigPath,
-	}
+	cfg := configForInstall(opts, traefikNet)
 	if err := cfg.Save(paths); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
@@ -246,6 +241,24 @@ func Install(opts InstallOptions) error {
 		}
 	}
 	return nil
+}
+
+func configForInstall(opts InstallOptions, traefikNetwork string) *Config {
+	cfg := &Config{}
+	if opts.PreviousConfig != nil {
+		*cfg = *opts.PreviousConfig
+	}
+	cfg.Mode = opts.Mode
+	cfg.TLD = opts.TLD
+	cfg.BindIP = opts.BindIP
+	cfg.ManualDNS = opts.ManualDNS
+	cfg.AnswerIP = opts.AnswerIP
+	cfg.TraefikNetwork = traefikNetwork
+	cfg.ExternalTraefik = opts.ExternalTraefik
+	cfg.ExternalTraefikDynamicDir = opts.ExternalTraefikDynamicDir
+	cfg.HeadscaleContainer = opts.HeadscaleContainer
+	cfg.HeadscaleConfigPath = opts.HeadscaleConfigPath
+	return cfg
 }
 
 // writeFileIfChanged writes body to path with the given mode only when

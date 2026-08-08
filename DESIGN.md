@@ -49,12 +49,20 @@ adapter, live in git history.
 
 Bootstraps machine-wide infrastructure and writes Pier's install config.
 
-The wizard always defaults to local mode on loopback with Pier-managed
-traefik + dnsmasq. Its reachability choices are:
+On the first installation, the wizard defaults to local mode on loopback with
+Pier-managed traefik + dnsmasq. Its reachability choices are:
 
 - local-only, always present and selected by default;
 - LAN, always present and followed by an assigned-address choice;
 - Tailscale, present only when an active Tailscale IPv4 is detected.
+
+Once install config exists, plain `pier install` reapplies the persisted mode,
+TLD, bind/answer IPs, manual-DNS policy, and integrations without reopening
+the wizard. `pier install --reconfigure` explicitly discards that install
+shape and returns to the first-install reachability wizard while retaining the
+current TLD and manual-DNS policy unless their flags are explicitly supplied.
+This keeps unattended `--yes` reinstalls from silently replacing an active LAN
+or Tailscale configuration with the local default.
 
 An existing dockerized traefik can still trigger BYO-traefik integration. A
 detected Headscale instance is only presented after the user selects Tailscale;
@@ -69,7 +77,8 @@ The install path also:
 
 Explicit install-shape flags such as `--mode`, `--bind-ip`, and `--answer-ip`
 skip wizard planning. Other flags, including `--tld`, can customize either
-path. Important flags:
+the first-install or explicit reconfiguration path; changing an installed TLD
+requires `--reconfigure`. Important flags:
 
 - `--mode local|server`
 - `--tld <name>`
@@ -79,7 +88,13 @@ path. Important flags:
 - `--use-existing-traefik <container>`
 - `--traefik-network <network>`
 - `--traefik-dynamic-dir <host-path>`
+- `--reconfigure`
 - `--yes`
+
+`pier skill install` installs or refreshes only the bundled AI-agent skill and
+its safe agent-specific links. It never reconciles machine infrastructure;
+`--yes` makes conflict handling non-interactive without overwriting a custom
+agent-specific skill.
 
 `pier uninstall` removes Pier-owned infra, host DNS config, headscale split-DNS
 patches, dashboard records/routes, skill installs, and optionally the binary
@@ -400,8 +415,8 @@ Pier stores machine state under the user config directory:
 ~/.config/pier/traefik/      Pier-managed traefik config
 ```
 
-`config.toml` includes mode, TLD, bind/answer IPs, BYO-traefik settings,
-headscale config paths, and dashboard FQDN state.
+`config.toml` includes mode, TLD, bind/answer IPs, manual-DNS policy,
+BYO-traefik settings, headscale config paths, and dashboard FQDN state.
 
 `share/` holds one address-scoped LAN gateway directory per selected bind IP.
 Each gateway has separate session and persistent route files. The gateway

@@ -61,7 +61,7 @@ Go 1.26+ required. Homebrew tap (`brew install dguerizec/pier/pier`) will follow
 pier install
 ```
 
-The wizard starts with the safe local-only choice:
+On the first installation, the wizard starts with the safe local-only choice:
 
 ```text
 URL reachability
@@ -91,11 +91,27 @@ Plan:
 Apply this plan? [Y/n]
 ```
 
-Pass `-y` to accept the local default silently (CI / agent-friendly). Explicit
-install-shape flags such as `--mode`, `--bind-ip`, and `--answer-ip` skip the
-wizard; `--tld` can customize either path. The installer also writes the
-bundled AI-agent skill to `~/.agents/skills/pier` and, when run interactively,
-asks for your default `pier worktree add <name>` directory.
+Pass `-y` to accept the local default silently on that first installation.
+Once `config.toml` exists, plain `pier install` reuses the active mode, TLD,
+bind/answer IPs, DNS policy, and integrations without reopening the wizard;
+`-y` cannot silently reset an existing Tailscale or LAN installation. Use
+`pier install --reconfigure` when you explicitly want to choose a different
+installation shape; unchanged TLD and manual-DNS settings are retained.
+Explicit shape flags such as `--mode`, `--bind-ip`, and
+`--answer-ip` still skip wizard planning. `--tld` can customize a first-time or
+explicitly reconfigured wizard; changing an existing TLD requires
+`--reconfigure` so related DNS integrations are reconsidered.
+
+The infrastructure installer also writes the bundled AI-agent skill to
+`~/.agents/skills/pier`. To update only that skill after upgrading the binary,
+without touching Traefik, dnsmasq, or host DNS, run:
+
+```bash
+pier skill install --yes
+```
+
+Interactive first-time installation also asks for your default
+`pier worktree add <name>` directory.
 
 `pier uninstall` reverses everything (containers, network, host DNS drop-in, config dir). BYO mode leaves the user's traefik + network alone. The pier binary itself stays in place — pass `--purge` to also delete it (`pier uninstall --purge`). `--purge` declines when the binary lives under a brew prefix or system path; let the package manager remove it in that case.
 

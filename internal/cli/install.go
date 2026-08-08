@@ -30,7 +30,16 @@ type installOpts struct {
 	traefikNetwork            string
 	externalTraefikDynamicDir string
 	yes                       bool
+	reconfigure               bool
 }
+
+type installAction uint8
+
+const (
+	installActionWizard installAction = iota
+	installActionReuse
+	installActionExplicit
+)
 
 type installReachability string
 
@@ -54,17 +63,42 @@ func newInstallCmd() *cobra.Command {
 			if opts.noSudo {
 				opts.manualDNS = true
 			}
-			// Wizard mode: no positional opts touched → detect environment
-			// and compose a plan, confirm, then call Install with the
-			// derived flags.
-			if shouldRunWizard(cmd) {
-				return runInstallWizard(cmd, opts)
+			previous, installed, err := loadInstallConfig()
+			if err != nil {
+				if !opts.reconfigure {
+					return err
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "! existing install config is unreadable: %v\n", err)
+				fmt.Fprintln(cmd.OutOrStdout(), "  continuing because --reconfigure was requested")
+				previous = nil
+				installed = false
 			}
+
+			action, err := chooseInstallAction(cmd, installed, opts.reconfigure)
+			if err != nil {
+				return err
+			}
+			switch action {
+			case installActionWizard:
+				return runInstallWizard(cmd, opts, previous)
+			case installActionReuse:
+				plan := installOptionsFromConfig(previous, cmd.OutOrStdout())
+				if cmd.Flags().Changed("manual-dns") {
+					plan.ManualDNS = opts.manualDNS
+				}
+				if opts.noSudo {
+					plan.ManualDNS = true
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "Reusing existing installation:")
+				fmt.Fprintln(cmd.OutOrStdout(), "  "+planSummary(plan))
+				return applyInstall(cmd, plan, opts.yes)
+			}
+
 			mode := opts.mode
 			if mode == "" {
 				mode = infra.ModeLocal
 			}
-			if err := infra.Install(infra.InstallOptions{
+			return applyInstall(cmd, infra.InstallOptions{
 				Mode:                      mode,
 				TLD:                       opts.tld,
 				BindIP:                    opts.bindIP,
@@ -74,11 +108,8 @@ func newInstallCmd() *cobra.Command {
 				ExternalTraefik:           opts.externalTraefik,
 				TraefikNetwork:            opts.traefikNetwork,
 				ExternalTraefikDynamicDir: opts.externalTraefikDynamicDir,
-			}); err != nil {
-				return err
-			}
-			installUserSkill(cmd.InOrStdin(), cmd.OutOrStdout(), opts.yes)
-			return nil
+				PreviousConfig:            previous,
+			}, opts.yes)
 		},
 	}
 	f := cmd.Flags()
@@ -91,28 +122,70 @@ func newInstallCmd() *cobra.Command {
 	f.StringVar(&opts.externalTraefik, "use-existing-traefik", "", "BYO mode: name of an existing traefik container to register workloads on")
 	f.StringVar(&opts.traefikNetwork, "traefik-network", "", "BYO mode: docker network for label discovery (auto-detected from the existing traefik when omitted)")
 	f.StringVar(&opts.externalTraefikDynamicDir, "traefik-dynamic-dir", "", "BYO mode: host path of the existing traefik's file-provider directory (auto-detected when omitted; required to expose http://pier.<tld>)")
-	f.BoolVarP(&opts.yes, "yes", "y", false, "accept the detected wizard plan without prompting")
+	f.BoolVarP(&opts.yes, "yes", "y", false, "run non-interactively: accept wizard defaults and skip conflicting skill links")
+	f.BoolVar(&opts.reconfigure, "reconfigure", false, "discard the current install shape and reopen the setup wizard")
 	return cmd
 }
 
-// shouldRunWizard reports whether to enter the auto-detect wizard. We do so
-// when none of the install-shape flags are present — implying the user
-// expects pier to figure things out — and explicit configuration takes
-// precedence whenever any of those flags is set.
-func shouldRunWizard(cmd *cobra.Command) bool {
+func loadInstallConfig() (*infra.Config, bool, error) {
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		return nil, false, err
+	}
+	cfg, err := infra.LoadConfig(paths)
+	if errors.Is(err, infra.ErrNotInstalled) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return cfg, true, nil
+}
+
+func chooseInstallAction(cmd *cobra.Command, installed, reconfigure bool) (installAction, error) {
+	if reconfigure {
+		if installShapeFlagsChanged(cmd) {
+			return 0, errors.New("--reconfigure cannot be combined with --mode, --bind-ip, --answer-ip, or Traefik shape flags")
+		}
+		return installActionWizard, nil
+	}
+	if installed {
+		if cmd.Flags().Changed("tld") {
+			return 0, errors.New("changing --tld on an existing installation requires --reconfigure")
+		}
+		if installShapeFlagsChanged(cmd) {
+			return installActionExplicit, nil
+		}
+		return installActionReuse, nil
+	}
+	if shouldRunWizard(cmd) {
+		return installActionWizard, nil
+	}
+	return installActionExplicit, nil
+}
+
+func installShapeFlagsChanged(cmd *cobra.Command) bool {
 	for _, name := range []string{"mode", "bind-ip", "answer-ip", "use-existing-traefik", "traefik-network", "traefik-dynamic-dir"} {
 		if cmd.Flags().Changed(name) {
-			return false
+			return true
 		}
 	}
-	return true
+	return false
+}
+
+// shouldRunWizard reports whether explicit shape flags bypass wizard planning.
+// The caller separately distinguishes a first install, an existing install,
+// and an explicit --reconfigure request.
+func shouldRunWizard(cmd *cobra.Command) bool {
+	return !installShapeFlagsChanged(cmd)
 }
 
 // runInstallWizard inspects the host, asks how broadly Pier should be
 // reachable, prints the resulting plan, and applies it on confirmation.
 // Local is always the default; detected network integrations are opt-in.
-func runInstallWizard(cmd *cobra.Command, base installOpts) error {
+func runInstallWizard(cmd *cobra.Command, base installOpts, previous *infra.Config) error {
 	out := cmd.OutOrStdout()
+	base = preserveWizardSettings(cmd, base, previous)
 	env := detect.Run()
 
 	fmt.Fprintln(out, "Detected:")
@@ -126,6 +199,7 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 		return err
 	}
 	plan := composeInstallPlan(env, base, routing)
+	plan.PreviousConfig = previous
 
 	// Refuse to install when the chosen TLD lives under headscale's
 	// base_domain. MagicDNS owns the lookups authoritatively for that
@@ -180,7 +254,9 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 		return err
 	}
 
-	installUserSkill(cmd.InOrStdin(), out, base.yes)
+	if err := installUserSkill(cmd.InOrStdin(), out, base.yes); err != nil {
+		fmt.Fprintf(out, "! skill install failed: %v (skipped)\n", err)
+	}
 	askWorktreeDirPref(cmd, base.yes)
 
 	if routing.Reachability == reachabilityTailscale &&
@@ -206,6 +282,46 @@ func runInstallWizard(cmd *cobra.Command, base installOpts) error {
 				fmt.Fprintln(out, "✓ headscale restarted (DNS config reload)")
 			}
 		}
+	}
+	return nil
+}
+
+func preserveWizardSettings(cmd *cobra.Command, base installOpts, previous *infra.Config) installOpts {
+	if previous == nil {
+		return base
+	}
+	if !cmd.Flags().Changed("tld") {
+		base.tld = previous.TLD
+	}
+	if !cmd.Flags().Changed("manual-dns") && !cmd.Flags().Changed("no-sudo") {
+		base.manualDNS = previous.ManualDNS
+	}
+	return base
+}
+
+func installOptionsFromConfig(cfg *infra.Config, out io.Writer) infra.InstallOptions {
+	return infra.InstallOptions{
+		Mode:                      cfg.Mode,
+		TLD:                       cfg.TLD,
+		BindIP:                    cfg.BindIP,
+		AnswerIP:                  cfg.EffectiveAnswerIP(),
+		ManualDNS:                 cfg.ManualDNS,
+		Out:                       out,
+		ExternalTraefik:           cfg.ExternalTraefik,
+		TraefikNetwork:            cfg.TraefikNetwork,
+		ExternalTraefikDynamicDir: cfg.ExternalTraefikDynamicDir,
+		HeadscaleContainer:        cfg.HeadscaleContainer,
+		HeadscaleConfigPath:       cfg.HeadscaleConfigPath,
+		PreviousConfig:            cfg,
+	}
+}
+
+func applyInstall(cmd *cobra.Command, plan infra.InstallOptions, yes bool) error {
+	if err := infra.Install(plan); err != nil {
+		return err
+	}
+	if err := installUserSkill(cmd.InOrStdin(), cmd.OutOrStdout(), yes); err != nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "! skill install failed: %v (skipped)\n", err)
 	}
 	return nil
 }
@@ -321,25 +437,23 @@ func withoutIP(addresses []share.Address, excluded string) []share.Address {
 }
 
 // installUserSkill drops the embedded skill tree under ~/.agents/skills/pier/
-// and links detected agent-specific skill dirs to it. Best-effort: a failure
-// here doesn't block the infra install, but conflicts are never overwritten
-// without an explicit interactive confirmation.
-func installUserSkill(stdin interface{ Read([]byte) (int, error) }, out io.Writer, yes bool) {
+// and links detected agent-specific skill dirs to it. Canonical install
+// failures are returned to the caller; optional link failures remain warnings.
+// Conflicts are never overwritten without an interactive confirmation.
+func installUserSkill(stdin interface{ Read([]byte) (int, error) }, out io.Writer, yes bool) error {
 	dir, err := skill.UserDir()
 	if err != nil {
-		fmt.Fprintf(out, "! skill: %v (skipped)\n", err)
-		return
+		return err
 	}
 	if err := skill.Install(dir); err != nil {
-		fmt.Fprintf(out, "! skill install failed: %v (skipped)\n", err)
-		return
+		return err
 	}
 	fmt.Fprintf(out, "✓ AI skill installed: %s\n", dir)
 
 	targets, err := skill.DetectedLinkTargets()
 	if err != nil {
 		fmt.Fprintf(out, "! skill links: %v (skipped)\n", err)
-		return
+		return nil
 	}
 	for _, target := range targets {
 		status, err := skill.LinkState(target.Dir, dir)
@@ -373,6 +487,7 @@ func installUserSkill(stdin interface{ Read([]byte) (int, error) }, out io.Write
 			fmt.Fprintf(out, "✓ %s skill linked: %s → %s\n", target.Agent, target.Dir, dir)
 		}
 	}
+	return nil
 }
 
 // tldIsUnder reports whether tld is the same as base or a sub-domain of it.
@@ -455,6 +570,9 @@ func planSummary(p infra.InstallOptions) string {
 	}
 	if p.ExternalTraefikDynamicDir != "" {
 		parts = append(parts, "--traefik-dynamic-dir "+p.ExternalTraefikDynamicDir)
+	}
+	if p.ManualDNS {
+		parts = append(parts, "--manual-dns")
 	}
 	return strings.Join(parts, " ")
 }

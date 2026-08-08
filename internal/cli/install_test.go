@@ -57,6 +57,128 @@ func TestSelectInstallRoutingYesKeepsLocalDefault(t *testing.T) {
 	}
 }
 
+func TestChooseInstallActionPreservesExistingInstallByDefault(t *testing.T) {
+	for _, flag := range []string{"", "yes", "manual-dns", "no-sudo"} {
+		t.Run(flag, func(t *testing.T) {
+			cmd := newInstallCmd()
+			if flag != "" {
+				if err := cmd.Flags().Set(flag, "true"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := chooseInstallAction(cmd, true, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != installActionReuse {
+				t.Fatalf("action = %v, want reuse", got)
+			}
+		})
+	}
+}
+
+func TestChooseInstallActionUsesWizardOnlyForInitialOrRequestedConfiguration(t *testing.T) {
+	tests := []struct {
+		name        string
+		installed   bool
+		reconfigure bool
+		flag        string
+		value       string
+		want        installAction
+	}{
+		{name: "first install", want: installActionWizard},
+		{name: "explicit reconfigure", installed: true, reconfigure: true, want: installActionWizard},
+		{name: "explicit shape skips wizard", installed: true, flag: "mode", value: infra.ModeServer, want: installActionExplicit},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newInstallCmd()
+			if tt.flag != "" {
+				if err := cmd.Flags().Set(tt.flag, tt.value); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := chooseInstallAction(cmd, tt.installed, tt.reconfigure)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("action = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestChooseInstallActionRequiresReconfigureForExistingTLDChange(t *testing.T) {
+	cmd := newInstallCmd()
+	if err := cmd.Flags().Set("tld", "dev"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := chooseInstallAction(cmd, true, false); err == nil {
+		t.Fatal("expected existing TLD change without --reconfigure to fail")
+	}
+}
+
+func TestChooseInstallActionRejectsReconfigureWithShapeFlags(t *testing.T) {
+	cmd := newInstallCmd()
+	if err := cmd.Flags().Set("mode", infra.ModeServer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := chooseInstallAction(cmd, true, true); err == nil {
+		t.Fatal("expected ambiguous reconfiguration flags to fail")
+	}
+}
+
+func TestInstallOptionsFromConfigPreservesActiveConfiguration(t *testing.T) {
+	cfg := &infra.Config{
+		Mode:                      infra.ModeServer,
+		TLD:                       "test",
+		BindIP:                    "100.64.0.10",
+		AnswerIP:                  "100.64.0.10",
+		ManualDNS:                 true,
+		TraefikNetwork:            "proxy",
+		ExternalTraefik:           "traefik",
+		ExternalTraefikDynamicDir: "/srv/traefik/dynamic",
+		HeadscaleContainer:        "headscale",
+		HeadscaleConfigPath:       "/srv/headscale/config.yaml",
+	}
+
+	got := installOptionsFromConfig(cfg, nil)
+	if got.Mode != cfg.Mode || got.TLD != cfg.TLD || got.BindIP != cfg.BindIP || got.AnswerIP != cfg.AnswerIP {
+		t.Fatalf("routing configuration changed: %+v", got)
+	}
+	if !got.ManualDNS || got.TraefikNetwork != cfg.TraefikNetwork || got.ExternalTraefik != cfg.ExternalTraefik {
+		t.Fatalf("install configuration changed: %+v", got)
+	}
+	if got.HeadscaleContainer != cfg.HeadscaleContainer || got.HeadscaleConfigPath != cfg.HeadscaleConfigPath {
+		t.Fatalf("headscale configuration changed: %+v", got)
+	}
+	if got.PreviousConfig != cfg {
+		t.Fatal("previous config was not retained for unrelated persisted settings")
+	}
+}
+
+func TestPreserveWizardSettingsKeepsUnchangedInstalledValues(t *testing.T) {
+	cmd := newInstallCmd()
+	previous := &infra.Config{TLD: "dev.example", ManualDNS: true}
+
+	got := preserveWizardSettings(cmd, installOpts{tld: infra.DefaultTLD}, previous)
+	if got.tld != previous.TLD || !got.manualDNS {
+		t.Fatalf("wizard settings = %+v, want installed TLD and manual DNS", got)
+	}
+
+	if err := cmd.Flags().Set("tld", "new.example"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("manual-dns", "false"); err != nil {
+		t.Fatal(err)
+	}
+	got = preserveWizardSettings(cmd, installOpts{tld: "new.example"}, previous)
+	if got.tld != "new.example" || got.manualDNS {
+		t.Fatalf("wizard ignored explicit settings: %+v", got)
+	}
+}
+
 func TestComposeInstallPlanLANUsesSelectedAddressWithoutHeadscale(t *testing.T) {
 	env := detect.Environment{
 		Headscale: detect.HeadscaleInfo{

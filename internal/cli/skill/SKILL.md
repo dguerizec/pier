@@ -97,6 +97,7 @@ the common case — pier resolves project + slug from the cwd).
 | Inspect containers | `pier ps` (passes through to compose) | `docker ps` (less scoped) |
 | List every active workload | `pier ls` (`--wide` includes worktree paths) | querying state.db directly |
 | Share selected hosts on a LAN | `pier share add <host>` | exposing Pier's main proxy / DNS wildcard |
+| Refresh the installed Pier skill | `pier skill install --yes` | `pier install` (reapplies machine infrastructure) |
 
 `--slug X` on any of `up/down/url/logs/ps` targets a different worktree
 without `cd`. `X` can be a slug, a branch name, or a worktree path /
@@ -120,6 +121,12 @@ the user asks for a URL another LAN machine can reach, then return
 for the entry point. Quote selectors such as `'*'`; they expand to the
 current exact URL set. Add `--persist` only when the user explicitly
 wants the share restored after gateway/machine restart.
+
+Use `pier skill install --yes` after upgrading the Pier binary when only the
+bundled agent guidance needs refreshing. Do not run `pier install` for that
+purpose: it reconciles the machine-wide proxy and DNS infrastructure. Run
+`pier install --reconfigure` only when the user explicitly wants to change
+the existing install shape.
 
 ## Worktrees
 

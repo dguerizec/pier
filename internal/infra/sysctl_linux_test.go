@@ -35,10 +35,8 @@ func TestNeedsNonlocalBindForIP(t *testing.T) {
 	}
 }
 
-// TestRenderNonlocalBindSysctl locks the file body so changes to the
-// emitted sysctl are deliberate. doctor's content-match check compares
-// byte-for-byte; tweaking whitespace silently turns the install into a
-// stale-file recreate cycle on every `pier install`.
+// TestRenderNonlocalBindSysctl locks the emitted settings so changes remain
+// deliberate even though install and doctor compare their effective values.
 func TestRenderNonlocalBindSysctl(t *testing.T) {
 	body := string(renderNonlocalBindSysctl())
 	for _, want := range []string{
@@ -49,5 +47,60 @@ func TestRenderNonlocalBindSysctl(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered sysctl missing %q:\n%s", want, body)
 		}
+	}
+}
+
+func TestNonlocalBindSysctlCurrentIgnoresCommentsAndFormatting(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "rendered config",
+			body: string(renderNonlocalBindSysctl()),
+			want: true,
+		},
+		{
+			name: "legacy comments",
+			body: `# Written by pier
+# Allows bind() to non-local IPs so docker-proxy can bind the
+# tailscale IP at boot before tailscaled has assigned it.
+net.ipv4.ip_nonlocal_bind = 1
+net.ipv6.ip_nonlocal_bind = 1
+`,
+			want: true,
+		},
+		{
+			name: "alternate formatting and inline comments",
+			body: `net.ipv4.ip_nonlocal_bind=1 # IPv4
+net.ipv6.ip_nonlocal_bind = 1 ; IPv6
+`,
+			want: true,
+		},
+		{
+			name: "missing IPv6",
+			body: "net.ipv4.ip_nonlocal_bind = 1\n",
+		},
+		{
+			name: "wrong value",
+			body: `net.ipv4.ip_nonlocal_bind = 1
+net.ipv6.ip_nonlocal_bind = 0
+`,
+		},
+		{
+			name: "last assignment wins",
+			body: `net.ipv4.ip_nonlocal_bind = 1
+net.ipv6.ip_nonlocal_bind = 1
+net.ipv4.ip_nonlocal_bind = 0
+`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := nonlocalBindSysctlCurrent([]byte(tt.body)); got != tt.want {
+				t.Fatalf("current = %v, want %v for:\n%s", got, tt.want, tt.body)
+			}
+		})
 	}
 }

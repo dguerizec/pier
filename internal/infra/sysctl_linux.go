@@ -3,11 +3,11 @@
 package infra
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"strings"
 )
 
 const sysctlDropinPath = "/etc/sysctl.d/99-pier.conf"
@@ -39,7 +39,7 @@ func configureNonlocalBind(bindIP string) (bool, error) {
 	}
 	body := renderNonlocalBindSysctl()
 
-	if existing, err := os.ReadFile(sysctlDropinPath); err == nil && bytes.Equal(existing, body) {
+	if existing, err := os.ReadFile(sysctlDropinPath); err == nil && nonlocalBindSysctlCurrent(existing) {
 		return false, nil
 	}
 
@@ -92,10 +92,10 @@ func needsNonlocalBindRewrite(bindIP string) bool {
 	if err != nil {
 		return true
 	}
-	return !bytes.Equal(body, renderNonlocalBindSysctl())
+	return !nonlocalBindSysctlCurrent(body)
 }
 
-// checkNonlocalBind reports drop-in presence + content match. Skipped
+// checkNonlocalBind reports drop-in presence + effective setting match. Skipped
 // (Pass with detail) for loopback / wildcard binds.
 func checkNonlocalBind(bindIP string) Check {
 	if !needsNonlocalBindForIP(bindIP) {
@@ -117,7 +117,7 @@ func checkNonlocalBind(bindIP string) Check {
 	if err != nil {
 		return Check{Name: "kernel allows bind to " + bindIP, Status: StatusWarn, Detail: err.Error()}
 	}
-	if !bytes.Equal(body, renderNonlocalBindSysctl()) {
+	if !nonlocalBindSysctlCurrent(body) {
 		return Check{
 			Name:    "kernel allows bind to " + bindIP,
 			Status:  StatusFail,
@@ -126,6 +126,37 @@ func checkNonlocalBind(bindIP string) Check {
 		}
 	}
 	return Check{Name: "kernel allows bind to " + bindIP, Status: StatusPass}
+}
+
+func nonlocalBindSysctlCurrent(body []byte) bool {
+	want := map[string]string{
+		"net.ipv4.ip_nonlocal_bind": "1",
+		"net.ipv6.ip_nonlocal_bind": "1",
+	}
+	got := make(map[string]string, len(want))
+	for _, raw := range strings.Split(string(body), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if i := strings.IndexAny(line, "#;"); i >= 0 {
+			line = strings.TrimSpace(line[:i])
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if _, tracked := want[key]; tracked {
+			got[key] = strings.TrimSpace(value)
+		}
+	}
+	for key, value := range want {
+		if got[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 // needsNonlocalBindForIP returns true for specific non-loopback IPs.

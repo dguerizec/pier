@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -284,5 +285,62 @@ func TestAPIDocsHTML(t *testing.T) {
 	}
 	if !strings.Contains(body, "/api/v1/openapi.json") {
 		t.Error("docs page should reference the spec URL")
+	}
+}
+
+func TestListProjectContainersIncludesStructuredRuntimeState(t *testing.T) {
+	if os.PathSeparator != '/' {
+		t.Skip("shell-script docker stub is POSIX-only")
+	}
+	stubDir := t.TempDir()
+	script := `#!/bin/sh
+case "$1" in
+  ps)
+    printf '%s\n' healthy-id completed-id failed-id starting-id
+    ;;
+  inspect)
+    printf '%s\n' '[
+      {"Name":"/web","Config":{"Image":"demo:web"},"State":{"Status":"running","ExitCode":0,"Health":{"Status":"healthy"}}},
+      {"Name":"/job-ok","Config":{"Image":"demo:job"},"State":{"Status":"exited","ExitCode":0}},
+      {"Name":"/job-failed","Config":{"Image":"demo:job"},"State":{"Status":"exited","ExitCode":17}},
+      {"Name":"/warming-up","Config":{"Image":"demo:web"},"State":{"Status":"running","ExitCode":0,"Health":{"Status":"starting"}}}
+    ]'
+    ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(stubDir, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	got, err := listProjectContainers("demo-main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("containers = %+v, want 4", got)
+	}
+	byName := make(map[string]apiContainer, len(got))
+	for _, container := range got {
+		byName[container.Name] = container
+	}
+	if web := byName["web"]; web.Status != "running" || web.Health != "healthy" || web.ExitCode != nil {
+		t.Errorf("web = %+v", web)
+	}
+	if job := byName["job-ok"]; job.ExitCode == nil || *job.ExitCode != 0 {
+		t.Errorf("job-ok = %+v, want exit_code 0", job)
+	}
+	jobJSON, err := json.Marshal(byName["job-ok"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(jobJSON), `"exit_code":0`) {
+		t.Errorf("job-ok JSON = %s, want explicit zero exit code", jobJSON)
+	}
+	if job := byName["job-failed"]; job.ExitCode == nil || *job.ExitCode != 17 {
+		t.Errorf("job-failed = %+v, want exit_code 17", job)
+	}
+	if starting := byName["warming-up"]; starting.Health != "starting" {
+		t.Errorf("warming-up = %+v, want starting health", starting)
 	}
 }

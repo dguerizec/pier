@@ -33,9 +33,11 @@ type apiURL struct {
 }
 
 type apiContainer struct {
-	Name   string `json:"name"`
-	Image  string `json:"image"`
-	Status string `json:"status"`
+	Name     string `json:"name"`
+	Image    string `json:"image"`
+	Status   string `json:"status"`
+	Health   string `json:"health,omitempty"`
+	ExitCode *int   `json:"exit_code,omitempty"`
 }
 
 type apiWorkload struct {
@@ -303,35 +305,59 @@ func buildAPIWorkload(cfg *infra.Config, wl *state.Workload) apiWorkload {
 }
 
 // listProjectContainers asks docker for every container labelled with the
-// given compose project. The format keeps the columns stable — we parse
-// JSON because `--format` text would split on spaces in image refs.
+// given compose project, then inspects those exact IDs for structured runtime
+// state. `docker ps` exposes only the broad state (running/exited); inspect is
+// what lets the dashboard distinguish a successful one-shot job from a failed
+// one without parsing Docker's human-readable Status string.
 func listProjectContainers(projectName string) ([]apiContainer, error) {
-	cmd := exec.Command("docker", "ps", "-a",
+	idsOut, err := exec.Command("docker", "ps", "-a", "-q",
 		"--filter", "label=com.docker.compose.project="+projectName,
-		"--format", "{{json .}}",
-	)
-	out, err := cmd.Output()
+	).Output()
 	if err != nil {
 		return nil, err
 	}
-	var containers []apiContainer
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "" {
-			continue
-		}
-		var entry struct {
-			Names string `json:"Names"`
+	ids := strings.Fields(string(idsOut))
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	args := append([]string{"inspect"}, ids...)
+	out, err := exec.Command("docker", args...).Output()
+	if err != nil {
+		return nil, err
+	}
+	var inspected []struct {
+		Name   string `json:"Name"`
+		Config struct {
 			Image string `json:"Image"`
-			State string `json:"State"`
+		} `json:"Config"`
+		State struct {
+			Status   string `json:"Status"`
+			ExitCode int    `json:"ExitCode"`
+			Health   *struct {
+				Status string `json:"Status"`
+			} `json:"Health"`
+		} `json:"State"`
+	}
+	if err := json.Unmarshal(out, &inspected); err != nil {
+		return nil, fmt.Errorf("decode docker inspect: %w", err)
+	}
+
+	var containers []apiContainer
+	for _, entry := range inspected {
+		container := apiContainer{
+			Name:   strings.TrimPrefix(entry.Name, "/"),
+			Image:  entry.Config.Image,
+			Status: entry.State.Status,
 		}
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			continue
+		if entry.State.Health != nil {
+			container.Health = entry.State.Health.Status
 		}
-		containers = append(containers, apiContainer{
-			Name:   entry.Names,
-			Image:  entry.Image,
-			Status: entry.State,
-		})
+		if entry.State.Status == "exited" {
+			exitCode := entry.State.ExitCode
+			container.ExitCode = &exitCode
+		}
+		containers = append(containers, container)
 	}
 	sort.Slice(containers, func(i, j int) bool { return containers[i].Name < containers[j].Name })
 	return containers, nil

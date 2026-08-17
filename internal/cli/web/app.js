@@ -248,17 +248,47 @@ function urlList(urls) {
   ]);
 }
 
+function containerVisualState(c) {
+  if (c.status === "running") {
+    if (c.health === "unhealthy") return { dot: "fail", label: "unhealthy", noteworthy: true };
+    if (c.health === "starting") return { dot: "warn", label: "health starting", noteworthy: true };
+    return {
+      dot: "running",
+      label: c.health === "healthy" ? "running · healthy" : "running",
+      noteworthy: false,
+    };
+  }
+  if (c.status === "exited") {
+    const exitCodeKnown = Number.isInteger(c.exit_code);
+    const successful = exitCodeKnown && c.exit_code === 0;
+    return {
+      dot: successful ? "completed" : "fail",
+      label: exitCodeKnown ? `Exited (${c.exit_code})` : "exited",
+      noteworthy: true,
+    };
+  }
+  if (c.status === "dead") return { dot: "fail", label: "dead", noteworthy: true };
+  return { dot: c.status, label: c.status, noteworthy: false };
+}
+
 function containerList(containers) {
   if (!containers || containers.length === 0) return null;
   return el("div", { class: "containers" }, [
     el("div", { class: "label" }, "Containers"),
-    ...containers.map((c) =>
-      el("div", { class: "container" }, [
-        el("span", { class: `dot ${c.status}` }),
+    ...containers.map((c) => {
+      const visual = containerVisualState(c);
+      return el("div", { class: "container" }, [
+        el("span", {
+          class: `dot ${visual.dot}`,
+          role: "img",
+          "aria-label": visual.label,
+          title: visual.label,
+        }),
         el("span", { class: "name" }, c.name),
+        visual.noteworthy ? el("span", { class: `state ${visual.dot}` }, visual.label) : null,
         el("span", { class: "image" }, c.image),
-      ]),
-    ),
+      ]);
+    }),
   ]);
 }
 

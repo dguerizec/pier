@@ -279,7 +279,9 @@
         "properties": {
           "name": { "type": "string" },
           "image": { "type": "string" },
-          "status": { "type": "string" }
+          "status": { "type": "string", "description": "Docker container state such as running, exited, restarting, or paused" },
+          "health": { "type": "string", "description": "Docker healthcheck state when the container defines one" },
+          "exit_code": { "type": "integer", "description": "Process exit code, present when status is exited" }
         }
       },
       "Config": {

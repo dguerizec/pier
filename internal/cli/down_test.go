@@ -38,7 +38,7 @@ func TestDownUsesAppliedStateWhenCurrentManifestIsInvalid(t *testing.T) {
 	}
 	ctx := adapter.Ctx{Project: "old-name", Slug: "main", WorktreePath: worktreePath, Stack: oldManifest.Stack}
 	snapshot := applied.New(ctx, worktreePath, "main", &oldManifest,
-		&adapter.Prepared{AdapterData: []byte("services:\n  web:\n    image: pier.local/teardown-placeholder\n")},
+		&adapter.Prepared{AdapterData: []byte("x-pier-teardown-version: 1\nservices:\n  web:\n    image: pier.local/teardown-placeholder\nvolumes:\n  data:\n    name: old-name-main_data\n")},
 		&adapter.Handle{ContainerID: "old-container"})
 	if err := applied.Save(snapshot); err != nil {
 		t.Fatal(err)
@@ -71,7 +71,7 @@ func TestDownUsesAppliedStateWhenCurrentManifestIsInvalid(t *testing.T) {
 	if d.Applied == nil || d.Ctx.Project != "old-name" {
 		t.Fatalf("down context did not use applied identity: %+v", d)
 	}
-	if err := runDown(d, false, false, &out, &errOut); err != nil {
+	if err := runDown(d, downRunOpts{removeVolumes: true, removeImages: true}, &out, &errOut); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := applied.Load(worktreePath, "main"); !errors.Is(err, applied.ErrNotFound) {
@@ -81,8 +81,70 @@ func TestDownUsesAppliedStateWhenCurrentManifestIsInvalid(t *testing.T) {
 		t.Fatalf("workload state after down = %v, want ErrNotFound", err)
 	}
 	calls := readDockerCalls(t, root)
-	if !strings.Contains(calls, "-p old-name-main down --remove-orphans") || strings.Contains(calls, "old-compose.yml") {
+	if !strings.Contains(calls, "-p old-name-main down --remove-orphans --volumes --rmi local") || strings.Contains(calls, "old-compose.yml") {
 		t.Fatalf("down did not use frozen applied config:\n%s", calls)
+	}
+}
+
+func TestDownKeepsAppliedStateWhenSnapshotPurgeFails(t *testing.T) {
+	if os.PathSeparator != '/' {
+		t.Skip("shell-script docker stub is POSIX-only")
+	}
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg"))
+	worktreePath := filepath.Join(root, "repo")
+	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreePath, "blocked"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installDockerStub(t, root)
+
+	m := manifest.Manifest{
+		Project:     manifest.Project{Name: "demo"},
+		Stack:       manifest.Stack{Kind: manifest.KindCompose, File: "compose.yml"},
+		Materialize: manifest.Materialize{Snapshots: []string{"blocked/snapshot"}},
+	}
+	ctx := adapter.Ctx{Project: "demo", Slug: "feature", WorktreePath: worktreePath, Stack: m.Stack}
+	snapshot := applied.New(ctx, worktreePath, "feature", &m,
+		&adapter.Prepared{AdapterData: []byte("x-pier-teardown-version: 1\nservices:\n  web:\n    image: pier.local/teardown-placeholder\n")}, nil)
+	if err := applied.Save(snapshot); err != nil {
+		t.Fatal(err)
+	}
+
+	paths, err := infra.DefaultPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := paths.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(paths.StateDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Upsert(&state.Workload{
+		Project: "demo", Slug: "feature", WorktreePath: worktreePath, Branch: "feature", Kind: manifest.KindCompose,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	info := &worktree.Info{Toplevel: worktreePath, PrimaryPath: worktreePath, Branch: "feature", IsPrimary: true}
+	d, err := dailyForDown(info, "feature", io.Discard, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.State.Close()
+	if err := runDown(d, downRunOpts{purgeSnapshots: true}, io.Discard, io.Discard); err == nil {
+		t.Fatal("snapshot purge unexpectedly succeeded")
+	}
+	if _, err := applied.Load(worktreePath, "feature"); err != nil {
+		t.Fatalf("applied state should remain retryable after purge failure: %v", err)
+	}
+	if _, err := d.State.Get("demo", "feature"); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("workload state after successful adapter down = %v, want ErrNotFound", err)
 	}
 }
 

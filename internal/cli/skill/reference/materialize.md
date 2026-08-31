@@ -23,6 +23,7 @@ with opposite semantics:
 | Edit from secondary | propagates to primary (and every other worktree) | local to that worktree |
 | Edit from primary | visible everywhere | NOT propagated (snapshot is point-in-time) |
 | `pier down --purge` | preserved | removed |
+| `pier worktree rm` | link disappears with the worktree | always removed |
 | Use for | static config, read-only secrets | mutable per-branch data |
 
 **Lifecycle of snapshots:**
@@ -33,6 +34,9 @@ with opposite semantics:
 - Later `pier up`: no-op — pier respects local edits.
 - `pier down --purge`: wipes the secondary's snapshots only. Primary
   untouched.
+- `pier worktree rm` and `pier worktree clean`: always wipe snapshots before
+  removing each worktree. Snapshot retention is impossible in place because
+  the containing directory is being removed.
 
 **Typical entries:**
 - `.env`, `secrets/`, `config/local.json` → `symlinks`. Same value
@@ -100,6 +104,16 @@ pre_remove  = ["./scripts/backup-db.sh"]    # run BEFORE pier down (workload sti
   retry. Pass `--ignore-hook-errors` to remove anyway.
 - A script can swallow its own non-fatal errors and `exit 0` to opt out
   of the rollback for cases pier shouldn't treat as failures.
+
+**Preserving generated data before removal:**
+- Write the backup outside `$PIER_WORKTREE_PATH`. Use
+  `$PIER_PRIMARY_PATH/.pier/backups/` or another explicitly managed external
+  directory; files left anywhere inside the target worktree are purged.
+- Keep the export in `pre_remove`, not `post_down`: `pre_remove` runs while the
+  database or service is still available and a failure keeps the worktree.
+- Namespace output by `$PIER_SLUG`, especially under `pier worktree clean`, so
+  sequential removals cannot overwrite one another. Prefer a checked-in script
+  such as `scripts/backup-db.sh` over a long inline manifest command.
 
 **Pitfalls:**
 - The hook script must exist in the worktree's checked-out tree at the

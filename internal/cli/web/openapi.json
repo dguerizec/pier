@@ -195,12 +195,14 @@
       "parameters": [
         { "name": "slug", "in": "path", "required": true, "schema": { "type": "string" } },
         { "name": "project", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Project name (resolves repo from registry — preferred)" },
-        { "name": "repo", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Absolute path of the primary worktree (legacy alternative to project)" }
+        { "name": "repo", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Absolute path of the primary worktree (legacy alternative to project)" },
+        { "name": "keep_volumes", "in": "query", "required": false, "schema": { "type": "boolean", "default": false }, "description": "Preserve non-external Compose volumes instead of deleting them" },
+        { "name": "keep_images", "in": "query", "required": false, "schema": { "type": "boolean", "default": false }, "description": "Preserve locally built Compose images instead of deleting them" }
       ],
       "delete": {
         "tags": ["worktrees"],
         "summary": "Stop and remove a worktree",
-        "description": "Either `project` or `repo` query parameter is required (`project` wins when both are set). Always passes --force to `git worktree remove`. When the rm fails part-way through (typical: container left root-owned files in a bind mount), pier prunes the dangling git metadata and surfaces a 200 + warning so the caller can show \"manual sudo rm needed\".",
+        "description": "Either `project` or `repo` query parameter is required (`project` wins when both are set). Materialized snapshots are always purged; non-external Compose volumes and locally built images are deleted by default, with the keep parameters preserving either runtime resource class. Always passes --force to `git worktree remove`. When the rm fails part-way through (typical: container left root-owned files in a bind mount), pier prunes the dangling git metadata and surfaces a 200 + warning so the caller can show \"manual sudo rm needed\".",
         "responses": {
           "200": { "description": "Removed (may include warning)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActionResponse" } } } },
           "400": { "$ref": "#/components/responses/BadRequest" },

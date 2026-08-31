@@ -153,7 +153,7 @@ pier worktree add ../myapp-feat-x -b feat/x --up
 pier url
 pier logs -f
 pier down
-pier worktree rm ../myapp-feat-x --purge
+pier worktree rm ../myapp-feat-x
 ```
 
 `pier worktree add`:
@@ -170,8 +170,15 @@ pier worktree rm ../myapp-feat-x --purge
 
 - runs `[materialize].pre_remove`;
 - runs `pier down` unless skipped;
-- optionally purges snapshots;
+- always purges worktree-local snapshots;
+- removes non-external Compose volumes and locally built images by default;
+- provides explicit retention flags for volumes and images;
+- keeps the worktree when resource cleanup fails;
 - removes the git worktree.
+
+Snapshot data that must outlive the worktree is exported by `pre_remove` to a
+path outside the worktree before teardown begins. Keeping files inside a
+directory that is about to be removed is not a meaningful retention policy.
 
 `pier up/down/url/logs/ps/ls/doctor` are the core daily workload commands.
 `pier gc` and `pier watch` exist as command stubs but are not implemented yet.
@@ -431,7 +438,10 @@ a cache; docker, git, and filesystem reality win. `doctor --fix` can drop dead
 rows. `gc` is reserved for broader orphan cleanup but is not implemented yet.
 Each worktree also keeps its last effective teardown state under
 `.pier/applied/`; unlike `state.db`, that snapshot is authoritative for
-`pier down` and is replaced atomically after reconciliation.
+`pier down` and is replaced atomically after reconciliation. Its secret-free
+adapter data includes the applied service, network, and volume identities plus
+the implicit-build distinction required for bounded `--volumes` and
+`--images` cleanup after the desired Compose model changes.
 
 ### 5.6 Materialization And Hooks
 

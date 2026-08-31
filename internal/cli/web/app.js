@@ -856,7 +856,7 @@ async function deleteWorktree(p, wt, flash) {
     title: `Delete ${wt.slug}`,
     message: [
       `Worktree path: ${wt.path}`,
-      "pier will run down first if a workload is up.",
+      "pier will stop the workload and delete its snapshots, non-external volumes, and locally built images.",
     ],
     confirmText: "delete",
     danger: true,

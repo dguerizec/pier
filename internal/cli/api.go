@@ -116,6 +116,21 @@ func writeAPIError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+func boolQueryParam(r *http.Request, name string) (bool, error) {
+	raw, ok := r.URL.Query()[name]
+	if !ok {
+		return false, nil
+	}
+	if len(raw) != 1 {
+		return false, fmt.Errorf("query parameter %q must be specified once", name)
+	}
+	value, err := strconv.ParseBool(raw[0])
+	if err != nil {
+		return false, fmt.Errorf("query parameter %q must be a boolean", name)
+	}
+	return value, nil
+}
+
 // cappedBuffer is a bytes.Buffer that silently drops writes past a
 // fixed cap. Used to capture stderr from non-interactive hook scripts
 // so the caller (API client) gets the script's diagnostic in the
@@ -543,7 +558,7 @@ func (h *apiHandler) postWorkloadDown(w http.ResponseWriter, r *http.Request) {
 	}
 	defer d.State.Close()
 
-	if err := runDown(d, false, false, io.Discard, io.Discard); err != nil {
+	if err := runDown(d, downRunOpts{}, io.Discard, io.Discard); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "down failed: "+err.Error())
 		return
 	}
@@ -752,6 +767,16 @@ func (h *apiHandler) postWorktree(w http.ResponseWriter, r *http.Request) {
 
 func (h *apiHandler) deleteWorktree(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
+	keepVolumes, err := boolQueryParam(r, "keep_volumes")
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	keepImages, err := boolQueryParam(r, "keep_images")
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	repo := r.URL.Query().Get("repo")
 	project := r.URL.Query().Get("project")
 	if project != "" {
@@ -813,14 +838,23 @@ func (h *apiHandler) deleteWorktree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Best-effort down. A `pier down` failure shouldn't block removal —
-	// the worktree might be wedged in a state where compose can't bring
-	// it down cleanly, and the user wants the dir gone anyway.
-	if info, err := worktree.DetectFrom(abs); err == nil {
-		if d, err := dailyForDown(info, slug, io.Discard, io.Discard); err == nil {
-			_ = runDown(d, false, false, io.Discard, io.Discard)
-			d.State.Close()
-		}
+	// Worktree deletion owns its snapshots and scoped runtime resources.
+	// Refuse to discard the applied teardown state when cleanup fails; callers
+	// may retain volumes or images, but snapshot purge is unconditional.
+	downOpts := worktreeRemovalDownOpts(keepVolumes, keepImages)
+	var downErr error
+	if info, detectErr := worktree.DetectFrom(abs); detectErr != nil {
+		downErr = detectErr
+	} else if d, resolveErr := dailyForDown(info, slug, io.Discard, io.Discard); resolveErr != nil {
+		downErr = resolveErr
+	} else {
+		downErr = runDown(d, downOpts, io.Discard, io.Discard)
+		d.State.Close()
+	}
+	if downErr != nil {
+		writeAPIError(w, http.StatusInternalServerError,
+			"worktree cleanup failed; worktree kept: "+downErr.Error())
+		return
 	}
 
 	// API DELETE always passes --force: sillage is non-interactive, an
@@ -844,4 +878,12 @@ func (h *apiHandler) deleteWorktree(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, apiActionResponse{
 		Project: project, Slug: slug, Status: "removed",
 	})
+}
+
+func worktreeRemovalDownOpts(keepVolumes, keepImages bool) downRunOpts {
+	return downRunOpts{
+		purgeSnapshots: true,
+		removeVolumes:  !keepVolumes,
+		removeImages:   !keepImages,
+	}
 }

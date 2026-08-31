@@ -26,6 +26,7 @@ const (
 	pierProxyNetworkBase = "pier_proxy"
 	defaultWaitTimeout   = 2 * time.Minute
 	teardownImage        = "pier.local/teardown-placeholder"
+	teardownVersion      = 1
 )
 
 type compose struct{}
@@ -100,7 +101,7 @@ func (compose) Apply(c Ctx, prepared *Prepared) (*Handle, error) {
 	return handle, nil
 }
 
-func (compose) Down(c Ctx) error {
+func (compose) Down(c Ctx, opts DownOptions) error {
 	overridePath := filepath.Join(c.WorktreePath, overrideSubdir, overrideFile)
 	if _, err := os.Stat(overridePath); errors.Is(err, os.ErrNotExist) {
 		// Regenerate the override so `down` works even on a fresh checkout
@@ -111,15 +112,18 @@ func (compose) Down(c Ctx) error {
 			return werr
 		}
 	}
-	if _, err := composeRun(c, []string{"down", "--remove-orphans"}, overridePath, true); err != nil {
+	if _, err := composeRun(c, composeDownArgs(opts), overridePath, true); err != nil {
 		return fmt.Errorf("compose down: %w", err)
 	}
 	return nil
 }
 
-func (compose) DownApplied(c Ctx, adapterData []byte) error {
+func (compose) DownApplied(c Ctx, adapterData []byte, opts DownOptions) error {
 	if len(adapterData) == 0 {
 		return errors.New("compose: applied teardown config is empty")
+	}
+	if (opts.RemoveVolumes || opts.RemoveImages) && !supportsResourceCleanup(adapterData) {
+		return errors.New("compose: applied teardown state predates volume/image cleanup metadata; run `pier up` once to refresh it before destructive cleanup")
 	}
 	dir := filepath.Join(c.WorktreePath, overrideSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -142,10 +146,28 @@ func (compose) DownApplied(c Ctx, adapterData []byte) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close applied compose config: %w", err)
 	}
-	if _, err := composeRunFiles(c, []string{path}, []string{"down", "--remove-orphans"}, true); err != nil {
+	if _, err := composeRunFiles(c, []string{path}, composeDownArgs(opts), true); err != nil {
 		return fmt.Errorf("compose down: %w", err)
 	}
 	return nil
+}
+
+func composeDownArgs(opts DownOptions) []string {
+	args := []string{"down", "--remove-orphans"}
+	if opts.RemoveVolumes {
+		args = append(args, "--volumes")
+	}
+	if opts.RemoveImages {
+		args = append(args, "--rmi", "local")
+	}
+	return args
+}
+
+func supportsResourceCleanup(adapterData []byte) bool {
+	var metadata struct {
+		Version int `yaml:"x-pier-teardown-version"`
+	}
+	return yaml.Unmarshal(adapterData, &metadata) == nil && metadata.Version >= teardownVersion
 }
 
 func (compose) Logs(c Ctx, follow bool, tail int, services []string) error {
@@ -269,6 +291,10 @@ type composeConfig struct {
 		External any    `json:"external"`
 		Name     string `json:"name"`
 	} `json:"networks"`
+	Volumes map[string]struct {
+		External any    `json:"external"`
+		Name     string `json:"name"`
+	} `json:"volumes"`
 }
 
 func inspectComposeConfig(c Ctx, overridePath string) (*composeConfig, error) {
@@ -299,27 +325,60 @@ func ensureExternalNetworks(c Ctx, cfg *composeConfig) {
 }
 
 func renderTeardownCompose(cfg *composeConfig) ([]byte, error) {
+	type composeService struct {
+		Image string          `json:"image"`
+		Build json.RawMessage `json:"build"`
+	}
+	type teardownBuild struct {
+		Context string `yaml:"context"`
+	}
 	type teardownService struct {
-		Image string `yaml:"image"`
+		Image string         `yaml:"image,omitempty"`
+		Build *teardownBuild `yaml:"build,omitempty"`
 	}
 	type teardownNetwork struct {
 		Name     string `yaml:"name,omitempty"`
 		External bool   `yaml:"external,omitempty"`
 	}
+	type teardownVolume struct {
+		Name     string `yaml:"name,omitempty"`
+		External bool   `yaml:"external,omitempty"`
+	}
 	model := struct {
+		Version  int                        `yaml:"x-pier-teardown-version"`
 		Services map[string]teardownService `yaml:"services"`
 		Networks map[string]teardownNetwork `yaml:"networks,omitempty"`
+		Volumes  map[string]teardownVolume  `yaml:"volumes,omitempty"`
 	}{
+		Version:  teardownVersion,
 		Services: make(map[string]teardownService, len(cfg.Services)),
 		Networks: make(map[string]teardownNetwork, len(cfg.Networks)),
+		Volumes:  make(map[string]teardownVolume, len(cfg.Volumes)),
 	}
-	for name := range cfg.Services {
-		model.Services[name] = teardownService{Image: teardownImage}
+	for name, raw := range cfg.Services {
+		var service composeService
+		if err := json.Unmarshal(raw, &service); err != nil {
+			return nil, fmt.Errorf("decode compose service %s: %w", name, err)
+		}
+		teardown := teardownService{Image: teardownImage}
+		if service.Image == "" && len(service.Build) > 0 && string(service.Build) != "null" {
+			// Keep image empty for implicitly named build images. Compose's
+			// `down --rmi local` uses that distinction to remove the scoped
+			// <project>-<service> image without touching pulled images.
+			teardown = teardownService{Build: &teardownBuild{Context: "."}}
+		}
+		model.Services[name] = teardown
 	}
 	for key, network := range cfg.Networks {
 		model.Networks[key] = teardownNetwork{
 			Name:     network.Name,
 			External: isExternal(network.External),
+		}
+	}
+	for key, volume := range cfg.Volumes {
+		model.Volumes[key] = teardownVolume{
+			Name:     volume.Name,
+			External: isExternal(volume.External),
 		}
 	}
 	body, err := yaml.Marshal(model)

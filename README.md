@@ -303,15 +303,39 @@ pier logs -f                   # tail logs
 # tear down
 pier down                      # stop, keep snapshots
 pier down --purge              # also wipe snapshot copies (data-dev/)
+pier down --volumes            # also remove non-external Compose volumes
+pier down --images             # also remove locally built Compose images
 
-# clean cleanup
-pier worktree rm ../myapp-feat-x --purge
+# destroy the worktree and its scoped runtime resources
+pier worktree rm ../myapp-feat-x
 ```
 
 `pier up` is idempotent: it builds images while the current workload keeps
 running, reconciles changed services, removes Compose orphans, and waits for
 services to be running or healthy before returning. The default readiness
 deadline is two minutes; override it with `--wait-timeout 5m`.
+
+Ordinary `pier down` preserves snapshots, runtime data, and build cache unless
+their cleanup flags are passed. Destroying a temporary environment with
+`pier worktree rm` or `pier worktree clean` does the inverse: it always purges
+worktree-local snapshots and removes non-external volumes and locally built
+images by default. Use `--keep-volumes` or `--keep-images` for an explicit
+runtime-resource exception. Compose volumes declared `external: true` remain
+outside Pier's lifecycle and are never removed.
+
+Snapshots live inside the worktree, so worktree removal has no snapshot
+retention flag. If generated data must survive, export it from
+`[materialize].pre_remove` to `$PIER_PRIMARY_PATH` or another path outside
+`$PIER_WORKTREE_PATH`; the hook runs while the workload is still available and
+aborts removal on failure.
+
+Volume cleanup includes named volumes owned by the worktree's Compose project
+and anonymous volumes attached to its containers. Image cleanup delegates to
+Compose's local-image cleanup and never requests its broader `--rmi all` mode.
+Cleanup failure keeps the affected worktree available for inspection and retry.
+An applied workload created by a Pier version that predates this metadata must
+be refreshed once with `pier up` before destructive cleanup; Pier refuses
+instead of reporting a partial purge.
 
 Exposed services keep their source Compose networks. When a service relies on
 Compose's implicit `default` network, Pier declares it alongside the shared

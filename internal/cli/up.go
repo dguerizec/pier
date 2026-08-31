@@ -87,7 +87,7 @@ func runUp(d *daily, ignoreHookErrors bool, out, errOut io.Writer) error {
 		fmt.Fprintf(out, "▸ replacing applied workload %s with %s\n",
 			adapter.Name(previous.Project, previous.Slug), adapter.Name(d.Ctx.Project, d.Ctx.Slug))
 		old := dailyFromApplied(d, previous, out, errOut)
-		if err := runDown(old, false, ignoreHookErrors, out, errOut); err != nil {
+		if err := runDown(old, downRunOpts{ignoreHookErrors: ignoreHookErrors}, out, errOut); err != nil {
 			return fmt.Errorf("stop previous applied workload: %w", err)
 		}
 	}

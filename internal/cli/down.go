@@ -14,6 +14,15 @@ import (
 type downOpts struct {
 	slug             string
 	purge            bool
+	volumes          bool
+	images           bool
+	ignoreHookErrors bool
+}
+
+type downRunOpts struct {
+	purgeSnapshots   bool
+	removeVolumes    bool
+	removeImages     bool
 	ignoreHookErrors bool
 }
 
@@ -28,12 +37,19 @@ func newDownCmd() *cobra.Command {
 				return err
 			}
 			defer d.State.Close()
-			return runDown(d, opts.purge, opts.ignoreHookErrors, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return runDown(d, downRunOpts{
+				purgeSnapshots:   opts.purge,
+				removeVolumes:    opts.volumes,
+				removeImages:     opts.images,
+				ignoreHookErrors: opts.ignoreHookErrors,
+			}, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 	f := cmd.Flags()
 	f.StringVar(&opts.slug, "slug", "", "override derived slug")
 	f.BoolVar(&opts.purge, "purge", false, "also wipe materialized snapshots")
+	f.BoolVar(&opts.volumes, "volumes", false, "remove non-external Compose volumes")
+	f.BoolVar(&opts.images, "images", false, "remove locally built Compose images")
 	f.BoolVar(&opts.ignoreHookErrors, "ignore-hook-errors", false, "continue when a [hooks].pre_down / post_down command fails")
 	registerSlugCompletion(cmd)
 	return cmd
@@ -42,12 +58,12 @@ func newDownCmd() *cobra.Command {
 // runDown stops the workload via the adapter, drops the state row,
 // removes headscale records when configured, and (optionally) purges
 // materialized snapshots. Shared with the REST POST /down handler.
-func runDown(d *daily, purge, ignoreHookErrors bool, out, errOut io.Writer) error {
+func runDown(d *daily, opts downRunOpts, out, errOut io.Writer) error {
 	hc := buildHookContext(d.Worktree.PrimaryPath, d.Worktree.Toplevel, d.Worktree.Branch, d.Manifest, errOut)
 	hc.Slug = d.Slug
 	hc.RuntimeEnv = d.Ctx.ComposeEnv
 	if err := materialize.RunHooks("pre_down", d.Manifest.Hooks.PreDown, hc, out, errOut); err != nil {
-		if ignoreHookErrors {
+		if opts.ignoreHookErrors {
 			fmt.Fprintf(errOut, "! pre_down failed (continuing because --ignore-hook-errors): %v\n", err)
 		} else {
 			return fmt.Errorf("pre_down hook: %w (use --ignore-hook-errors to stop anyway)", err)
@@ -58,10 +74,14 @@ func runDown(d *daily, purge, ignoreHookErrors bool, out, errOut io.Writer) erro
 	if err != nil {
 		return err
 	}
+	adapterOpts := adapter.DownOptions{
+		RemoveVolumes: opts.removeVolumes,
+		RemoveImages:  opts.removeImages,
+	}
 	if d.Applied != nil {
-		err = a.DownApplied(d.Ctx, d.Applied.AdapterData)
+		err = a.DownApplied(d.Ctx, d.Applied.AdapterData, adapterOpts)
 	} else {
-		err = a.Down(d.Ctx)
+		err = a.Down(d.Ctx, adapterOpts)
 	}
 	if err != nil {
 		return err
@@ -70,14 +90,14 @@ func runDown(d *daily, purge, ignoreHookErrors bool, out, errOut io.Writer) erro
 	if err := d.State.Delete(d.Ctx.Project, d.Ctx.Slug); err != nil {
 		return fmt.Errorf("delete state row: %w", err)
 	}
-	if d.Applied != nil {
-		if err := applied.Delete(d.Worktree.Toplevel, d.Applied.Slug); err != nil {
+
+	if opts.purgeSnapshots {
+		if err := materialize.Purge(d.Worktree.Toplevel, d.Manifest.Materialize, out); err != nil {
 			return err
 		}
 	}
-
-	if purge {
-		if err := materialize.Purge(d.Worktree.Toplevel, d.Manifest.Materialize, out); err != nil {
+	if d.Applied != nil {
+		if err := applied.Delete(d.Worktree.Toplevel, d.Applied.Slug); err != nil {
 			return err
 		}
 	}
@@ -85,7 +105,7 @@ func runDown(d *daily, purge, ignoreHookErrors bool, out, errOut io.Writer) erro
 	fmt.Fprintf(out, "✓ %s stopped\n", adapter.Name(d.Ctx.Project, d.Ctx.Slug))
 
 	if err := materialize.RunHooks("post_down", d.Manifest.Hooks.PostDown, hc, out, errOut); err != nil {
-		if ignoreHookErrors {
+		if opts.ignoreHookErrors {
 			fmt.Fprintf(errOut, "! post_down failed (continuing because --ignore-hook-errors): %v\n", err)
 		} else {
 			return fmt.Errorf("post_down hook: %w (workload is down; use --ignore-hook-errors to silence)", err)

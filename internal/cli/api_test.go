@@ -234,6 +234,32 @@ func TestAPIDeleteWorktreeRequiresRepo(t *testing.T) {
 	}
 }
 
+func TestAPIDeleteWorktreeRejectsInvalidRetentionQuery(t *testing.T) {
+	_, mux := newTestAPI(t)
+	req := httptest.NewRequest(http.MethodDelete,
+		"/api/v1/worktrees/feat-x?repo=/tmp/repo&keep_volumes=sometimes", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "keep_volumes") {
+		t.Errorf("expected invalid parameter name in response: %s", rec.Body.String())
+	}
+}
+
+func TestWorktreeRemovalDownOptionsAlwaysPurgeSnapshots(t *testing.T) {
+	defaults := worktreeRemovalDownOpts(false, false)
+	if !defaults.purgeSnapshots || !defaults.removeVolumes || !defaults.removeImages {
+		t.Fatalf("default worktree removal options = %+v", defaults)
+	}
+
+	retainedRuntime := worktreeRemovalDownOpts(true, true)
+	if !retainedRuntime.purgeSnapshots || retainedRuntime.removeVolumes || retainedRuntime.removeImages {
+		t.Fatalf("retained-runtime worktree removal options = %+v", retainedRuntime)
+	}
+}
+
 func TestAPIDeleteWorktreeMissing(t *testing.T) {
 	_, mux := newTestAPI(t)
 	req := httptest.NewRequest(http.MethodDelete,
@@ -267,6 +293,11 @@ func TestAPIOpenAPISpec(t *testing.T) {
 	}
 	if _, ok := spec["paths"]; !ok {
 		t.Error("missing paths section")
+	}
+	for _, name := range []string{"keep_volumes", "keep_images"} {
+		if !strings.Contains(rec.Body.String(), `"name": "`+name+`"`) {
+			t.Errorf("OpenAPI spec is missing %s", name)
+		}
 	}
 }
 

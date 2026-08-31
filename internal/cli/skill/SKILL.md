@@ -91,7 +91,7 @@ the common case — pier resolves project + slug from the cwd).
 | Task | pier command | Do NOT use |
 |---|---|---|
 | Start, rebuild, reload, or reconcile the workload | `pier up` | `pier down && pier up`, `docker compose up`, `make run` |
-| Stop the workload | `pier down` (`--purge` to also wipe snapshots) | `docker compose down`, `docker stop` |
+| Stop the workload | `pier down` (`--purge` snapshots; `--volumes` / `--images` for scoped cleanup) | `docker compose down`, `docker stop` |
 | Print the workload's URL | `pier url` (`--all` for every URL) | grep the manifest |
 | Tail logs | `pier logs [-f] [--tail N]` | `docker compose logs` |
 | Inspect containers | `pier ps` (passes through to compose) | `docker ps` (less scoped) |
@@ -159,9 +159,24 @@ DNS records behind. pier provides commands that do both correctly.
 - Runs `[materialize].pre_remove` first, while the workload is still up
   (canonical use: `pg_dump`). Failure aborts the whole rm path unless
   `--ignore-hook-errors`.
-- Then `pier down` (best-effort), unless `--skip-down` is set (use when
-  the workload is already stopped — `pre_remove` still runs).
-- `--purge` runs `pier down --purge` to wipe per-worktree snapshots.
+- Then `pier down`, unless `--skip-down` is set (use when the workload is
+  already stopped — `pre_remove` still runs). Cleanup failure keeps the
+  worktree; skipping down requires both retention flags because no runtime
+  cleanup can run.
+- Always purges per-worktree snapshots. There is no snapshot-retention flag:
+  snapshots live inside the directory being removed.
+- Preserve generated data only by exporting it during `pre_remove` to
+  `$PIER_PRIMARY_PATH` or another path outside `$PIER_WORKTREE_PATH`. A backup
+  written inside the target worktree is deleted with it. Namespace bulk-clean
+  backups by `$PIER_SLUG` so later worktrees do not overwrite earlier ones.
+- Non-external volumes owned by the worktree's Compose project and locally
+  built Compose images are removed by default. `--keep-volumes` and
+  `--keep-images` preserve either resource class explicitly. Volumes declared
+  `external: true` remain outside Pier's lifecycle.
+- A volume/image cleanup failure aborts before Git removes the
+  worktree, leaving its applied state available for inspection and retry.
+- If the applied workload predates cleanup metadata, run `pier up` once to
+  refresh it before retrying the destructive removal.
 - `--force` passes through to `git worktree remove --force`.
 
 If for some reason you must use `git worktree remove` directly, run
@@ -291,8 +306,8 @@ pier init --yes
 pier worktree add feat-x --up
 pier url --slug feat-x       # → http://feat-x.myapp.test (or .dev, etc.)
 
-# Tear it all down
-pier worktree rm feat-x --purge
+# Tear it all down, including worktree-scoped runtime storage/builds
+pier worktree rm feat-x
 
 # What's currently running, where?
 pier ls --wide

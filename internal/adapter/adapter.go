@@ -42,12 +42,19 @@ type Handle struct {
 	ContainerID string // compose / dockerfile (first exposed service)
 }
 
+// DownOptions controls destructive teardown of adapter-owned resources.
+// Defaults preserve data and build cache.
+type DownOptions struct {
+	RemoveVolumes bool
+	RemoveImages  bool
+}
+
 // Adapter is implemented per stack kind.
 type Adapter interface {
 	Prepare(c Ctx) (*Prepared, error)
 	Apply(c Ctx, prepared *Prepared) (*Handle, error)
-	Down(c Ctx) error
-	DownApplied(c Ctx, adapterData []byte) error
+	Down(c Ctx, opts DownOptions) error
+	DownApplied(c Ctx, adapterData []byte, opts DownOptions) error
 	Logs(c Ctx, follow bool, tail int, services []string) error
 }
 

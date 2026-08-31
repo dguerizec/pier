@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -134,7 +135,8 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(prepared.AdapterData), "demo-main_default") ||
+	if !strings.Contains(string(prepared.AdapterData), "x-pier-teardown-version: 1") ||
+		!strings.Contains(string(prepared.AdapterData), "demo-main_default") ||
 		!strings.Contains(string(prepared.AdapterData), teardownImage) {
 		t.Fatalf("teardown config missing applied resources:\n%s", prepared.AdapterData)
 	}
@@ -177,20 +179,70 @@ func TestComposeDownAppliedUsesFrozenTeardownConfig(t *testing.T) {
 	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CALLS_FILE", calls)
 	c := Ctx{Project: "old", Slug: "main", WorktreePath: dir, Out: io.Discard, Err: io.Discard}
-	data := []byte("services:\n  web:\n    image: pier.local/teardown-placeholder\n")
-	if err := (compose{}).DownApplied(c, data); err != nil {
+	data := []byte("x-pier-teardown-version: 1\nservices:\n  web:\n    image: pier.local/teardown-placeholder\nvolumes:\n  data:\n    name: old-main_data\n")
+	if err := (compose{}).DownApplied(c, data, DownOptions{RemoveVolumes: true, RemoveImages: true}); err != nil {
 		t.Fatal(err)
+	}
+	legacy := []byte("services:\n  web:\n    image: pier.local/teardown-placeholder\n")
+	if err := (compose{}).DownApplied(c, legacy, DownOptions{}); err != nil {
+		t.Fatalf("ordinary down should remain compatible with legacy state: %v", err)
 	}
 	body, err := os.ReadFile(calls)
 	if err != nil {
 		t.Fatal(err)
 	}
 	log := string(body)
-	if !strings.Contains(log, "compose -f ") || !strings.Contains(log, " -p old-main down --remove-orphans") {
+	if !strings.Contains(log, "compose -f ") || !strings.Contains(log, " -p old-main down --remove-orphans --volumes --rmi local") {
 		t.Fatalf("applied down invocation = %q", log)
 	}
 	if strings.Contains(log, "compose.yml") {
 		t.Fatalf("applied down unexpectedly used current stack file: %q", log)
+	}
+}
+
+func TestComposeDownAppliedRejectsLegacyStateForResourceCleanup(t *testing.T) {
+	c := Ctx{Project: "old", Slug: "main", WorktreePath: t.TempDir(), Out: io.Discard, Err: io.Discard}
+	data := []byte("services:\n  web:\n    image: pier.local/teardown-placeholder\n")
+	err := (compose{}).DownApplied(c, data, DownOptions{RemoveVolumes: true})
+	if err == nil || !strings.Contains(err.Error(), "run `pier up` once") {
+		t.Fatalf("legacy cleanup error = %v", err)
+	}
+}
+
+func TestRenderTeardownComposePreservesResourceCleanupMetadata(t *testing.T) {
+	var cfg composeConfig
+	err := json.Unmarshal([]byte(`{
+  "services": {
+    "app": {"build": {"context": "."}},
+    "db": {"image": "postgres:18"}
+  },
+  "networks": {
+    "default": {"name": "demo-main_default", "external": false}
+  },
+  "volumes": {
+    "data": {"name": "demo-main_data", "external": false},
+    "shared": {"name": "shared-data", "external": true}
+  }
+}`), &cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := renderTeardownCompose(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+	for _, want := range []string{
+		"x-pier-teardown-version: 1",
+		"app:\n        build:\n            context: .",
+		"db:\n        image: pier.local/teardown-placeholder",
+		"data:\n        name: demo-main_data",
+		"shared:\n        name: shared-data\n        external: true",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("teardown config missing %q:\n%s", want, got)
+		}
 	}
 }
 

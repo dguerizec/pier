@@ -252,7 +252,8 @@ func preCreateSnapshotDirs(primary, current string, snapshots []string, out io.W
 type wtRmOpts struct {
 	skipDown         bool
 	force            bool
-	purge            bool
+	keepVolumes      bool
+	keepImages       bool
 	ignoreHookErrors bool
 }
 
@@ -260,21 +261,27 @@ func newWorktreeRmCmd() *cobra.Command {
 	var opts wtRmOpts
 	cmd := &cobra.Command{
 		Use:   "rm <path>",
-		Short: "Stop the workload, run git worktree remove, optionally purge snapshots",
+		Short: "Stop the workload, clean its runtime resources, and remove the worktree",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWorktreeRm(cmd, args[0], opts)
 		},
 	}
 	f := cmd.Flags()
-	f.BoolVar(&opts.skipDown, "skip-down", false, "do not run pier down (use when the workload is already stopped)")
+	f.BoolVar(&opts.skipDown, "skip-down", false, "skip workload teardown; snapshots are still purged (requires --keep-volumes and --keep-images)")
 	f.BoolVar(&opts.force, "force", false, "pass --force to git worktree remove")
-	f.BoolVar(&opts.purge, "purge", false, "run pier down --purge to wipe snapshot copies before removal")
+	f.Bool("purge", true, "deprecated: snapshots are always purged during worktree removal")
+	_ = f.MarkDeprecated("purge", "snapshots are always purged during worktree removal")
+	f.BoolVar(&opts.keepVolumes, "keep-volumes", false, "preserve non-external Compose volumes")
+	f.BoolVar(&opts.keepImages, "keep-images", false, "preserve locally built Compose images")
 	f.BoolVar(&opts.ignoreHookErrors, "ignore-hook-errors", false, "continue removal when a [materialize].pre_remove command fails")
 	return cmd
 }
 
 func runWorktreeRm(cmd *cobra.Command, target string, opts wtRmOpts) error {
+	if err := validateWorktreeRmOpts(opts); err != nil {
+		return err
+	}
 	info, err := worktree.Detect()
 	if err != nil {
 		return err
@@ -294,13 +301,12 @@ func runWorktreeRm(cmd *cobra.Command, target string, opts wtRmOpts) error {
 		return err
 	}
 
-	if !opts.skipDown {
-		args := []string{"down"}
-		if opts.purge {
-			args = append(args, "--purge")
+	if opts.skipDown {
+		if err := purgeWorktreeSnapshots(primary, abs, cmd.OutOrStdout()); err != nil {
+			return fmt.Errorf("snapshot cleanup failed; worktree kept: %w", err)
 		}
-		// Best-effort: pier down errors when nothing is up. Don't bail.
-		_ = runPierIn(cmd, abs, args...)
+	} else if err := runPierIn(cmd, abs, worktreeDownArgs(opts)...); err != nil {
+		return fmt.Errorf("worktree cleanup failed; worktree kept: %w", err)
 	}
 
 	if err := removeWorktreeAt(primary, abs, opts.force, cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
@@ -308,6 +314,36 @@ func runWorktreeRm(cmd *cobra.Command, target string, opts wtRmOpts) error {
 	}
 	removeWorktreeShares(abs, cmd.OutOrStdout(), cmd.ErrOrStderr())
 	return nil
+}
+
+func validateWorktreeRmOpts(opts wtRmOpts) error {
+	if opts.skipDown && worktreeResourceCleanupRequested(opts) {
+		return errors.New("--skip-down requires --keep-volumes and --keep-images because no runtime cleanup will run")
+	}
+	return nil
+}
+
+func worktreeResourceCleanupRequested(opts wtRmOpts) bool {
+	return !opts.keepVolumes || !opts.keepImages
+}
+
+func worktreeDownArgs(opts wtRmOpts) []string {
+	args := []string{"down", "--purge"}
+	if !opts.keepVolumes {
+		args = append(args, "--volumes")
+	}
+	if !opts.keepImages {
+		args = append(args, "--images")
+	}
+	return args
+}
+
+func purgeWorktreeSnapshots(primary, current string, out io.Writer) error {
+	m, err := manifest.Load(primary)
+	if err != nil {
+		return fmt.Errorf("primary manifest: %w", err)
+	}
+	return materialize.Purge(current, m.Materialize, out)
 }
 
 // runPreRemoveHook executes [materialize].pre_remove against the
@@ -426,20 +462,26 @@ func newWorktreeCleanCmd() *cobra.Command {
 	var opts wtRmOpts
 	cmd := &cobra.Command{
 		Use:   "clean",
-		Short: "Stop and remove every secondary worktree of the current project",
+		Short: "Destroy every secondary worktree and its runtime resources",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWorktreeClean(cmd, opts)
 		},
 	}
 	f := cmd.Flags()
-	f.BoolVar(&opts.skipDown, "skip-down", false, "do not run pier down on each worktree first")
+	f.BoolVar(&opts.skipDown, "skip-down", false, "skip workload teardown; snapshots are still purged (requires --keep-volumes and --keep-images)")
 	f.BoolVar(&opts.force, "force", false, "pass --force to git worktree remove")
-	f.BoolVar(&opts.purge, "purge", false, "run pier down --purge to wipe snapshot copies")
+	f.Bool("purge", true, "deprecated: snapshots are always purged during worktree removal")
+	_ = f.MarkDeprecated("purge", "snapshots are always purged during worktree removal")
+	f.BoolVar(&opts.keepVolumes, "keep-volumes", false, "preserve non-external Compose volumes for each worktree")
+	f.BoolVar(&opts.keepImages, "keep-images", false, "preserve locally built Compose images for each worktree")
 	f.BoolVar(&opts.ignoreHookErrors, "ignore-hook-errors", false, "continue removing each worktree when a [materialize].pre_remove command fails")
 	return cmd
 }
 
 func runWorktreeClean(cmd *cobra.Command, opts wtRmOpts) error {
+	if err := validateWorktreeRmOpts(opts); err != nil {
+		return err
+	}
 	info, err := worktree.Detect()
 	if err != nil {
 		return err
@@ -471,13 +513,15 @@ func runWorktreeClean(cmd *cobra.Command, opts wtRmOpts) error {
 
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Cleaning %d worktree(s):\n", len(paths))
+	var failures []error
 	for _, p := range paths {
 		fmt.Fprintf(out, "→ %s\n", p)
 		if err := runWorktreeRm(cmd, p, opts); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "  ! %v\n", err)
+			failures = append(failures, fmt.Errorf("%s: %w", p, err))
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 // localBranchExists reports whether <name> is a local branch in the repo

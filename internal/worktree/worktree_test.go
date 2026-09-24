@@ -77,7 +77,7 @@ func setupRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	runGit(t, dir, "init", "-b", "main", "-q")
-	runGit(t, dir, "commit", "--allow-empty", "-m", "init", "-q")
+	runGit(t, dir, "commit", "--allow-empty", "-m", "test: initialize worktree fixture", "-m", "Create the initial commit required by worktree detection tests.", "-q")
 	return dir
 }
 

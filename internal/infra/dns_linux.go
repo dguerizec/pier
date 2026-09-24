@@ -4,39 +4,48 @@ package infra
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 const resolvedDropinPath = "/etc/systemd/resolved.conf.d/pier.conf"
 
-// configureHostDNS makes sure .<tld> queries from this host reach pier's
-// dnsmasq. Three paths in order of preference:
-//
-//  1. tailscaled owns /etc/resolv.conf directly: the split-DNS route
-//     provided by the coordination server already forwards .<tld> through
-//     the tailnet — nothing to do on the host. Returns (false, nil).
-//
-//  2. systemd-resolved is active: write the per-domain drop-in even when
-//     Tailscale DNS is enabled. Tailscale's control-plane status does not
-//     prove it successfully configured the host resolver.
-//
-//  3. Tailscale DNS is enabled without systemd-resolved: rely on its
-//     platform-specific DNS integration. Returns (false, nil).
-//
-// The systemd-resolved path requires sudo, prompting interactively only
-// when the drop-in is missing or its content needs to change.
-//
-// Returns ErrManualDNSNeeded only when neither path applies — the caller
-// then falls back to a generic manual-config message.
-//
-// The bool return reports whether anything was actually written; callers
-// use it to decide what to print and whether to mention sudo at all.
-func configureHostDNS(tld, dnsIP string) (changed bool, err error) {
-	switch detectHostDNSBackend() {
+// A working per-link Tailscale route makes the global drop-in redundant.
+// Keeping it exposes a zone-only server to clients of resolved's flattened
+// resolv.conf (including Docker), which cannot preserve split-DNS routing.
+func configureHostDNS(tld, dnsIP, answerIP string) (bool, error) {
+	return configureHostDNSAt(tld, dnsIP, resolvedDropinPath,
+		detectHostDNSBackendFor(tld, answerIP), runSudo)
+}
+
+func configureHostDNSAt(tld, dnsIP, path string, backend hostDNSBackend, sudo func(...string) error) (bool, error) {
+	switch backend {
+	case hostDNSVerifiedTailscale:
+		body, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if !bytes.HasPrefix(body, []byte("# managed by pier\n")) {
+			return false, fmt.Errorf("refusing to remove unmanaged DNS drop-in %s", path)
+		}
+		if err := sudo("rm", "-f", path); err != nil {
+			return false, err
+		}
+		if err := sudo("systemctl", "reload-or-restart", "systemd-resolved"); err != nil {
+			return false, err
+		}
+		return true, nil
 	case hostDNSTailscale:
 		return false, nil
 	case hostDNSManual:
@@ -44,7 +53,7 @@ func configureHostDNS(tld, dnsIP string) (changed bool, err error) {
 	}
 	body := renderResolvedDropin(tld, dnsIP)
 
-	if existing, err := os.ReadFile(resolvedDropinPath); err == nil && bytes.Equal(existing, body) {
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, body) {
 		return false, nil
 	}
 
@@ -60,10 +69,10 @@ func configureHostDNS(tld, dnsIP string) (changed bool, err error) {
 	}
 	tmp.Close()
 
-	if err := runSudo("install", "-m", "0644", "-D", tmpPath, resolvedDropinPath); err != nil {
+	if err := sudo("install", "-m", "0644", "-D", tmpPath, path); err != nil {
 		return false, fmt.Errorf("install drop-in (you may need to enter your password): %w", err)
 	}
-	if err := runSudo("systemctl", "reload-or-restart", "systemd-resolved"); err != nil {
+	if err := sudo("systemctl", "reload-or-restart", "systemd-resolved"); err != nil {
 		return false, fmt.Errorf("reload systemd-resolved: %w", err)
 	}
 	return true, nil
@@ -123,6 +132,7 @@ const (
 	hostDNSManual hostDNSBackend = iota
 	hostDNSTailscale
 	hostDNSSystemdResolved
+	hostDNSVerifiedTailscale
 )
 
 func selectHostDNSBackend(tailscaleResolvConf, resolvedActive, tailscaleDNSActive bool) hostDNSBackend {
@@ -146,6 +156,83 @@ func detectHostDNSBackend() hostDNSBackend {
 	)
 }
 
+func detectHostDNSBackendFor(tld, answerIP string) hostDNSBackend {
+	backend := detectHostDNSBackend()
+	if backend == hostDNSSystemdResolved && verifiedTailscaleRoute(tld, answerIP, dnsCommand) {
+		return hostDNSVerifiedTailscale
+	}
+	return backend
+}
+
+func dnsCommand(args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "resolvectl", args...)
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	return cmd.Output()
+}
+
+// Constrain the query to Tailscale so the existing global Pier drop-in cannot
+// provide false evidence. Require an exact route and the expected installation's
+// address: another peer may own the same TLD.
+func verifiedTailscaleRoute(tld, answerIP string, run func(...string) ([]byte, error)) bool {
+	expected := net.ParseIP(answerIP)
+	if expected == nil {
+		return false
+	}
+	domains, err := run("domain", "tailscale0")
+	if err != nil {
+		return false
+	}
+	found := false
+	for _, domain := range strings.Fields(string(domains)) {
+		if strings.TrimPrefix(domain, "~") == tld {
+			found = true
+		}
+	}
+	if !found {
+		return false
+	}
+	hostname := fmt.Sprintf("pier-dns-probe-%d.%s", time.Now().UnixNano(), tld)
+	out, err := run("--json=short", "--cache=no", "--type=A", "--interface=tailscale0", "query", hostname)
+	if err != nil {
+		return false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(out))
+	matched := false
+	for {
+		var record struct {
+			Key struct {
+				Class int
+				Type  int
+				Name  string
+			}
+			Address []int
+		}
+		err := decoder.Decode(&record)
+		if err == io.EOF {
+			return matched
+		}
+		if err != nil {
+			return false
+		}
+		if record.Key.Class != 1 || record.Key.Type != 1 || record.Key.Name != hostname || len(record.Address) != 4 {
+			return false
+		}
+		ip := make(net.IP, 4)
+		for i, octet := range record.Address {
+			if octet < 0 || octet > 255 {
+				return false
+			}
+			ip[i] = byte(octet)
+		}
+		if !ip.Equal(expected) {
+			return false
+		}
+		matched = true
+	}
+}
+
 func tailscaleOwnsResolvConf() bool {
 	if body, err := os.ReadFile("/etc/resolv.conf"); err == nil {
 		if line, _, _ := strings.Cut(string(body), "\n"); strings.Contains(line, "generated by tailscale") {
@@ -163,8 +250,16 @@ func tailscaleDNSActive() bool {
 	return strings.Contains(string(out), "Tailscale DNS: enabled")
 }
 
-func checkResolvedDropin(tld string) Check {
-	switch detectHostDNSBackend() {
+func checkResolvedDropin(tld, answerIP string) Check {
+	switch detectHostDNSBackendFor(tld, answerIP) {
+	case hostDNSVerifiedTailscale:
+		if _, err := os.Stat(resolvedDropinPath); !errors.Is(err, os.ErrNotExist) {
+			return Check{Name: "host DNS routing", Status: StatusWarn,
+				Detail:  "working Tailscale route; redundant global Pier DNS drop-in can break Docker DNS",
+				FixHint: "pier doctor --fix"}
+		}
+		return Check{Name: "host DNS routing", Status: StatusPass,
+			Detail: "verified Tailscale split-DNS route for ." + tld}
 	case hostDNSTailscale:
 		return Check{
 			Name:   "host DNS routing",
@@ -202,9 +297,13 @@ func checkResolvedDropin(tld string) Check {
 	return Check{Name: "systemd-resolved drop-in", Status: StatusPass}
 }
 
-// needsResolvedRewrite returns true when the on-disk drop-in is missing or
-// references a different (TLD, bindIP) than the active config.
-func needsResolvedRewrite(tld, bindIP string) bool {
+// needsResolvedRewrite also detects a redundant drop-in even when its
+// contents still match the active installation.
+func needsResolvedRewrite(tld, bindIP, answerIP string) bool {
+	if detectHostDNSBackendFor(tld, answerIP) == hostDNSVerifiedTailscale {
+		_, err := os.Stat(resolvedDropinPath)
+		return !errors.Is(err, os.ErrNotExist)
+	}
 	body, err := os.ReadFile(resolvedDropinPath)
 	if err != nil {
 		return true

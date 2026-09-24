@@ -102,7 +102,7 @@ func Diagnose() Report {
 	}
 	r.Checks = append(r.Checks, checkContainerRunning(DnsmasqContainer))
 	r.Checks = append(r.Checks, checkDNSResolution(cfg.TLD, cfg.BindIP, cfg.EffectiveAnswerIP()))
-	r.Checks = append(r.Checks, checkResolvedDropin(cfg.TLD))
+	r.Checks = append(r.Checks, checkResolvedDropin(cfg.TLD, cfg.EffectiveAnswerIP()))
 	r.Checks = append(r.Checks, checkNonlocalBind(cfg.BindIP))
 	return r
 }
@@ -163,12 +163,13 @@ func Fix() Report {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	// Step 2 — drop-in. Only re-write if the file is missing or
-	// content-stale. configureHostDNS is interactive (sudo); we only call
-	// it when the drop-in is actually wrong.
-	if needsResolvedRewrite(cfg.TLD, cfg.BindIP) {
-		if changed, err := configureHostDNS(cfg.TLD, cfg.BindIP); err == nil && changed {
-			report.Actions = append(report.Actions, "rewrote systemd-resolved drop-in")
+	// Step 2 — reconcile missing, stale, or redundant host DNS configuration.
+	// Manual DNS belongs to the operator, including an existing drop-in.
+	if !cfg.ManualDNS && needsResolvedRewrite(cfg.TLD, cfg.BindIP, cfg.EffectiveAnswerIP()) {
+		if changed, err := configureHostDNS(cfg.TLD, cfg.BindIP, cfg.EffectiveAnswerIP()); err != nil {
+			report.Actions = append(report.Actions, "host DNS reconciliation failed: "+err.Error())
+		} else if changed {
+			report.Actions = append(report.Actions, "reconciled systemd-resolved DNS configuration")
 		}
 	}
 

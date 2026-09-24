@@ -6,7 +6,7 @@ import "errors"
 
 // configureHostDNS is a stub on non-Linux platforms; automatic host DNS setup
 // is Linux-only today.
-func configureHostDNS(tld, dnsIP string) (bool, error) {
+func configureHostDNS(tld, dnsIP, answerIP string) (bool, error) {
 	return false, errors.New("infra: host DNS configuration only supported on Linux for MVP (use --manual-dns elsewhere)")
 }
 
@@ -16,7 +16,7 @@ func manualDNSInstructions(tld, dnsIP string) string {
 	return "macOS/Windows host DNS setup is manual today; configure a resolver for ." + tld + " pointing at " + dnsIP + "."
 }
 
-func checkResolvedDropin(tld string) Check {
+func checkResolvedDropin(tld, answerIP string) Check {
 	return Check{
 		Name:   "systemd-resolved drop-in",
 		Status: StatusWarn,
@@ -24,4 +24,4 @@ func checkResolvedDropin(tld string) Check {
 	}
 }
 
-func needsResolvedRewrite(tld, bindIP string) bool { return false }
+func needsResolvedRewrite(tld, bindIP, answerIP string) bool { return false }

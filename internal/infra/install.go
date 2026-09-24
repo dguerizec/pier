@@ -190,7 +190,7 @@ func Install(opts InstallOptions) error {
 	}
 
 	if !opts.ManualDNS {
-		changed, err := configureHostDNS(opts.TLD, opts.BindIP)
+		changed, err := configureHostDNS(opts.TLD, opts.BindIP, opts.AnswerIP)
 		switch {
 		case err == nil && changed:
 			fmt.Fprintf(out, "✓ system DNS configured (.%s → %s)\n", opts.TLD, opts.BindIP)

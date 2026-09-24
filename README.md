@@ -48,6 +48,37 @@ cluster-level capabilities or production parity matter more than local simplicit
 
 ## Install
 
+### Prerequisites and platform support
+
+The standard setup below targets **Linux with systemd-resolved**. Before
+installing Pier, have:
+
+- **Git**, for project repositories and worktrees.
+- **Docker Engine**, running and accessible from your regular user account
+  without `sudo`, plus the **Docker Compose v2 plugin** (`docker compose`).
+- **curl**, **tar**, and either **sha256sum** or **shasum**, for the binary
+  installer.
+- **sudo access**, for the automatic host DNS configuration during bootstrap.
+  Run Pier as your regular user; it requests elevated privileges when needed.
+
+Check Git and Docker from that account before continuing:
+
+```bash
+git --version
+docker info
+docker compose version
+```
+
+If Docker is unavailable or reports a permission error, fix its installation
+or your account's access first. **Go is only needed when building from source.**
+Tailscale and Headscale are optional; neither is needed for local development.
+
+**macOS:** downloadable binaries are available, but automatic host DNS setup
+is not implemented yet. Use `pier install --manual-dns` and configure the
+resolver yourself; installing the binary alone does not make `.test` URLs
+resolve. The dashboard's `pier serve install` command also requires systemd
+and is intended for Linux.
+
 ### One-liner (Linux, macOS — amd64 or arm64)
 
 ```bash
@@ -62,16 +93,34 @@ specific release, or `PIER_INSTALL_DIR=/some/path` to override the destination.
 Audit the script before piping it to a shell — it's a plain POSIX shell script
 in this repo at [`install.sh`](install.sh).
 
+### Make `pier` available in your shell
+
+For the default installation directory, add it to your current shell's PATH
+and check the installed binary:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+pier --version
+```
+
+To keep this setting in new terminals, add the `export` line to `~/.bashrc`
+for Bash or `~/.zshrc` for Zsh, unless that directory is already on your PATH.
+If you set `PIER_INSTALL_DIR`, use that directory instead. A `pier: command
+not found` error after installation usually means this PATH step is missing.
+
 ### From source
 
 ```bash
 git clone https://github.com/dguerizec/pier.git
 cd pier
+mkdir -p ~/.local/bin
 go build -o ~/.local/bin/pier ./cmd/pier
+export PATH="$HOME/.local/bin:$PATH"
 pier --version
 ```
 
-Go 1.26+ required. Homebrew tap (`brew install dguerizec/pier/pier`) will follow.
+Go 1.26.2+ required. Apply the same persistent PATH setup described above.
+Homebrew tap (`brew install dguerizec/pier/pier`) will follow.
 
 ## Bootstrap (once per machine)
 
@@ -131,15 +180,30 @@ pier skill install --yes
 Interactive first-time installation also asks for your default
 `pier worktree add <name>` directory.
 
+After bootstrap, check the installation:
+
+```bash
+pier doctor
+```
+
+Resolve any reported failures before starting a project. On Linux without
+systemd-resolved, use `pier install --manual-dns` and follow the printed DNS
+instructions for your resolver.
+
 `pier uninstall` reverses everything (containers, network, host DNS drop-in, config dir). BYO mode leaves the user's traefik + network alone. The pier binary itself stays in place — pass `--purge` to also delete it (`pier uninstall --purge`). `--purge` declines when the binary lives under a brew prefix or system path; let the package manager remove it in that case.
 
 ## Dashboard / API
+
+The dashboard is optional; CLI commands work without it. On Linux with
+systemd, install and start it with:
 
 ```bash
 pier serve install
 ```
 
 `pier serve` exposes the dashboard at `/` and the REST API at `/api/v1/`. `pier serve install` installs it as a `systemctl --user` unit and publishes the dashboard at `pier.<tld>` by default, which is covered by the same split-DNS wildcard as workloads.
+
+With the default `.test` TLD, open **http://pier.test** after installation.
 
 If Headscale has `extra_records_path` configured, `pier serve install` can place the dashboard under the Headscale `base_domain` instead:
 
@@ -150,6 +214,10 @@ pier serve install --dashboard-fqdn pier.nebula
 That records adapter is for the dashboard hostname only. Workload URLs still use Pier's TLD and split-DNS route.
 
 ## Per-repo setup (once per project)
+
+Start from a Git repository with a Docker Compose file describing the app
+(for example, `docker-compose.dev.yml`). If the repository already contains
+a `.pier.toml`, skip `pier init` and run `pier up` directly.
 
 ```bash
 $ cd ~/dev/myapp
@@ -170,6 +238,15 @@ Defaults to committing the manifest so secondary worktrees get it for free via `
 ```bash
 pier init -y --service web --port 3000
 ```
+
+Then start the project from that repository:
+
+```bash
+pier up
+```
+
+Open the URL printed by Pier, such as `http://main.myapp.test` for project
+`myapp` on branch `main` with the default `.test` TLD.
 
 ### Manifest reference
 
